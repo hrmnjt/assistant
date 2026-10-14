@@ -10,6 +10,33 @@ potentially expanding to documentation later. It is for their own use, with no p
 registration or product offering. The primary goal is to make appointments and
 unfinished responsibilities easy to capture, see, and follow up on.
 
+## Current build
+
+The first foundation includes two household accounts, shared tasks with
+confirmation previews, daily/weekly chores with missed-date history, per-person
+summary settings, and topic messages persisted through Pi Durable. Phone push
+delivery is implemented but still needs testing on the installed iPhone app.
+Live AI access and iCloud synchronization are not connected yet.
+
+Use Node.js 24 or newer. All project data, caches, and scripts stay in this repo.
+
+```sh
+npm ci --cache ./.cache/npm --ignore-scripts
+npm run configure
+npm run dev
+```
+
+Open `http://localhost:5173`. The local `.env` file contains the generated
+`owner` and `partner` passwords; edit names there before the first start.
+Existing accounts are preserved in `data/`. For a built app, use `npm run build`
+and `npm start`, set `APP_ORIGIN` to its actual address, and route Cloudflare
+Tunnel to the local server on port 3000. Use a stable HTTPS hostname for phones.
+Set `PUSH_CONTACT` to a real `mailto:` address or use the HTTPS app origin for
+phone notifications. With no push setup, reminders remain available in the app.
+
+Validation commands: `npm test` and `npm run build`. Test data and temporary
+files are kept in `.cache/`; household data and push keys are kept in `data/`.
+
 ## Confirmed requirements
 
 - Build on Pi Durable and run the assistant on user-controlled infrastructure.

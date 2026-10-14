@@ -31,3 +31,13 @@
   request, preserve the prepared changes and clearly report the blocker.
 - Include the pull request link in the final handoff. When available, attach
   the pull request to the current Codex chat.
+
+## Repository boundary
+
+- Keep project work inside this repository: helper scripts, dependencies,
+  package-manager caches, runtime data, test artifacts, and PR body drafts.
+- Do not install tools globally, create project files in temporary directories,
+  or run external plugin helper scripts for this project.
+- Use npm with `--cache ./.cache/npm` for dependency operations. Keep runtime
+  data in `./data` and disposable artifacts in `./.cache`, both ignored by Git.
+- Use repository-local scripts and dependencies for development and validation.
