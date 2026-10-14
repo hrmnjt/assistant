@@ -5,8 +5,11 @@
 - Treat README.md as the working product specification and keep it up to date
   with decisions made with the user.
 - Distinguish confirmed requirements from proposals and open questions.
-- The project is currently in specification discovery. Do not start building
-  the application until the user asks to proceed with implementation.
+- The user has selected the initial POC scope and asked to proceed with the
+  initial build. Follow the agreed scope in README.md, clarify unresolved
+  behavior when it matters, and capture decisions as implementation evolves.
+- Keep documentation concise and grounded in the implementation. Native iOS,
+  offline use, task time-blocking, and documentation features are deferred.
 - Develop on the user's Mac initially. Keep the home Linux PC, a dedicated
   server, and Cloudflare compute as future hosting options; do not assume a
   final deployment target.
