@@ -19,7 +19,8 @@ unfinished responsibilities easy to capture, see, and follow up on.
 - Start with an iPhone-focused SPA, installable as a web app. Native iOS comes later.
 - Permit access away from home through Cloudflare Tunnel.
 - Use text chat, with the iPhone keyboard's dictation for speech input.
-- Show a preview and require confirmation before every assistant-initiated change.
+- Show a preview and require confirmation before changes from either chat or
+  direct task/calendar controls.
 - Let the spouses own and directly edit their shared calendar. The assistant
   helps manage it rather than maintaining a separate calendar of its own.
 - Direct calendar edits and conversational edits must affect the same event.
@@ -41,7 +42,7 @@ unfinished responsibilities easy to capture, see, and follow up on.
 - Use separate topic threads, with an icon indicating when someone is interacting
   with a thread.
 - Use iCloud as the initial shared-calendar integration.
-- Prefer the user's existing OpenAI/ChatGPT subscription for AI model access;
+- Prefer the user's existing ChatGPT Plus subscription for AI model access;
   validate the supported sign-in route and actual account access during setup.
 - Work online initially. Offline use and native iOS are later work.
 - Defer task time-blocking; deadlines do not automatically reserve calendar time.
@@ -106,8 +107,10 @@ unsuitable or self-hosting the calendar becomes preferable.
   automatic rescheduling is not required.
 - Use Asia/Dubai as the proposed initial time zone; keep time zone and reminder
   settings configurable by person.
-- Quiet hours, appointment reminder timing, reminder catch-up after a restart,
-  and the sender of appointment notifications remain to be settled.
+- Keep both Apple Calendar and assistant appointment alerts, as explicitly chosen
+  by the user. Same-appointment alerts from those two sources are intentional.
+- Quiet hours, appointment reminder timing, and reminder catch-up after a restart
+  remain to be settled.
 - Task time-blocking is deferred. The user wants room for spontaneity before
   deciding whether activities should reserve explicit time.
 
@@ -128,16 +131,15 @@ recurring schedules should execute according to their configured rules; they
 should not need conversational approval each time they run.
 
 Direct edits mean explicit controls such as tapping Complete or editing a due
-date and pressing Save. Whether those need a second confirmation preview remains
-open. The current proposal is immediate direct edits with undo where practical;
-assistant-initiated changes always need a preview and confirmation. Human edits
-in Apple Calendar are governed by that application's normal behavior.
+date and pressing Save. They also require a confirmation preview, as chosen by
+the user. Human edits in Apple Calendar are governed by that application's normal
+behavior.
 
 Duplicate appointment alerts would occur if both Apple Calendar and our app
 notify the same person about the same appointment at the same reminder time.
-The proposed default is Apple Calendar for appointment alerts and our app for
-task alerts and summaries. This is pending the user's preference. Repeated
-delivery of the same app notification after retries should always be prevented.
+Both sources of appointment alerts are intentionally retained. Our app also
+sends task alerts and summaries. Repeated delivery of the same app notification
+after retries should still be prevented.
 
 ## Development and hosting
 
@@ -173,9 +175,13 @@ model, and an actual request for this user's account are not yet verified.
 Use the supported sign-in flow rather than copying Codex's stored credentials.
 Do not silently fall back to separately billed API-key requests.
 
-Clarify the subscription plan and how each spouse's AI identity is authorized;
-shared household data does not establish shared subscription entitlement.
-Keep application sign-in distinct from the account authorizing model usage.
+The user has ChatGPT Plus and is willing to consider Pro if usage requires it.
+The desired experience is an owner-configured AI connection with no provider
+setup required of the wife. The official documentation reviewed confirms
+eligible per-user plan usage, but does not establish that one Plus subscription
+can fund both spouses' interactive use. Keep this eligibility question explicit;
+neither library support nor a Pro upgrade alone resolves it. Keep application
+sign-in distinct from the account authorizing model usage.
 
 ## POC acceptance scenarios to refine
 
@@ -196,11 +202,11 @@ Keep application sign-in distinct from the account authorizing model usage.
 
 ## Outstanding decisions
 
-- OpenAI subscription plan, authorized AI identity for each spouse, and account/model
+- Eligibility of the desired shared Plus-funded AI connection, and account/model
   validation through Pi's supported sign-in flow.
 - Sign-in method for the two users and any existing Cloudflare domain/setup.
-- Direct-interface confirmation behavior, undo, and handling batch changes.
-- Appointment alert sender/timing, quiet hours, summary content, and restart catch-up.
+- Undo and handling batch changes; all task/calendar edits require a preview.
+- Appointment alert timing, quiet hours, summary content, and restart catch-up.
 - Calendar recurrence edits: one occurrence versus an entire series.
 - Detailed missed-occurrence counting and presentation.
 
