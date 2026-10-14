@@ -8,6 +8,8 @@ import { Household } from './domain.js';
 import { Conversations } from './conversations.js';
 import { Reminders } from './reminders.js';
 import { createApp } from './app.js';
+import { ICloudTransport } from './caldav.js';
+import { CalendarService } from './calendar.js';
 
 process.umask(0o077);
 const project = process.cwd();
@@ -32,14 +34,28 @@ provision(db, [
 ]);
 const origin = new URL(process.env.APP_ORIGIN || 'http://localhost:5173').origin;
 const household = new Household(db);
+const calendar = new CalendarService(
+  db,
+  process.env.ICLOUD_USERNAME && process.env.ICLOUD_APP_PASSWORD
+    ? new ICloudTransport({
+        username: process.env.ICLOUD_USERNAME,
+        password: process.env.ICLOUD_APP_PASSWORD,
+        calendarName: process.env.ICLOUD_CALENDAR_NAME || 'Household',
+        calendarUrl: process.env.ICLOUD_CALENDAR_URL || undefined,
+      })
+    : undefined,
+);
 const conversations = await Conversations.open(db, resolve(dataDir, 'conversations.sqlite'));
 const reminders = new Reminders(
   db,
   household,
   dataDir,
   process.env.PUSH_CONTACT || (origin.startsWith('https:') ? origin : undefined),
+  () => calendar.snapshot(),
 );
-const app = createApp(db, household, conversations, reminders, origin);
+const app = createApp(db, household, conversations, reminders, origin, calendar);
+void calendar.sync();
+const calendarTimer = setInterval(() => void calendar.sync(), 60_000);
 if (existsSync(resolve(project, 'dist/index.html'))) {
   app.use(express.static(resolve(project, 'dist')));
   app.get('/{*path}', (_req, res) => res.sendFile(resolve(project, 'dist/index.html')));
@@ -62,6 +78,7 @@ async function close() {
   if (closing) return;
   closing = true;
   clearInterval(timer);
+  clearInterval(calendarTimer);
   server.close();
   await conversations.close();
   db.close();

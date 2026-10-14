@@ -32,7 +32,7 @@ export type Message = {
 };
 export type Presence = { userId: string; threadId: string; typing: boolean };
 export type Notice = { id: string; title: string; body: string; createdAt: string };
-export type Mutation =
+export type HouseholdMutation =
   | {
       kind: 'task.create';
       task: {
@@ -61,6 +61,34 @@ export type Mutation =
   | { kind: 'task.delete'; id: string; revision: number }
   | { kind: 'preferences.update'; revision: number; preferences: Omit<Preferences, 'revision'> }
   | { kind: 'thread.create'; title: string; category: Category };
+export type CalendarFields = {
+  title: string;
+  notes: string;
+  location: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  reminderMinutes: number | null;
+};
+export type CalendarEvent = CalendarFields & {
+  id: string;
+  uid: string;
+  etag: string;
+  recurring: boolean;
+  readOnlyReason: string | null;
+};
+export type CalendarSnapshot = {
+  status: 'not-connected' | 'connected' | 'error';
+  name: string;
+  syncedAt: string | null;
+  error: string | null;
+  events: CalendarEvent[];
+};
+export type CalendarMutation =
+  | { kind: 'calendar.create'; event: CalendarFields }
+  | { kind: 'calendar.update'; id: string; etag: string; event: CalendarFields }
+  | { kind: 'calendar.delete'; id: string; etag: string };
+export type Mutation = HouseholdMutation | CalendarMutation;
 export type Preview = {
   id: string;
   title: string;
@@ -75,5 +103,6 @@ export type Snapshot = {
   threads: Thread[];
   presence: Presence[];
   notices: Notice[];
-  integrations: { calendar: 'not-connected'; ai: 'not-connected' };
+  integrations: { calendar: CalendarSnapshot['status']; ai: 'not-connected' };
+  calendar: CalendarSnapshot;
 };

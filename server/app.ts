@@ -6,6 +6,7 @@ import { DomainError, Household } from './domain.js';
 import type { Conversations } from './conversations.js';
 import { validPushEndpoint, type Reminders } from './reminders.js';
 import type { Person, Snapshot } from '../src/types.js';
+import type { CalendarService } from './calendar.js';
 
 export function createApp(
   db: Database,
@@ -13,6 +14,7 @@ export function createApp(
   conversations: Conversations,
   reminders: Reminders,
   origin: string,
+  calendar?: CalendarService,
 ) {
   const app = express();
   app.disable('x-powered-by');
@@ -59,19 +61,46 @@ export function createApp(
           'SELECT id,title,body,created_at AS createdAt FROM notices WHERE user_id=? ORDER BY created_at DESC LIMIT 20',
         )
         .all(me.id) as unknown as Snapshot['notices'],
-      integrations: { calendar: 'not-connected', ai: 'not-connected' },
+      integrations: {
+        calendar: calendar?.snapshot().status ?? 'not-connected',
+        ai: 'not-connected',
+      },
+      calendar: calendar?.snapshot() ?? {
+        status: 'not-connected',
+        name: 'Household',
+        syncedAt: null,
+        error: null,
+        events: [],
+      },
     };
     res.json(state);
   });
-  app.post('/api/previews', (req, res) =>
-    res.status(201).json(household.preview(res.locals.me.id, req.body)),
-  );
-  app.post('/api/previews/:id/confirm', (req, res) =>
-    res.json(household.confirm(res.locals.me.id, String(req.params.id))),
-  );
+  app.post('/api/previews', async (req, res) => {
+    if (typeof req.body?.kind === 'string' && req.body.kind.startsWith('calendar.')) {
+      if (!calendar) throw new DomainError('The shared calendar is not connected yet.', 503);
+      res.status(201).json(await calendar.preview(res.locals.me.id, req.body));
+    } else res.status(201).json(household.preview(res.locals.me.id, req.body));
+  });
+  app.post('/api/previews/:id/confirm', async (req, res) => {
+    const id = String(req.params.id);
+    const actorId = res.locals.me.id;
+    res.json(
+      calendar?.isCalendarPreview(id, actorId)
+        ? await calendar.confirm(actorId, id)
+        : household.confirm(actorId, id),
+    );
+  });
   app.delete('/api/previews/:id', (req, res) => {
-    household.cancel(res.locals.me.id, String(req.params.id));
+    const id = String(req.params.id);
+    const actorId = res.locals.me.id;
+    if (calendar?.isCalendarPreview(id, actorId)) calendar.cancel(actorId, id);
+    else household.cancel(actorId, id);
     res.json({ ok: true });
+  });
+  app.post('/api/calendar/refresh', async (_req, res) => {
+    if (!calendar) throw new DomainError('The shared calendar is not connected yet.', 503);
+    await calendar.sync();
+    res.json(calendar.snapshot());
   });
   app.get('/api/threads/:id/messages', async (req, res) =>
     res.json(await conversations.messages(String(req.params.id))),
@@ -161,12 +190,9 @@ export function createApp(
         return;
       }
       console.error('Request failed:', error instanceof Error ? error.name : 'UnknownError');
-      res
-        .status(500)
-        .json({
-          error:
-            'Something went wrong. Your change has not been confirmed; refresh before retrying.',
-        });
+      res.status(500).json({
+        error: 'Something went wrong. Your change has not been confirmed; refresh before retrying.',
+      });
     },
   );
   return app;

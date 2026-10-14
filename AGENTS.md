@@ -16,7 +16,10 @@
 
 ## Pull request workflow
 
-- Deliver repository changes through pull requests targeting `main`.
+- Deliver repository changes through pull requests. For stacked work, target
+  the preceding PR's branch; the bottom PR targets `main`.
+- Keep dependent PRs stacked and describe their order. Retarget a child after
+  its parent is merged, without merging either PR on the user's behalf.
 - Use a focused branch with the `codex/` prefix unless the user specifies a name.
 - Commit the relevant changes, push the branch, and open a pull request as part
   of completing the requested work.

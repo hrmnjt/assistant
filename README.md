@@ -14,9 +14,11 @@ unfinished responsibilities easy to capture, see, and follow up on.
 
 The first foundation includes two household accounts, shared tasks with
 confirmation previews, daily/weekly chores with missed-date history, per-person
-summary settings, and topic messages persisted through Pi Durable. Phone push
-delivery is implemented but still needs testing on the installed iPhone app.
-Live AI access and iCloud synchronization are not connected yet.
+summary settings, and topic messages persisted through Pi Durable. The next
+stacked change adds an iCloud agenda and confirmed appointment creation, edits,
+and deletion against the original iCloud records. Phone push delivery is
+implemented but still needs testing on the installed iPhone app. Live AI access
+and a real iCloud account connection are not activated yet.
 
 Use Node.js 24 or newer. All project data, caches, and scripts stay in this repo.
 
@@ -33,6 +35,18 @@ and `npm start`, set `APP_ORIGIN` to its actual address, and route Cloudflare
 Tunnel to the local server on port 3000. Use a stable HTTPS hostname for phones.
 Set `PUSH_CONTACT` to a real `mailto:` address or use the HTTPS app origin for
 phone notifications. With no push setup, reminders remain available in the app.
+
+To connect the calendar, create/share the iCloud `Household` calendar and set
+`ICLOUD_USERNAME`, `ICLOUD_APP_PASSWORD` (an Apple app-specific password), and
+`ICLOUD_CALENDAR_NAME` in the local `.env`. Restart the server. If names are
+ambiguous, set `ICLOUD_CALENDAR_URL` to the exact calendar URL instead. Credentials
+stay on the server; neither spouse needs to enter them for everyday app use.
+The app refreshes the loaded window (14 days back, 90 days ahead) every minute
+and checks the live event version again before a confirmed write. Recurring
+events and invitations are readable; edit those in Apple Calendar initially.
+New appointments default to a configurable 30-minute reminder in the preview;
+existing alarms are preserved unless explicitly changed. Both native calendar
+alerts and the app's matching relative reminders are retained.
 
 Validation commands: `npm test` and `npm run build`. Test data and temporary
 files are kept in `.cache/`; household data and push keys are kept in `data/`.

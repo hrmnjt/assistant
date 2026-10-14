@@ -3,7 +3,7 @@ import { DateTime, IANAZone } from 'luxon';
 import { z } from 'zod';
 import type { Database } from './database.js';
 import type {
-  Mutation,
+  HouseholdMutation as Mutation,
   Person,
   Preferences,
   Preview,

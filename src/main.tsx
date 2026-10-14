@@ -26,7 +26,17 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import type { Category, Message, Mutation, Preferences, Preview, Snapshot, Task } from './types';
+import type {
+  CalendarEvent,
+  Category,
+  Message,
+  Mutation,
+  Preferences,
+  Preview,
+  Snapshot,
+  Task,
+} from './types';
+import { CalendarCard, CalendarView, EventForm } from './Calendar';
 import './styles.css';
 
 async function api<T>(
@@ -126,12 +136,14 @@ function App() {
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [page, setPage] = useState<'today' | 'tasks' | 'chat' | 'settings'>('today');
+  const [page, setPage] = useState<'today' | 'tasks' | 'calendar' | 'chat' | 'settings'>('today');
   const [filter, setFilter] = useState<'mine' | 'household' | 'all'>('mine');
   const [taskForm, setTaskForm] = useState<Task | 'new' | null>(null);
+  const [eventForm, setEventForm] = useState<CalendarEvent | 'new' | null>(null);
   const [threadForm, setThreadForm] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewError, setPreviewError] = useState('');
+  const [previewRetryable, setPreviewRetryable] = useState(true);
   const [threadId, setThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState('');
@@ -165,6 +177,7 @@ function App() {
     setBusy(true);
     setError('');
     setPreviewError('');
+    setPreviewRetryable(true);
     try {
       setPreview(await api<Preview>('/previews', mutation));
     } catch (problem) {
@@ -174,10 +187,18 @@ function App() {
     }
   }, []);
   const cancelPreview = useCallback(() => {
-    if (busy) return;
-    if (preview) void api(`/previews/${preview.id}`, undefined, 'DELETE').catch(() => undefined);
-    setPreview(null);
-    setPreviewError('');
+    if (busy || !preview) return;
+    setBusy(true);
+    void api(`/previews/${preview.id}`, undefined, 'DELETE')
+      .then(() => {
+        setPreview(null);
+        setPreviewError('');
+      })
+      .catch((problem) => {
+        setPreviewError((problem as Error).message);
+        setPreviewRetryable(true);
+      })
+      .finally(() => setBusy(false));
   }, [preview, busy]);
   async function confirm() {
     if (!preview) return;
@@ -188,10 +209,12 @@ function App() {
       if (threadForm) setThreadId(result.targetId);
       setPreview(null);
       setTaskForm(null);
+      setEventForm(null);
       setThreadForm(false);
       await refresh();
     } catch (problem) {
       setPreviewError((problem as Error).message);
+      setPreviewRetryable(((problem as { status?: number }).status ?? 500) >= 500);
     } finally {
       setBusy(false);
     }
@@ -269,6 +292,7 @@ function App() {
   const navigation = [
     { id: 'today', title: 'Today', icon: Home },
     { id: 'tasks', title: 'Tasks', icon: ClipboardList },
+    { id: 'calendar', title: 'Calendar', icon: CalendarDays },
     { id: 'chat', title: 'Conversations', icon: MessageCircle },
     { id: 'settings', title: 'Settings', icon: Settings },
   ] as const;
@@ -508,25 +532,11 @@ function App() {
                   {rows(today)}
                 </section>
                 <aside className="day-aside">
-                  <section className="card calendar-card">
-                    <div className="section-heading">
-                      <h2>
-                        <CalendarDays size={18} /> Shared calendar
-                      </h2>
-                      <span className="soft-badge">iCloud</span>
-                    </div>
-                    <div className="calendar-date">
-                      <strong>{now.day}</strong>
-                      <span>
-                        {now.toFormat('LLLL')}
-                        <small>{now.toFormat('cccc')}</small>
-                      </span>
-                    </div>
-                    <p className="muted">Your calendar connection is next.</p>
-                    <p className="small">
-                      Once connected, appointments and edits will use your shared iCloud calendar.
-                    </p>
-                  </section>
+                  <CalendarCard
+                    calendar={state.calendar}
+                    zone={zone}
+                    open={() => setPage('calendar')}
+                  />
                   <section className="summary-card">
                     <Sunset size={24} />
                     <h3>A moment to reset.</h3>
@@ -768,6 +778,22 @@ function App() {
               </div>
             </>
           )}
+          {page === 'calendar' && (
+            <CalendarView
+              calendar={state.calendar}
+              zone={zone}
+              busy={busy || !connected}
+              onNew={() => setEventForm('new')}
+              onEdit={setEventForm}
+              onRefresh={() => {
+                setBusy(true);
+                void api('/calendar/refresh', {})
+                  .then(() => refresh())
+                  .catch((problem) => setError((problem as Error).message))
+                  .finally(() => setBusy(false));
+              }}
+            />
+          )}
           {page === 'settings' && (
             <>
               <div className="eyebrow">YOUR OWN RHYTHM</div>
@@ -885,6 +911,32 @@ function App() {
           />
         </Modal>
       )}
+      {eventForm && (
+        <Modal
+          inactive={Boolean(preview)}
+          title={eventForm === 'new' ? 'A shared appointment' : 'Shared appointment'}
+          close={() => setEventForm(null)}
+        >
+          <EventForm
+            event={eventForm === 'new' ? undefined : eventForm}
+            zone={zone}
+            busy={busy || !connected || state.calendar.status !== 'connected'}
+            onSubmit={(event) =>
+              void act(
+                eventForm === 'new'
+                  ? { kind: 'calendar.create', event }
+                  : { kind: 'calendar.update', id: eventForm.id, etag: eventForm.etag, event },
+              )
+            }
+            onDelete={
+              eventForm === 'new'
+                ? undefined
+                : () =>
+                    void act({ kind: 'calendar.delete', id: eventForm.id, etag: eventForm.etag })
+            }
+          />
+        </Modal>
+      )}
       {threadForm && (
         <Modal inactive={Boolean(preview)} title="A new topic" close={() => setThreadForm(false)}>
           <form
@@ -946,7 +998,7 @@ function App() {
             <button
               className="primary"
               onClick={() => void confirm()}
-              disabled={busy || !connected || Boolean(previewError)}
+              disabled={busy || !connected || (Boolean(previewError) && !previewRetryable)}
             >
               <Check size={16} />
               {busy ? 'Saving…' : 'Confirm change'}
@@ -959,7 +1011,9 @@ function App() {
 }
 
 function formatDetail(value: string, label: string, zone: string) {
-  return ['Due', 'Next due'].includes(label) && DateTime.fromISO(value).isValid
+  if (['Starts', 'Ends', 'Through'].includes(label) && /^\d{4}-\d{2}-\d{2}$/.test(value))
+    return DateTime.fromISO(value, { zone }).toFormat('ccc, d LLL yyyy');
+  return ['Due', 'Next due', 'Starts', 'Ends'].includes(label) && DateTime.fromISO(value).isValid
     ? DateTime.fromISO(value).setZone(zone).toFormat('ccc, d LLL yyyy · HH:mm ZZZZ')
     : value;
 }
