@@ -1,12 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
-import { createModels } from '@earendil-works/pi-ai/models';
-import { createRegistry, Harness, type ConversationId } from '@earendil-works/pi-durable';
+import { createModels, type Models } from '@earendil-works/pi-ai/models';
+import {
+  createRegistry,
+  Harness,
+  type ConversationId,
+  type ModelRef,
+} from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { z } from 'zod';
 import type { Database } from './database.js';
-import { DomainError } from './domain.js';
-import type { Message } from '../src/types.js';
+import { DomainError, type Household } from './domain.js';
+import type { CalendarService } from './calendar.js';
+import type { ChatStatus, Message, Preview } from '../src/types.js';
+import { assistantTables, boundedModels, householdExtension } from './assistant-tools.js';
 
 const messageSchema = z.object({
   id: z.string().uuid(),
@@ -15,46 +22,80 @@ const messageSchema = z.object({
   text: z.string(),
   createdAt: z.string(),
 });
-
+type Options = {
+  models?: Models;
+  model?: ModelRef;
+  household?: Household;
+  calendar?: CalendarService;
+};
+const ctx = BACKGROUND_CONTEXT;
 export class Conversations {
   private queues = new Map<string, Promise<unknown>>();
+  private watching = new Set<string>();
+  private closing = false;
   private constructor(
     private db: Database,
     private harness: Harness,
-  ) {
+    private options: Options,
+  ) {}
+  get configured() {
+    return Boolean(this.options.model && this.options.household);
+  }
+  static async open(db: Database, path: string, options: Options = {}) {
     db.sql.exec(
       'CREATE TABLE IF NOT EXISTS pi_conversations(thread_id TEXT PRIMARY KEY REFERENCES threads(id), conversation_id TEXT NOT NULL UNIQUE)',
     );
-  }
-  static async open(db: Database, path: string) {
-    // No provider is registered until the supported AI account integration is validated.
-    // Passive transcript entries persist in Pi without making inference requests.
+    assistantTables(db);
+    const registry = createRegistry();
+    if (options.household)
+      registry.install(householdExtension(db, options.household, options.calendar));
     const harness = await Harness.open(
       await openNodeSqliteStorage(path),
-      { models: createModels(), registry: createRegistry() },
-      BACKGROUND_CONTEXT,
+      {
+        models: boundedModels(db, options.models ?? createModels()),
+        registry,
+        settings: {
+          stream: { timeoutMs: 90000, maxRetries: 0 },
+          retry: { enabled: false, maxRetries: 0 },
+          toolExecution: 'sequential',
+        },
+        onReport: () =>
+          console.error(
+            'Assistant background work needs attention; no provider details were logged.',
+          ),
+      },
+      ctx,
     );
-    return new Conversations(db, harness);
+    const instance = new Conversations(db, harness, options);
+    if (instance.configured) {
+      // Re-admit the exact persisted request; Pi's request ID resolves an already admitted input.
+      for (const row of db.sql.prepare("SELECT * FROM assistant_runs WHERE status='running'").all())
+        await instance
+          .admit(row)
+          .catch(() => instance.failed(String(row.thread_id), String(row.request_key)));
+      harness.resume();
+    }
+    return instance;
   }
   private async conversation(threadId: string) {
-    const thread = this.db.sql.prepare('SELECT id FROM threads WHERE id=?').get(threadId);
-    if (!thread) throw new DomainError('Conversation not found.', 404);
+    if (!this.db.sql.prepare('SELECT id FROM threads WHERE id=?').get(threadId))
+      throw new DomainError('Conversation not found.', 404);
     const row = this.db.sql
       .prepare('SELECT conversation_id FROM pi_conversations WHERE thread_id=?')
       .get(threadId);
     if (row) {
       const conversation = await this.harness.conversation(
         Number(row.conversation_id) as ConversationId,
-        BACKGROUND_CONTEXT,
+        ctx,
       );
       if (!conversation) throw new DomainError('Conversation storage is unavailable.', 503);
       return conversation;
     }
     const created = await this.harness.createConversation(
       { ownership: { kind: 'ownerless' } },
-      BACKGROUND_CONTEXT,
+      ctx,
     );
-    this.db.sql.prepare('INSERT INTO pi_conversations VALUES (?, ?)').run(threadId, created.id);
+    this.db.sql.prepare('INSERT INTO pi_conversations VALUES (?,?)').run(threadId, created.id);
     return created;
   }
   private serialize<T>(threadId: string, work: () => Promise<T>): Promise<T> {
@@ -71,21 +112,100 @@ export class Conversations {
   messages(threadId: string) {
     return this.serialize(threadId, async () => {
       const conversation = await this.conversation(threadId);
-      const page = await conversation.entries(
-        { order: 'descending' },
-        200,
-        undefined,
-        BACKGROUND_CONTEXT,
-      );
-      return page.items
-        .filter((entry) => entry.kind === 'household.message')
-        .map((entry) => messageSchema.parse(entry.data))
+      const page = await conversation.entries({ order: 'descending' }, 200, undefined, ctx);
+      const messages = page.items
+        .flatMap((entry): Message[] => {
+          if (entry.kind === 'household.message') return [messageSchema.parse(entry.data)];
+          if (entry.kind !== 'pi.assistant') return [];
+          const message = entry.model?.find((message) => message.role === 'assistant');
+          if (
+            !message ||
+            message.role !== 'assistant' ||
+            message.stopReason === 'error' ||
+            message.stopReason === 'aborted'
+          )
+            return [];
+          const text = message.content
+            .filter((part) => part.type === 'text')
+            .map((part) => part.text)
+            .join('\n');
+          return text
+            ? [
+                {
+                  id: `assistant-${entry.id}`,
+                  threadId,
+                  authorId: 'assistant',
+                  text,
+                  createdAt: new Date(message.timestamp).toISOString(),
+                },
+              ]
+            : [];
+        })
         .reverse();
+      const visible = new Set(messages.map((message) => message.id));
+      for (const row of this.db.sql
+        .prepare('SELECT * FROM assistant_runs WHERE thread_id=? ORDER BY rowid DESC LIMIT 20')
+        .all(threadId)) {
+        if (!visible.has(String(row.message_id)))
+          messages.push({
+            id: String(row.message_id),
+            threadId,
+            authorId: String(row.author_id),
+            text: String(row.text),
+            createdAt: String(row.created_at),
+          });
+      }
+      return messages;
     });
+  }
+  status(threadId: string): ChatStatus {
+    if (!this.db.sql.prepare('SELECT id FROM threads WHERE id=?').get(threadId))
+      throw new DomainError('Conversation not found.', 404);
+    const last = this.db.sql
+      .prepare(
+        'SELECT status,error FROM assistant_runs WHERE thread_id=? ORDER BY rowid DESC LIMIT 1',
+      )
+      .get(threadId);
+    const previews = this.db.sql
+      .prepare(
+        `SELECT a.actor_id,p.view,p.applied_at,p.expires_at FROM assistant_previews a
+      JOIN previews p ON p.id=a.preview_id WHERE a.thread_id=? AND p.applied_at IS NULL AND p.expires_at>? ORDER BY a.created_at`,
+      )
+      .all(threadId, Date.now());
+    return {
+      running: last?.status === 'running' && this.configured,
+      error: last?.error
+        ? String(last.error)
+        : last?.status === 'running' && !this.configured
+          ? 'An unfinished assistant request is paused. Reconnect ChatGPT on the household server to resume it.'
+          : null,
+      previews: previews.map((row) => ({
+        actorId: String(row.actor_id),
+        preview: JSON.parse(String(row.view)) as Preview,
+      })),
+    };
   }
   send(threadId: string, authorId: string, text: string, requestId: string) {
     return this.serialize(threadId, async () => {
       const conversation = await this.conversation(threadId);
+      const requestKey = `${authorId}:${requestId}`;
+      const prior = this.db.sql
+        .prepare('SELECT * FROM assistant_runs WHERE thread_id=? AND request_key=?')
+        .get(threadId, requestKey);
+      if (prior) {
+        if (prior.text !== text)
+          throw new DomainError('This message ID was already used for different text.', 409);
+        return { ok: true };
+      }
+      if (
+        this.db.sql
+          .prepare("SELECT 1 FROM assistant_runs WHERE thread_id=? AND status='running'")
+          .get(threadId)
+      )
+        throw new DomainError(
+          'The assistant is responding in this topic. Try again when it finishes.',
+          409,
+        );
       const message: Message = {
         id: randomUUID(),
         threadId,
@@ -93,21 +213,107 @@ export class Conversations {
         text,
         createdAt: new Date().toISOString(),
       };
-      const submission = await conversation.submit(
-        {
-          type: 'write',
-          requestId: `${authorId}:${requestId}`,
-          entry: { kind: 'household.message', data: message },
-        },
-        BACKGROUND_CONTEXT,
-      );
-      const settled = await submission.wait(BACKGROUND_CONTEXT);
-      if (settled.status !== 'done')
-        throw new DomainError('The message could not be saved. Please retry.', 503);
+      if (!this.configured) {
+        const submission = await conversation.submit(
+          {
+            type: 'write',
+            requestId: requestKey,
+            entry: {
+              kind: 'household.message',
+              data: message,
+              model: [
+                {
+                  role: 'user',
+                  content: `Message from ${authorId}: ${text}`,
+                  timestamp: Date.parse(message.createdAt),
+                },
+              ],
+            },
+          },
+          ctx,
+        );
+        if ((await submission.wait(ctx)).status !== 'done')
+          throw new DomainError('The message could not be saved. Please retry.', 503);
+      } else {
+        this.db.sql
+          .prepare('INSERT INTO assistant_runs VALUES (?,?,?,?,?,?,?,NULL)')
+          .run(threadId, requestKey, authorId, text, message.id, message.createdAt, 'running');
+        // Once persisted, retries/restarts recover this request. Never create a new inference request on HTTP retry.
+        try {
+          await this.admit(
+            this.db.sql
+              .prepare('SELECT * FROM assistant_runs WHERE thread_id=? AND request_key=?')
+              .get(threadId, requestKey)!,
+          );
+        } catch {
+          this.failed(threadId, requestKey);
+          throw new DomainError(
+            'The assistant request could not start. Your message is preserved; refresh before sending another.',
+            503,
+          );
+        }
+      }
       return { ok: true };
     });
   }
-  close() {
-    return this.harness.close(BACKGROUND_CONTEXT);
+  private failed(threadId: string, key: string) {
+    if (this.closing) return;
+    this.db.sql
+      .prepare(
+        "UPDATE assistant_runs SET status='error',error=? WHERE thread_id=? AND request_key=?",
+      )
+      .run(
+        'The assistant could not finish. Review any prepared changes before asking again. If needed, manage ChatGPT usage or reconnect on the server.',
+        threadId,
+        key,
+      );
+  }
+  private async admit(row: Record<string, unknown>) {
+    const threadId = String(row.thread_id),
+      key = String(row.request_key),
+      watchKey = `${threadId}:${key}`;
+    const conversation = await this.conversation(threadId);
+    await conversation.configure({ model: this.options.model, thinkingLevel: 'low' }, ctx);
+    const author = this.options.household!.people().find((person) => person.id === row.author_id);
+    const prefs = this.options.household!.preferences(String(row.author_id));
+    const submission = await conversation.submit(
+      {
+        type: 'input',
+        requestId: key,
+        whenBusy: 'reject',
+        entry: {
+          kind: 'household.message',
+          data: {
+            id: String(row.message_id),
+            threadId,
+            authorId: String(row.author_id),
+            text: String(row.text),
+            createdAt: String(row.created_at),
+          },
+        },
+        content: `Household request ${threadId}\nRequest from ${author?.name ?? 'Household member'} (actor ${row.author_id}), sent ${row.created_at}. Their timezone is ${prefs.timezone}.\n\n${row.text}`,
+      },
+      ctx,
+    );
+    if (this.watching.has(watchKey)) return;
+    this.watching.add(watchKey);
+    void submission
+      .wait(ctx)
+      .then((settled) => {
+        if (this.closing) return;
+        if (settled.status !== 'done') this.failed(threadId, key);
+        else
+          this.db.sql
+            .prepare(
+              "UPDATE assistant_runs SET status='done',error=NULL WHERE thread_id=? AND request_key=?",
+            )
+            .run(threadId, key);
+      })
+      .catch(() => this.failed(threadId, key))
+      .finally(() => this.watching.delete(watchKey));
+  }
+  async close() {
+    this.closing = true;
+    await this.harness.close(ctx);
   }
 }

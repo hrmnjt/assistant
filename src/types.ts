@@ -95,6 +95,11 @@ export type Preview = {
   details: { label: string; before?: string; after: string }[];
   expiresAt: string;
 };
+export type ChatStatus = {
+  running: boolean;
+  error: string | null;
+  previews: { actorId: string; preview: Preview }[];
+};
 export type Snapshot = {
   me: Person;
   people: Person[];
@@ -103,6 +108,6 @@ export type Snapshot = {
   threads: Thread[];
   presence: Presence[];
   notices: Notice[];
-  integrations: { calendar: CalendarSnapshot['status']; ai: 'not-connected' };
+  integrations: { calendar: CalendarSnapshot['status']; ai: 'not-connected' | 'configured' };
   calendar: CalendarSnapshot;
 };

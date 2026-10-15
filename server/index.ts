@@ -10,6 +10,7 @@ import { Reminders } from './reminders.js';
 import { createApp } from './app.js';
 import { ICloudTransport } from './caldav.js';
 import { CalendarService } from './calendar.js';
+import { openAIConnection } from './ai.js';
 
 process.umask(0o077);
 const project = process.cwd();
@@ -45,7 +46,12 @@ const calendar = new CalendarService(
       })
     : undefined,
 );
-const conversations = await Conversations.open(db, resolve(dataDir, 'conversations.sqlite'));
+const connection = await openAIConnection(dataDir);
+const conversations = await Conversations.open(db, resolve(dataDir, 'conversations.sqlite'), {
+  ...connection,
+  household,
+  calendar,
+});
 const reminders = new Reminders(
   db,
   household,

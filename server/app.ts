@@ -63,7 +63,7 @@ export function createApp(
         .all(me.id) as unknown as Snapshot['notices'],
       integrations: {
         calendar: calendar?.snapshot().status ?? 'not-connected',
-        ai: 'not-connected',
+        ai: conversations.configured ? 'configured' : 'not-connected',
       },
       calendar: calendar?.snapshot() ?? {
         status: 'not-connected',
@@ -104,6 +104,9 @@ export function createApp(
   });
   app.get('/api/threads/:id/messages', async (req, res) =>
     res.json(await conversations.messages(String(req.params.id))),
+  );
+  app.get('/api/threads/:id/assistant', (req, res) =>
+    res.json(conversations.status(String(req.params.id))),
   );
   app.post('/api/threads/:id/messages', async (req, res) => {
     const input = z

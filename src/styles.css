@@ -2036,3 +2036,37 @@ main {
     width: 13px;
   }
 }
+
+.chat-proposals {
+  padding: 0 20px 16px;
+  display: grid;
+  gap: 12px;
+}
+.chat-proposal {
+  padding: 16px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+.chat-proposal p {
+  margin: 6px 0 0;
+}
+.chat-error {
+  margin: 0 20px 16px;
+  padding: 12px;
+  border: 1px solid #ddc5b3;
+  border-radius: 12px;
+  font-size: 13px;
+}
+.ai-status {
+  flex-wrap: wrap;
+}
+.ai-status a {
+  margin-left: auto;
+  color: var(--green);
+}

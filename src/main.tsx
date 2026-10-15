@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import type {
   CalendarEvent,
+  ChatStatus,
   Category,
   Message,
   Mutation,
@@ -146,7 +147,13 @@ function App() {
   const [previewRetryable, setPreviewRetryable] = useState(true);
   const [threadId, setThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [chatStatus, setChatStatus] = useState<ChatStatus>({
+    running: false,
+    error: null,
+    previews: [],
+  });
   const [draft, setDraft] = useState('');
+  const [planNotice, setPlanNotice] = useState(false);
   const lastTyping = useRef(0);
   const clientId = useRef(crypto.randomUUID());
   const draftValue = useRef(draft);
@@ -173,6 +180,14 @@ function App() {
     const timer = setInterval(() => void refresh(), 5000);
     return () => clearInterval(timer);
   }, [state?.me.id, refresh]);
+  useEffect(() => {
+    if (state?.integrations.ai !== 'configured') return;
+    try {
+      setPlanNotice(!localStorage.getItem(`chatgpt-plan-notice:${state.me.id}`));
+    } catch {
+      setPlanNotice(true);
+    }
+  }, [state?.me.id, state?.integrations.ai]);
   const act = useCallback(async (mutation: Mutation) => {
     setBusy(true);
     setError('');
@@ -243,12 +258,19 @@ function App() {
     setDraft('');
     messageRequest.current = null;
     setMessages([]);
+    setChatStatus({ running: false, error: null, previews: [] });
     if (page !== 'chat' || !threadId || !state?.me.id) return;
     let active = true;
     const read = async () => {
       try {
-        const value = await api<Message[]>(`/threads/${threadId}/messages`);
-        if (active) setMessages(value);
+        const [value, assistant] = await Promise.all([
+          api<Message[]>(`/threads/${threadId}/messages`),
+          api<ChatStatus>(`/threads/${threadId}/assistant`),
+        ]);
+        if (active) {
+          setMessages(value);
+          setChatStatus(assistant);
+        }
       } catch (problem) {
         if (active) setError((problem as Error).message);
       }
@@ -272,7 +294,9 @@ function App() {
   const zone = state.preferences.timezone;
   const now = DateTime.now().setZone(zone);
   const person = (id: string) =>
-    state.people.find((person) => person.id === id)?.name || 'Household';
+    id === 'assistant'
+      ? 'Our day assistant'
+      : state.people.find((person) => person.id === id)?.name || 'Household';
   const due = (task: Task) => (task.dueAt ? DateTime.fromISO(task.dueAt).setZone(zone) : null);
   const overdue = (task: Task) =>
     task.status === 'open' && task.dueAt !== null && Date.parse(task.dueAt) < Date.now();
@@ -684,8 +708,21 @@ function App() {
                         </div>
                       </div>
                       <div className="ai-status">
-                        <span className="status-dot pending" /> AI connection pending. Messages here
-                        are shared between you two.
+                        <span
+                          className={`status-dot ${state.integrations.ai === 'configured' ? '' : 'pending'}`}
+                        />
+                        {state.integrations.ai === 'configured'
+                          ? 'Using the connected ChatGPT plan'
+                          : 'AI connection pending. Messages are shared between you two.'}
+                        {state.integrations.ai === 'configured' && (
+                          <a
+                            href="https://chatgpt.com/#settings/Usage"
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Manage usage
+                          </a>
+                        )}
                       </div>
                       <div className="messages" aria-live="polite">
                         {messages.length ? (
@@ -716,7 +753,45 @@ function App() {
                           </div>
                         )}
                       </div>
+                      {chatStatus.previews.length > 0 && (
+                        <div className="chat-proposals">
+                          {chatStatus.previews.map(({ actorId, preview: proposal }) => (
+                            <div className="chat-proposal" key={proposal.id}>
+                              <div>
+                                <strong>{proposal.title}</strong>
+                                <p className="small muted">
+                                  Prepared for {person(actorId)}. Nothing changes until confirmed.
+                                </p>
+                              </div>
+                              <button
+                                className="button secondary"
+                                disabled={busy || !connected || actorId !== state.me.id}
+                                onClick={() => {
+                                  setPreviewError('');
+                                  setPreviewRetryable(true);
+                                  setPreview(proposal);
+                                }}
+                              >
+                                Review change
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {chatStatus.error && (
+                        <div role="status" className="chat-error">
+                          {chatStatus.error}{' '}
+                          <a
+                            href="https://chatgpt.com/#settings/Usage"
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Manage usage
+                          </a>
+                        </div>
+                      )}
                       <div className="typing-status">
+                        {chatStatus.running && 'Our day assistant is thinking… '}
                         {state.presence
                           .filter((p) => p.threadId === thread.id && p.userId !== state.me.id)
                           .map((p) => `${person(p.userId)} is ${p.typing ? 'typing…' : 'here'}`)
@@ -726,7 +801,7 @@ function App() {
                         className="composer"
                         onSubmit={async (event) => {
                           event.preventDefault();
-                          if (!draft.trim() || busy) return;
+                          if (!draft.trim() || busy || chatStatus.running) return;
                           setBusy(true);
                           setError('');
                           try {
@@ -739,6 +814,7 @@ function App() {
                             messageRequest.current = null;
                             setDraft('');
                             setMessages(await api<Message[]>(`/threads/${thread.id}/messages`));
+                            setChatStatus(await api<ChatStatus>(`/threads/${thread.id}/assistant`));
                           } catch (problem) {
                             setError((problem as Error).message);
                           } finally {
@@ -748,7 +824,11 @@ function App() {
                       >
                         <textarea
                           aria-label="Message"
-                          placeholder="Leave a thought…"
+                          placeholder={
+                            state.integrations.ai === 'configured'
+                              ? 'Ask about a task or appointment…'
+                              : 'Leave a thought…'
+                          }
                           value={draft}
                           onChange={(event) => {
                             setDraft(event.target.value);
@@ -761,7 +841,7 @@ function App() {
                           className="send-button"
                           type="submit"
                           aria-label="Send message"
-                          disabled={busy || !connected || !draft.trim()}
+                          disabled={busy || !connected || chatStatus.running || !draft.trim()}
                         >
                           <Send size={18} />
                         </button>
@@ -828,6 +908,19 @@ function App() {
                 </p>
               </section>
               <section className="card settings-card">
+                <h2>
+                  <MessageCircle size={19} /> Household assistant
+                </h2>
+                <p className="muted">
+                  {state.integrations.ai === 'configured'
+                    ? 'Eligible AI requests use the server’s connected ChatGPT plan. Messages in this topic and the household tasks, settings, and appointments the assistant reads are sent to OpenAI. Every proposed change still needs your confirmation.'
+                    : 'The owner can connect ChatGPT on the household server. You can keep using shared messages, tasks, and the calendar meanwhile.'}
+                </p>
+                <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">
+                  Manage ChatGPT usage
+                </a>
+              </section>
+              <section className="card settings-card">
                 <h2>Recent reminders</h2>
                 {state.notices.length ? (
                   state.notices.map((notice) => (
@@ -885,6 +978,44 @@ function App() {
           </button>
         ))}
       </nav>
+      {planNotice && (
+        <Modal
+          title="Using the connected ChatGPT plan"
+          close={() => {
+            try {
+              localStorage.setItem(`chatgpt-plan-notice:${state.me.id}`, 'seen');
+            } catch {
+              /* Storage may be disabled. */
+            }
+            setPlanNotice(false);
+          }}
+        >
+          <p>
+            Eligible assistant requests use the ChatGPT plan connected by the household owner and
+            share its usage limits. Messages in this topic and the household information the
+            assistant reads are sent to OpenAI.
+          </p>
+          <p>Task and calendar changes always need a separate confirmation preview.</p>
+          <p>
+            <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">
+              Manage ChatGPT usage
+            </a>
+          </p>
+          <button
+            className="button primary"
+            onClick={() => {
+              try {
+                localStorage.setItem(`chatgpt-plan-notice:${state.me.id}`, 'seen');
+              } catch {
+                /* Storage may be disabled. */
+              }
+              setPlanNotice(false);
+            }}
+          >
+            Got it
+          </button>
+        </Modal>
+      )}
       {taskForm && (
         <Modal
           inactive={Boolean(preview)}

@@ -14,11 +14,11 @@ unfinished responsibilities easy to capture, see, and follow up on.
 
 The first foundation includes two household accounts, shared tasks with
 confirmation previews, daily/weekly chores with missed-date history, per-person
-summary settings, and topic messages persisted through Pi Durable. The next
-stacked change adds an iCloud agenda and confirmed appointment creation, edits,
-and deletion against the original iCloud records. Phone push delivery is
-implemented but still needs testing on the installed iPhone app. Live AI access
-and a real iCloud account connection are not activated yet.
+summary settings, and topic messages persisted through Pi Durable. An iCloud
+agenda supports confirmed appointment creation, edits, and deletion against the
+original records. The assistant can read household information and prepare the
+same confirmation previews from chat. Phone push, a real iCloud round trip, and
+completed ChatGPT inference still require local account/device verification.
 
 Use Node.js 24 or newer. All project data, caches, and scripts stay in this repo.
 
@@ -223,6 +223,31 @@ eligible per-user plan usage, but does not establish that one Plus subscription
 can fund both spouses' interactive use. Keep this eligibility question explicit;
 neither library support nor a Pro upgrade alone resolves it. Keep application
 sign-in distinct from the account authorizing model usage.
+
+Run `npm run ai:connect` in a terminal on the Mac to authorize this installation
+with Sign in with ChatGPT and choose a model from the account's catalog. Restart
+the app afterward. Tokens and the stable host ID stay under the ignored
+`DATA_DIR` with restricted file permissions; the app never reads Codex's tokens
+or falls back to an API key. `npm run ai:disconnect` removes the local credential;
+restart the service and revoke the app in ChatGPT settings if desired. If a
+crash leaves `chatgpt-auth.json.lock`, stop all app/setup processes before
+inspecting and removing that directory; locks are never stolen automatically.
+
+The first connected session explains plan usage; the composer links to ChatGPT
+usage settings. Both household accounts use the server connection. This wires
+the requested experience but does not establish shared-plan eligibility or
+verify this account's access. Each topic admits one assistant request at a time.
+Pi persists the input, model/tool turns, and outstanding work; startup resumes
+pending inputs with the same request ID. Model calls are capped at eight per
+request, with a 90-second timeout per call and no automatic provider retries.
+Assistant tools can read household data or prepare a preview, never confirm it.
+The requesting spouse must use the app dialog; a reply of “yes” cannot apply a
+change. Cancelled and expired proposals cannot apply changes. A failed request
+keeps its message and any surviving proposals visible for review.
+
+Verified against [OpenAI's local-app flow](https://developers.openai.com/siwc/token-sharing-open-source)
+and [model/inference requirements](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
+
 
 ## POC acceptance scenarios to refine
 

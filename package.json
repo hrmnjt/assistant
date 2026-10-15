@@ -14,7 +14,9 @@
     "check": "node scripts/run.mjs check",
     "test": "node scripts/run.mjs test",
     "build": "node scripts/run.mjs build",
-    "start": "node scripts/run.mjs server"
+    "start": "node scripts/run.mjs server",
+    "ai:connect": "node scripts/run.mjs ai-connect",
+    "ai:disconnect": "node scripts/run.mjs ai-disconnect"
   },
   "dependencies": {
     "@earendil-works/chord": "1.2.0",
