@@ -168,7 +168,7 @@ export class Reminders {
                 title: notice.title,
                 body: notice.body,
                 tag: String(notice.id),
-                url: '/',
+                url: '/?updates=1',
               }),
               { TTL: 3600, timeout: 10_000 },
             );

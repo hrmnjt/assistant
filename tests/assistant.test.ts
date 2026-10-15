@@ -51,7 +51,7 @@ function fixture() {
 }
 async function finished(conversations: Conversations, thread: string) {
   for (let i = 0; i < 300; i++) {
-    if (!conversations.status(thread).running) return;
+    if (!conversations.status(thread).running && !conversations.status(thread).queued) return;
     await pause(10);
   }
   throw new Error('Assistant did not settle.');
@@ -124,7 +124,7 @@ test('Pi tools read household state and only prepare actor-bound changes; retrie
   }
 });
 
-test('simultaneous messages cannot change the requesting actor; changed retry payload is rejected', async () => {
+test('messages queue while the assistant works without changing the requesting actor', async () => {
   const f = fixture();
   const conversations = await Conversations.open(f.db, resolve(f.path, 'pi.sqlite'), f.options);
   let release!: () => void;
@@ -142,9 +142,15 @@ test('simultaneous messages cannot change the requesting actor; changed retry pa
   try {
     const request = randomUUID();
     await conversations.send(f.thread, 'owner', 'Hello', request);
-    await assert.rejects(
-      conversations.send(f.thread, 'partner', 'Add milk', randomUUID()),
-      (error: unknown) => error instanceof DomainError && error.status === 409,
+    const partnerRequest = randomUUID();
+    await conversations.send(f.thread, 'partner', 'Add milk', partnerRequest);
+    await conversations.send(f.thread, 'partner', 'Add milk', partnerRequest);
+    assert.equal(conversations.status(f.thread).queued, 1);
+    assert.equal(conversations.status(f.thread).running, true);
+    assert.equal(
+      (await conversations.messages(f.thread)).filter((message) => message.authorId === 'partner')
+        .length,
+      1,
     );
     await assert.rejects(
       conversations.send(f.thread, 'owner', 'Different text', request),
@@ -152,12 +158,65 @@ test('simultaneous messages cannot change the requesting actor; changed retry pa
     );
     release();
     await finished(conversations, f.thread);
-    await conversations.send(f.thread, 'partner', 'Add milk', randomUUID());
-    await finished(conversations, f.thread);
+
     assert.equal(conversations.status(f.thread).previews[0].actorId, 'partner');
     assert.equal(f.household.tasks().length, 0);
   } finally {
     release();
+    await conversations.close();
+    f.close();
+  }
+});
+
+test('ordinary shared-channel messages do not call the model, and the next assistant request can see them', async () => {
+  const f = fixture();
+  const conversations = await Conversations.open(f.db, resolve(f.path, 'pi.sqlite'), f.options);
+  try {
+    await conversations.send(f.thread, 'partner', 'Please bring oat milk', randomUUID(), false);
+    assert.equal(f.faux.state.callCount, 0);
+    f.faux.setResponses([
+      (context) => {
+        assert.ok(JSON.stringify(context.messages).includes('Please bring oat milk'));
+        return fauxAssistantMessage('Oat milk is in the conversation.');
+      },
+    ]);
+    await conversations.send(f.thread, 'owner', 'What did Sam ask for?', randomUUID(), true);
+    await finished(conversations, f.thread);
+    assert.equal(conversations.status(f.thread).error, null);
+    assert.equal(f.faux.state.callCount, 1);
+  } finally {
+    await conversations.close();
+    f.close();
+  }
+});
+
+test('queued requests resume after restart with their own authors and without resubmission', async () => {
+  const f = fixture();
+  const passive = await Conversations.open(f.db, resolve(f.path, 'pi.sqlite'));
+  await passive.close();
+  const request = randomUUID();
+  f.db.sql
+    .prepare('INSERT INTO assistant_runs VALUES (?,?,?,?,?,?,?,NULL)')
+    .run(
+      f.thread,
+      `partner:${request}`,
+      'partner',
+      'Add milk',
+      randomUUID(),
+      new Date().toISOString(),
+      'queued',
+    );
+  f.faux.setResponses([
+    fauxAssistantMessage(fauxToolCall('prepare_change', { change }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Prepared'),
+  ]);
+  const conversations = await Conversations.open(f.db, resolve(f.path, 'pi.sqlite'), f.options);
+  try {
+    await finished(conversations, f.thread);
+    assert.equal(conversations.status(f.thread).previews[0].actorId, 'partner');
+    await conversations.send(f.thread, 'partner', 'Add milk', request);
+    assert.equal(f.faux.state.callCount, 2);
+  } finally {
     await conversations.close();
     f.close();
   }

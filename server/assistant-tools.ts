@@ -1,6 +1,12 @@
 import { Type, type Models } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
-import { defineExtension, defineTool, section } from '@earendil-works/pi-durable';
+import {
+  defineExtension,
+  defineTool,
+  section,
+  hook,
+  GenerationTask,
+} from '@earendil-works/pi-durable';
 import { z } from 'zod';
 import type { Database } from './database.js';
 import { DomainError, Household, mutationSchema } from './domain.js';
@@ -18,7 +24,8 @@ export function assistantTables(db: Database) {
     call_key TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id),
     actor_id TEXT NOT NULL REFERENCES users(id), preview_id TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assistant_model_calls (task_id TEXT PRIMARY KEY,thread_id TEXT NOT NULL,request_key TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS assistant_sessions (session_id TEXT PRIMARY KEY,thread_id TEXT NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS assistant_sessions (session_id TEXT PRIMARY KEY,thread_id TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS assistant_reply_times (task_id TEXT PRIMARY KEY,created_at TEXT NOT NULL);`);
 }
 export function boundedModels(db: Database, models: Models): Models {
   const stream: Models['streamSimple'] = (model, context, options) => {
@@ -177,6 +184,15 @@ export function householdExtension(db: Database, household: Household, calendar?
   return defineExtension({
     name: 'household-assistant',
     tools: [read, prepare],
+    hooks: [
+      hook(GenerationTask, {
+        afterResponse: (_message, api) => {
+          db.sql
+            .prepare('INSERT OR IGNORE INTO assistant_reply_times VALUES (?,?)')
+            .run(api.taskId, new Date().toISOString());
+        },
+      }),
+    ],
     sections: [
       section(
         'household',

@@ -14,7 +14,7 @@ self.addEventListener('push', (event) => {
       tag: notice?.tag || 'household-update',
       icon: '/icon-192.png',
       badge: '/icon-192.png',
-      data: { url: '/' },
+      data: { url: '/?updates=1' },
     }),
   );
 });
@@ -26,8 +26,11 @@ self.addEventListener('notificationclick', (event) => {
       const existing = windows.find(
         (client) => new URL(client.url).origin === self.location.origin,
       );
-      if (existing) return existing.focus();
-      return self.clients.openWindow('/');
+      if (existing) {
+        existing.postMessage({ type: 'open-updates' });
+        return existing.focus();
+      }
+      return self.clients.openWindow('/?updates=1');
     })(),
   );
 });

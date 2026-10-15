@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DateTime, IANAZone } from 'luxon';
 import { z } from 'zod';
+import { notifyPartner } from './changes.js';
 import type { Database } from './database.js';
 import type {
   HouseholdMutation as Mutation,
@@ -93,6 +94,21 @@ export class Household {
       .prepare('SELECT id, username, name FROM users ORDER BY id')
       .all() as unknown as Person[];
   }
+  ensureSpaces() {
+    this.db.transaction(() => {
+      for (const person of this.people())
+        this.ensureSpace(`assistant:${person.id}`, `${person.name}'s assistant`, 'personal');
+      this.ensureSpace('household', 'household', 'household');
+    });
+  }
+  private ensureSpace(key: string, title: string, category: 'personal' | 'household') {
+    if (this.db.sql.prepare('SELECT 1 FROM thread_spaces WHERE key=?').get(key)) return;
+    const id = randomUUID();
+    this.db.sql
+      .prepare('INSERT INTO threads VALUES (?,?,?,?)')
+      .run(id, title, category, this.clock().toISOString());
+    this.db.sql.prepare('INSERT INTO thread_spaces VALUES (?,?)').run(key, id);
+  }
   preferences(userId: string): Preferences {
     const row = this.db.sql.prepare('SELECT * FROM preferences WHERE user_id=?').get(userId);
     if (!row) throw new DomainError('Account not found.', 404);
@@ -125,7 +141,9 @@ export class Household {
   threads(): Thread[] {
     return this.db.sql
       .prepare(
-        'SELECT id, title, category, created_at AS createdAt FROM threads ORDER BY created_at',
+        `SELECT t.id,t.title,t.category,t.created_at AS createdAt,
+        CASE WHEN s.key LIKE 'assistant:%' THEN substr(s.key,11) ELSE NULL END AS assistantFor
+        FROM threads t LEFT JOIN thread_spaces s ON s.thread_id=t.id ORDER BY t.created_at`,
       )
       .all() as unknown as Thread[];
   }
@@ -211,8 +229,8 @@ export class Household {
       detail('Task', this.task(mutation.id).title);
       detail('Result', 'Removes the task and its history for both of you.');
     } else if (mutation.kind === 'thread.create') {
-      view.title = 'Create this conversation?';
-      detail('Topic', mutation.title);
+      view.title = 'Create this channel?';
+      detail('Channel', mutation.title);
       detail('Space', mutation.category);
     } else {
       view.title = 'Save your summary settings?';
@@ -257,6 +275,12 @@ export class Household {
         throw new DomainError('This preview expired. Review a new preview.', 409);
       const mutation: Mutation = JSON.parse(String(row.mutation));
       this.validate(mutation, actorId);
+      const changedTitle =
+        mutation.kind === 'task.create' || mutation.kind === 'task.update'
+          ? mutation.task.title
+          : mutation.kind === 'task.complete' || mutation.kind === 'task.delete'
+            ? this.task(mutation.id).title
+            : null;
       let targetId = 'id' in mutation ? mutation.id : randomUUID();
       if (mutation.kind === 'task.create') {
         const task: Task = {
@@ -334,6 +358,16 @@ export class Household {
       this.db.sql
         .prepare('INSERT INTO audit(actor_id,kind,target_id,created_at) VALUES (?,?,?,?)')
         .run(actorId, mutation.kind, targetId, this.clock().toISOString());
+      if (changedTitle)
+        notifyPartner(
+          this.db,
+          actorId,
+          previewId,
+          mutation.kind,
+          targetId,
+          changedTitle,
+          this.clock().toISOString(),
+        );
       return result;
     });
   }

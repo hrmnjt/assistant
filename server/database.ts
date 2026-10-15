@@ -26,11 +26,17 @@ export class Database {
         applied_at INTEGER, result TEXT);
       CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, title TEXT NOT NULL,
         category TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS thread_spaces (key TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL UNIQUE REFERENCES threads(id));
       CREATE TABLE IF NOT EXISTS presence (user_id TEXT NOT NULL REFERENCES users(id),
         client_id TEXT NOT NULL, thread_id TEXT NOT NULL REFERENCES threads(id), typing INTEGER NOT NULL,
         seen_at INTEGER NOT NULL, PRIMARY KEY (user_id, client_id));
       CREATE TABLE IF NOT EXISTS notices (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
         title TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, delivery TEXT NOT NULL DEFAULT 'pending');
+      CREATE TABLE IF NOT EXISTS notice_targets (notice_id TEXT PRIMARY KEY REFERENCES notices(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,target_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS notice_reads (notice_id TEXT PRIMARY KEY REFERENCES notices(id) ON DELETE CASCADE,
+        read_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id), value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS push_deliveries (id TEXT PRIMARY KEY);

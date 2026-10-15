@@ -313,6 +313,28 @@ test('HTTP authentication, origin checks, and task preview/confirm work together
     assert.equal(state.tasks.length, 1);
     assert.equal(state.tasks[0].title, 'Water the plants');
     assert.equal((await call('/api/tasks', { title: 'Bypass preview' })).status, 404);
+    const noticeId = `change:${preview.id}:partner`;
+    assert.equal((await call('/api/notices/read', { ids: [noticeId] })).status, 200);
+    assert.equal(f.db.sql.prepare('SELECT notice_id FROM notice_reads').all().length, 0);
+    const partnerLogin = await call('/api/login', {
+      username: 'partner',
+      password: 'Test-only-partner-password',
+    });
+    cookie = partnerLogin.headers.get('set-cookie')!.split(';')[0];
+    const partnerState = (await (await call('/api/state')).json()) as {
+      tasks: Task[];
+      notices: { id: string; readAt: string | null; targetId: string }[];
+    };
+    assert.equal(partnerState.tasks[0].id, state.tasks[0].id);
+    assert.equal(partnerState.notices[0].id, noticeId);
+    assert.equal(partnerState.notices[0].readAt, null);
+    assert.equal(partnerState.notices[0].targetId, state.tasks[0].id);
+    assert.equal((await call('/api/notices/read', { ids: [noticeId] })).status, 200);
+    const readState = (await (await call('/api/state')).json()) as {
+      notices: { readAt: string | null }[];
+    };
+    assert.ok(readState.notices[0].readAt);
+
     await call('/api/logout', {});
     assert.equal((await call('/api/state')).status, 401);
   } finally {
@@ -320,5 +342,59 @@ test('HTTP authentication, origin checks, and task preview/confirm work together
     await conversations.close();
     f.db.close();
     rmSync(path, { recursive: true, force: true });
+  }
+});
+
+test('each login has a separate ready assistant while shared channels and tasks converge', () => {
+  const f = fixture();
+  try {
+    f.household.ensureSpaces();
+    const first = f.household.threads();
+    f.household.ensureSpaces();
+    assert.equal(f.household.threads().length, first.length);
+    assert.equal(first.filter((thread) => thread.assistantFor).length, 2);
+    assert.notEqual(
+      first.find((thread) => thread.assistantFor === 'owner')?.id,
+      first.find((thread) => thread.assistantFor === 'partner')?.id,
+    );
+    assert.ok(first.some((thread) => thread.title === 'household' && !thread.assistantFor));
+  } finally {
+    f.db.close();
+  }
+});
+
+test('only confirmed task changes notify the other spouse, with an exact link and no duplicates on retry', () => {
+  const f = fixture();
+  try {
+    const preview = f.household.preview('owner', { kind: 'task.create', task: task() });
+    assert.equal(f.db.sql.prepare('SELECT id FROM notices').all().length, 0);
+    const created = f.household.confirm('owner', preview.id);
+    f.household.confirm('owner', preview.id);
+    const notices = f.db.sql.prepare('SELECT * FROM notices').all();
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].user_id, 'partner');
+    assert.match(String(notices[0].title), /Alex added a task/);
+    assert.equal(
+      f.db.sql.prepare('SELECT target_id FROM notice_targets').get()?.target_id,
+      created.targetId,
+    );
+    const cancelled = f.household.preview('partner', {
+      kind: 'task.delete',
+      id: created.targetId,
+      revision: 1,
+    });
+    f.household.cancel('partner', cancelled.id);
+    assert.equal(f.db.sql.prepare('SELECT id FROM notices').all().length, 1);
+    const done = f.household.preview('partner', {
+      kind: 'task.complete',
+      id: created.targetId,
+      revision: 1,
+    });
+    f.household.confirm('partner', done.id);
+    const back = f.db.sql.prepare("SELECT * FROM notices WHERE user_id='owner'").all();
+    assert.equal(back.length, 1);
+    assert.match(String(back[0].title), /Sam completed a task/);
+  } finally {
+    f.db.close();
   }
 });

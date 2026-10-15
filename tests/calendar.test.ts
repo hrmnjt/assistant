@@ -98,6 +98,11 @@ test('calendar sync reflects external edits and deletion without changing the ev
     await f.service.sync();
     assert.equal(f.service.snapshot().events[0].id, first.id);
     assert.equal(f.service.snapshot().events[0].title, 'Dinner at eight');
+    assert.equal(
+      f.db.sql.prepare('SELECT id FROM notices').all().length,
+      0,
+      'external calendar edits sync silently',
+    );
     f.transport.resources.delete(url);
     await f.service.sync();
     assert.equal(f.service.snapshot().events.length, 0);
@@ -426,5 +431,27 @@ test('appointment reminders are planned once for each person, without removing n
   } finally {
     f.db.close();
     rmSync(path, { recursive: true, force: true });
+  }
+});
+
+test('calendar confirmation notifies the other spouse once, including reconciliation after a lost response', async () => {
+  const f = fixture();
+  try {
+    const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
+    assert.equal(f.db.sql.prepare('SELECT id FROM notices').all().length, 0);
+    f.transport.losePutResponse = true;
+    await assert.rejects(f.service.confirm('owner', preview.id));
+    assert.equal(f.db.sql.prepare('SELECT id FROM notices').all().length, 0);
+    const result = await f.service.confirm('owner', preview.id);
+    await f.service.confirm('owner', preview.id);
+    const rows = f.db.sql.prepare('SELECT * FROM notices').all();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].user_id, 'partner');
+    assert.equal(
+      f.db.sql.prepare('SELECT target_id FROM notice_targets').get()?.target_id,
+      result.targetId,
+    );
+  } finally {
+    f.db.close();
   }
 });

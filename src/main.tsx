@@ -15,6 +15,8 @@ import {
   Leaf,
   LogOut,
   MessageCircle,
+  Menu,
+  Hash,
   MoreHorizontal,
   Plus,
   Repeat2,
@@ -64,11 +66,13 @@ function Modal({
   close,
   children,
   inactive = false,
+  drawer = false,
 }: {
   title: string;
   close: () => void;
   children: React.ReactNode;
   inactive?: boolean;
+  drawer?: boolean;
 }) {
   const dialog = useRef<HTMLDivElement>(null);
   const closeRef = useRef(close);
@@ -108,12 +112,12 @@ function Modal({
   }, [inactive]);
   return (
     <div
-      className="scrim"
+      className={`scrim ${drawer ? 'channels-scrim' : ''}`}
       style={inactive ? { display: 'none' } : undefined}
       aria-hidden={inactive || undefined}
     >
       <div
-        className="dialog"
+        className={`dialog ${drawer ? 'channels-dialog' : ''}`}
         ref={dialog}
         role="dialog"
         aria-modal={!inactive}
@@ -137,11 +141,23 @@ function App() {
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [page, setPage] = useState<'today' | 'tasks' | 'calendar' | 'chat' | 'settings'>('today');
+  const [page, setPage] = useState<'today' | 'tasks' | 'calendar' | 'chat' | 'settings'>('chat');
   const [filter, setFilter] = useState<'mine' | 'household' | 'all'>('mine');
   const [taskForm, setTaskForm] = useState<Task | 'new' | null>(null);
   const [eventForm, setEventForm] = useState<CalendarEvent | 'new' | null>(null);
   const [threadForm, setThreadForm] = useState(false);
+  const [channelsOpen, setChannelsOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [showNotices, setShowNotices] = useState(
+    new URLSearchParams(location.search).has('updates'),
+  );
+  const [askChannelAssistant, setAskChannelAssistant] = useState(false);
+  const [eventDate, setEventDate] = useState<string | undefined>();
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const messagesPanel = useRef<HTMLDivElement>(null);
+  const composerInput = useRef<HTMLTextAreaElement>(null);
+  const followMessages = useRef(true);
+  const activeLogin = useRef<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewError, setPreviewError] = useState('');
   const [previewRetryable, setPreviewRetryable] = useState(true);
@@ -159,6 +175,13 @@ function App() {
   const draftValue = useRef(draft);
   draftValue.current = draft;
   const messageRequest = useRef<string | null>(null);
+  useEffect(() => {
+    const openUpdates = (event: MessageEvent) => {
+      if (event.data?.type === 'open-updates') setShowNotices(true);
+    };
+    navigator.serviceWorker?.addEventListener('message', openUpdates);
+    return () => navigator.serviceWorker?.removeEventListener('message', openUpdates);
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -188,6 +211,53 @@ function App() {
       setPlanNotice(true);
     }
   }, [state?.me.id, state?.integrations.ai]);
+  useEffect(() => {
+    if (!state) {
+      activeLogin.current = null;
+      return;
+    }
+    if (activeLogin.current !== state.me.id) {
+      activeLogin.current = state.me.id;
+      setPage('chat');
+      setThreadId(state.threads.find((thread) => thread.assistantFor === state.me.id)?.id ?? null);
+      setChannelsOpen(false);
+      setActivityOpen(false);
+    }
+    setThreadId((current) =>
+      state.threads.some(
+        (thread) =>
+          thread.id === current && (!thread.assistantFor || thread.assistantFor === state.me.id),
+      )
+        ? current
+        : (state.threads.find((thread) => thread.assistantFor === state.me.id)?.id ?? null),
+    );
+  }, [state?.me.id, state?.threads]);
+  useEffect(() => {
+    const resize = () => {
+      const height = window.visualViewport?.height ?? window.innerHeight;
+      document.documentElement.style.setProperty('--app-height', `${height}px`);
+      setKeyboardOpen(window.innerHeight - height > 150);
+    };
+    resize();
+    window.visualViewport?.addEventListener('resize', resize);
+    window.addEventListener('resize', resize);
+    return () => {
+      window.visualViewport?.removeEventListener('resize', resize);
+      window.removeEventListener('resize', resize);
+    };
+  }, []);
+  useEffect(() => {
+    if (!state || !showNotices) return;
+    const ids = state.notices.filter((notice) => !notice.readAt).map((notice) => notice.id);
+    if (ids.length)
+      void api('/notices/read', { ids })
+        .then(() => refresh())
+        .catch(() => undefined);
+  }, [showNotices, state?.notices, refresh]);
+  useEffect(() => {
+    if (followMessages.current && messagesPanel.current)
+      messagesPanel.current.scrollTop = messagesPanel.current.scrollHeight;
+  }, [messages, chatStatus.previews, threadId]);
   const act = useCallback(async (mutation: Mutation) => {
     setBusy(true);
     setError('');
@@ -256,6 +326,8 @@ function App() {
   }, [page, threadId, state?.me.id]);
   useEffect(() => {
     setDraft('');
+    setAskChannelAssistant(false);
+    followMessages.current = true;
     messageRequest.current = null;
     setMessages([]);
     setChatStatus({ running: false, error: null, previews: [] });
@@ -295,7 +367,7 @@ function App() {
   const now = DateTime.now().setZone(zone);
   const person = (id: string) =>
     id === 'assistant'
-      ? 'Our day assistant'
+      ? 'Our day'
       : state.people.find((person) => person.id === id)?.name || 'Household';
   const due = (task: Task) => (task.dueAt ? DateTime.fromISO(task.dueAt).setZone(zone) : null);
   const overdue = (task: Task) =>
@@ -314,12 +386,132 @@ function App() {
   const today = selected.filter((task) => overdue(task) || due(task)?.hasSame(now, 'day'));
   const thread = state.threads.find((thread) => thread.id === threadId);
   const navigation = [
+    { id: 'chat', title: 'Chat', icon: MessageCircle },
     { id: 'today', title: 'Today', icon: Home },
     { id: 'tasks', title: 'Tasks', icon: ClipboardList },
     { id: 'calendar', title: 'Calendar', icon: CalendarDays },
-    { id: 'chat', title: 'Conversations', icon: MessageCircle },
     { id: 'settings', title: 'Settings', icon: Settings },
   ] as const;
+  const isAssistant = Boolean(thread?.assistantFor);
+  const chatTitle = isAssistant ? 'Our day' : thread ? `# ${thread.title}` : 'Our day';
+  const chatActivity = chatStatus.running
+    ? `Thinking${chatStatus.queued ? ` · ${chatStatus.queued} queued` : '…'}`
+    : chatStatus.queued
+      ? `${chatStatus.queued} messages waiting`
+      : state.integrations.ai === 'configured'
+        ? 'Here to help'
+        : 'Assistant setup pending';
+  const chooseThread = (id: string) => {
+    setThreadId(id);
+    setChannelsOpen(false);
+  };
+  const channelNavigation = (
+    <>
+      <p className="channel-section-label">YOUR ASSISTANT</p>
+      {state.threads
+        .filter((item) => item.assistantFor === state.me.id)
+        .map((item) => (
+          <button
+            key={item.id}
+            className={`thread-item ${threadId === item.id ? 'active' : ''}`}
+            onClick={() => chooseThread(item.id)}
+            disabled={busy}
+          >
+            <span className="assistant-mark">
+              <Leaf size={21} />
+            </span>
+            <div>
+              <strong>Our day</strong>
+              <small>Your everyday assistant</small>
+            </div>
+          </button>
+        ))}
+      <div className="channel-section-heading">
+        <p className="channel-section-label">SHARED CHANNELS</p>
+        <button
+          className="icon-button"
+          aria-label="Add shared channel"
+          onClick={() => {
+            setChannelsOpen(false);
+            setThreadForm(true);
+          }}
+        >
+          <Plus size={17} />
+        </button>
+      </div>
+      {state.threads
+        .filter((item) => !item.assistantFor)
+        .map((item) => {
+          const active = state.presence.filter(
+            (p) => p.threadId === item.id && p.userId !== state.me.id,
+          );
+          return (
+            <button
+              key={item.id}
+              className={`thread-item ${threadId === item.id ? 'active' : ''}`}
+              disabled={busy}
+              onClick={() => chooseThread(item.id)}
+            >
+              <Hash size={18} />
+              <div>
+                <strong>{item.title}</strong>
+                <small>
+                  {active.length
+                    ? active
+                        .map((p) => `${person(p.userId)} ${p.typing ? 'is typing…' : 'is here'}`)
+                        .join(' · ')
+                    : 'Both of you + Our day'}
+                </small>
+              </div>
+              {active.length > 0 && <span className="status-dot" aria-label="Partner active" />}
+            </button>
+          );
+        })}
+      <p className="channel-hint">
+        Your chats stay separate. Tasks and appointments bring everything together.
+      </p>
+    </>
+  );
+  const notifications = (
+    <>
+      {state.notices.length ? (
+        state.notices.map((notice) => (
+          <article className="notice" key={notice.id}>
+            <strong>{notice.title}</strong>
+            <p>{notice.body}</p>
+            <time>{DateTime.fromISO(notice.createdAt).setZone(zone).toFormat('d LLL, HH:mm')}</time>
+            {notice.targetKind && (
+              <button
+                className="text-button notice-link"
+                onClick={() => {
+                  setShowNotices(false);
+                  if (notice.targetKind === 'task') {
+                    setPage('tasks');
+                    const task = state.tasks.find((task) => task.id === notice.targetId);
+                    if (task) setTaskForm(task);
+                  } else {
+                    setPage('calendar');
+                    const event = state.calendar.events.find(
+                      (event) => event.id === notice.targetId,
+                    );
+                    if (event) setEventForm(event);
+                  }
+                }}
+              >
+                View {notice.targetKind === 'task' ? 'task' : 'calendar'} <ArrowRight size={14} />
+              </button>
+            )}
+          </article>
+        ))
+      ) : (
+        <div className="day-empty">
+          <Bell size={28} />
+          <h3>You’re all caught up</h3>
+          <p>Your partner’s changes, reminders, and summaries will appear here.</p>
+        </div>
+      )}
+    </>
+  );
   const filters = (
     <div className="segments" aria-label="Task view">
       {(['mine', 'household', 'all'] as const).map((value) => (
@@ -405,7 +597,9 @@ function App() {
     );
 
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell ${page === 'chat' ? 'chat-active' : ''} ${keyboardOpen ? 'keyboard-open' : ''}`}
+    >
       <aside className="sidebar">
         <a
           className="brand"
@@ -464,10 +658,11 @@ function App() {
             <span className="top-date">{now.toFormat('cccc, d LLL')}</span>
             <button
               className="icon-button"
-              aria-label="View daily summaries"
-              onClick={() => setPage('settings')}
+              aria-label="Open updates"
+              onClick={() => setShowNotices(true)}
             >
               <Bell size={19} />
+              {state.notices.some((notice) => !notice.readAt) && <span className="unread-dot" />}
             </button>
             <span className={`avatar ${state.me.id}`}>{state.me.name[0]}</span>
           </div>
@@ -630,82 +825,43 @@ function App() {
           )}
           {page === 'chat' && (
             <>
-              <div className="page-heading">
-                <div>
-                  <div className="eyebrow">ROOM FOR EVERY TOPIC</div>
-                  <h1>Conversations.</h1>
-                  <p>Shared conversations, with a little space between them.</p>
-                </div>
-                <button
-                  className="primary"
-                  onClick={() => setThreadForm(true)}
-                  disabled={!connected}
-                >
-                  <Plus size={17} /> New topic
-                </button>
-              </div>
-              <div className={`conversation-layout ${thread ? 'thread-open' : ''}`}>
-                <section className="card thread-list">
-                  {state.threads.length ? (
-                    state.threads.map((topic) => {
-                      const active = state.presence.filter(
-                        (p) => p.threadId === topic.id && p.userId !== state.me.id,
-                      );
-                      return (
-                        <button
-                          className={`thread-item ${threadId === topic.id ? 'active' : ''}`}
-                          key={topic.id}
-                          onClick={() => setThreadId(topic.id)}
-                        >
-                          <MessageCircle size={19} />
-                          <div>
-                            <strong>{topic.title}</strong>
-                            <small>{topic.category}</small>
-                          </div>
-                          {active.length > 0 && (
-                            <span
-                              className="presence-indicator"
-                              title={active
-                                .map(
-                                  (p) => `${person(p.userId)} is ${p.typing ? 'typing' : 'here'}`,
-                                )
-                                .join(', ')}
-                              aria-label={active
-                                .map(
-                                  (p) => `${person(p.userId)} is ${p.typing ? 'typing' : 'here'}`,
-                                )
-                                .join(', ')}
-                            >
-                              <span className="status-dot" />
-                              <Users size={15} />
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })
-                  ) : (
-                    <Empty
-                      icon={<MessageCircle size={25} />}
-                      title="Start a topic"
-                      text="Give household plans or personal projects a place to live."
-                    />
-                  )}
-                </section>
+              <div className="conversation-layout">
+                <aside className="card channel-rail">{channelNavigation}</aside>
                 <section className="card conversation-content">
                   {thread ? (
                     <>
                       <div className="thread-heading">
                         <button
-                          className="icon-button mobile-back"
-                          onClick={() => setThreadId(null)}
-                          aria-label="Back to topics"
+                          className="icon-button channels-toggle"
+                          onClick={() => setChannelsOpen(true)}
+                          aria-label="Open channels"
                         >
-                          <ArrowLeft size={19} />
+                          <Menu size={22} />
                         </button>
-                        <div>
-                          <h2>{thread.title}</h2>
-                          <span className="small muted">Shared with your household</span>
+                        <button
+                          className="assistant-avatar"
+                          onClick={() => setActivityOpen(true)}
+                          aria-label="Assistant activity"
+                        >
+                          <Leaf size={24} />
+                        </button>
+                        <div className="chat-heading-copy">
+                          <h1>{chatTitle}</h1>
+                          <button className="chat-activity" onClick={() => setActivityOpen(true)}>
+                            {isAssistant ? chatActivity : 'You, your partner & Our day'}
+                            {!isAssistant && <Users size={12} />}
+                          </button>
                         </div>
+                        <button
+                          className="icon-button chat-updates"
+                          aria-label="Open updates"
+                          onClick={() => setShowNotices(true)}
+                        >
+                          <Bell size={20} />
+                          {state.notices.some((notice) => !notice.readAt) && (
+                            <span className="unread-dot" />
+                          )}
+                        </button>
                       </div>
                       <div className="ai-status">
                         <span
@@ -713,7 +869,7 @@ function App() {
                         />
                         {state.integrations.ai === 'configured'
                           ? 'Using the connected ChatGPT plan'
-                          : 'AI connection pending. Messages are shared between you two.'}
+                          : 'ChatGPT isn’t connected yet. Your messages will be saved.'}
                         {state.integrations.ai === 'configured' && (
                           <a
                             href="https://chatgpt.com/#settings/Usage"
@@ -724,60 +880,107 @@ function App() {
                           </a>
                         )}
                       </div>
-                      <div className="messages" aria-live="polite">
+                      <div
+                        className="messages"
+                        ref={messagesPanel}
+                        aria-live="polite"
+                        onScroll={() => {
+                          const element = messagesPanel.current;
+                          if (element)
+                            followMessages.current =
+                              element.scrollHeight - element.scrollTop - element.clientHeight < 100;
+                        }}
+                      >
                         {messages.length ? (
-                          messages.map((message) => (
-                            <article
-                              className={`message ${message.authorId === state.me.id ? 'mine' : ''}`}
-                              key={message.id}
-                            >
-                              <div>
-                                <strong>{person(message.authorId)}</strong>
-                                <time>
+                          messages.map((message, index) => (
+                            <React.Fragment key={message.id}>
+                              {(index === 0 ||
+                                message.createdAt.slice(0, 10) !==
+                                  messages[index - 1].createdAt.slice(0, 10)) && (
+                                <div className="chat-day">
                                   {DateTime.fromISO(message.createdAt)
                                     .setZone(zone)
-                                    .toFormat('HH:mm')}
-                                </time>
-                              </div>
-                              <p>{message.text}</p>
-                            </article>
+                                    .hasSame(now, 'day')
+                                    ? 'Today'
+                                    : DateTime.fromISO(message.createdAt)
+                                        .setZone(zone)
+                                        .toFormat('ccc, d LLL')}
+                                </div>
+                              )}
+                              <article
+                                className={`message ${message.authorId === state.me.id ? 'mine' : ''} ${message.authorId === 'assistant' ? 'from-assistant' : ''}`}
+                              >
+                                <div>
+                                  <strong>{person(message.authorId)}</strong>
+                                  <time>
+                                    {DateTime.fromISO(message.createdAt)
+                                      .setZone(zone)
+                                      .toFormat('HH:mm')}
+                                  </time>
+                                </div>
+                                <p>{message.text}</p>
+                              </article>
+                            </React.Fragment>
                           ))
                         ) : (
-                          <div className="quiet-message">
-                            <Leaf size={26} />
+                          <div className="chat-welcome">
+                            <span className="welcome-mark">
+                              <Leaf size={36} />
+                            </span>
+                            <h2>{isAssistant ? `Hey, ${state.me.name}.` : `# ${thread.title}`}</h2>
                             <p>
-                              A fresh conversation.
-                              <br />
-                              What’s on your mind?
+                              {isAssistant
+                                ? 'A little less to remember. What’s on your mind?'
+                                : 'A space for the two of you. Mention @assistant when you want a hand.'}
                             </p>
+                            {isAssistant && (
+                              <div className="chat-starters">
+                                {[
+                                  'What’s on today?',
+                                  'What needs following up?',
+                                  'Help me add a household task',
+                                ].map((prompt) => (
+                                  <button
+                                    key={prompt}
+                                    onClick={() => {
+                                      setDraft(prompt);
+                                      composerInput.current?.focus();
+                                    }}
+                                  >
+                                    {prompt}
+                                    <ArrowRight size={15} />
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {chatStatus.previews.length > 0 && (
+                          <div className="chat-proposals">
+                            {chatStatus.previews.map(({ actorId, preview: proposal }) => (
+                              <div className="chat-proposal" key={proposal.id}>
+                                <div>
+                                  <strong>{proposal.title}</strong>
+                                  <p className="small muted">
+                                    Prepared for {person(actorId)}. Nothing changes until confirmed.
+                                  </p>
+                                </div>
+                                <button
+                                  className="button secondary"
+                                  disabled={busy || !connected || actorId !== state.me.id}
+                                  onClick={() => {
+                                    setPreviewError('');
+                                    setPreviewRetryable(true);
+                                    setPreview(proposal);
+                                  }}
+                                >
+                                  Review change
+                                </button>
+                              </div>
+                            ))}
                           </div>
                         )}
                       </div>
-                      {chatStatus.previews.length > 0 && (
-                        <div className="chat-proposals">
-                          {chatStatus.previews.map(({ actorId, preview: proposal }) => (
-                            <div className="chat-proposal" key={proposal.id}>
-                              <div>
-                                <strong>{proposal.title}</strong>
-                                <p className="small muted">
-                                  Prepared for {person(actorId)}. Nothing changes until confirmed.
-                                </p>
-                              </div>
-                              <button
-                                className="button secondary"
-                                disabled={busy || !connected || actorId !== state.me.id}
-                                onClick={() => {
-                                  setPreviewError('');
-                                  setPreviewRetryable(true);
-                                  setPreview(proposal);
-                                }}
-                              >
-                                Review change
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
                       {chatStatus.error && (
                         <div role="status" className="chat-error">
                           {chatStatus.error}{' '}
@@ -801,7 +1004,7 @@ function App() {
                         className="composer"
                         onSubmit={async (event) => {
                           event.preventDefault();
-                          if (!draft.trim() || busy || chatStatus.running) return;
+                          if (!draft.trim() || busy) return;
                           setBusy(true);
                           setError('');
                           try {
@@ -810,9 +1013,15 @@ function App() {
                             await api(`/threads/${thread.id}/messages`, {
                               text: draft.trim(),
                               requestId,
+                              askAssistant:
+                                isAssistant ||
+                                askChannelAssistant ||
+                                /^@assistant\b/i.test(draft.trim()),
                             });
                             messageRequest.current = null;
                             setDraft('');
+                            if (composerInput.current) composerInput.current.style.height = 'auto';
+                            followMessages.current = true;
                             setMessages(await api<Message[]>(`/threads/${thread.id}/messages`));
                             setChatStatus(await api<ChatStatus>(`/threads/${thread.id}/assistant`));
                           } catch (problem) {
@@ -822,36 +1031,49 @@ function App() {
                           }
                         }}
                       >
-                        <textarea
-                          aria-label="Message"
-                          placeholder={
-                            state.integrations.ai === 'configured'
-                              ? 'Ask about a task or appointment…'
-                              : 'Leave a thought…'
-                          }
-                          value={draft}
-                          onChange={(event) => {
-                            setDraft(event.target.value);
-                            lastTyping.current = Date.now();
-                            messageRequest.current = null;
-                          }}
-                          rows={2}
-                        />
-                        <button
-                          className="send-button"
-                          type="submit"
-                          aria-label="Send message"
-                          disabled={busy || !connected || chatStatus.running || !draft.trim()}
-                        >
-                          <Send size={18} />
-                        </button>
+                        {!isAssistant && (
+                          <label className="ask-assistant-toggle">
+                            <input
+                              type="checkbox"
+                              checked={askChannelAssistant}
+                              onChange={(event) => setAskChannelAssistant(event.target.checked)}
+                            />
+                            <span>Ask Our day</span>
+                          </label>
+                        )}
+                        <div className="composer-input-row">
+                          <textarea
+                            ref={composerInput}
+                            aria-label="Message"
+                            placeholder={
+                              isAssistant ? 'Message Our day…' : `Message #${thread.title}…`
+                            }
+                            value={draft}
+                            onChange={(event) => {
+                              setDraft(event.target.value);
+                              event.target.style.height = 'auto';
+                              event.target.style.height = `${Math.min(140, event.target.scrollHeight)}px`;
+                              lastTyping.current = Date.now();
+                              messageRequest.current = null;
+                            }}
+                            rows={1}
+                          />
+                          <button
+                            className="send-button"
+                            type="submit"
+                            aria-label="Send message"
+                            disabled={busy || !connected || !draft.trim()}
+                          >
+                            <Send size={18} />
+                          </button>
+                        </div>
                       </form>
                     </>
                   ) : (
                     <Empty
                       icon={<MessageCircle size={30} />}
-                      title="A topic for each part of life"
-                      text="Choose a conversation, or start a new one together."
+                      title="Opening your assistant…"
+                      text="Your conversation is being prepared."
                     />
                   )}
                 </section>
@@ -863,7 +1085,10 @@ function App() {
               calendar={state.calendar}
               zone={zone}
               busy={busy || !connected}
-              onNew={() => setEventForm('new')}
+              onNew={(day) => {
+                setEventDate(day);
+                setEventForm('new');
+              }}
               onEdit={setEventForm}
               onRefresh={() => {
                 setBusy(true);
@@ -903,8 +1128,8 @@ function App() {
                 </p>
                 <PushSettings onError={setError} />
                 <p className="small muted">
-                  Appointment alerts will come from both Apple Calendar and this app after calendar
-                  integration.
+                  Your partner’s confirmed changes appear in Updates and arrive on this device when
+                  notifications are enabled. Appointment alerts also come from Apple Calendar.
                 </p>
               </section>
               <section className="card settings-card">
@@ -919,22 +1144,6 @@ function App() {
                 <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">
                   Manage ChatGPT usage
                 </a>
-              </section>
-              <section className="card settings-card">
-                <h2>Recent reminders</h2>
-                {state.notices.length ? (
-                  state.notices.map((notice) => (
-                    <div className="notice" key={notice.id}>
-                      <strong>{notice.title}</strong>
-                      <p>{notice.body}</p>
-                      <time>
-                        {DateTime.fromISO(notice.createdAt).setZone(zone).toFormat('d LLL, HH:mm')}
-                      </time>
-                    </div>
-                  ))
-                ) : (
-                  <p className="muted">Your summaries and deadline reminders will appear here.</p>
-                )}
               </section>
               <button
                 className="text-button logout"
@@ -962,14 +1171,14 @@ function App() {
             </>
           )}
         </div>
-        <footer className="page-footer">
+        <footer className={`page-footer ${page === 'chat' ? 'chat-footer' : ''}`}>
           <Leaf size={13} /> A little less to remember. A little more together.
         </footer>
       </main>
       <nav className="mobile-nav" aria-label="Main navigation">
         {navigation.map((item) => (
           <button
-            className={page === item.id ? 'active' : ''}
+            className={`${page === item.id ? 'active' : ''} nav-${item.id}`}
             key={item.id}
             onClick={() => setPage(item.id)}
           >
@@ -978,6 +1187,49 @@ function App() {
           </button>
         ))}
       </nav>
+      {channelsOpen && (
+        <Modal title="Your spaces" drawer close={() => setChannelsOpen(false)}>
+          {channelNavigation}
+        </Modal>
+      )}
+      {showNotices && (
+        <Modal title="Updates" close={() => setShowNotices(false)}>
+          <p className="small muted inbox-intro">
+            Changes from your partner, plus your reminders and summaries.
+          </p>
+          {notifications}
+        </Modal>
+      )}
+      {activityOpen && (
+        <Modal title="Our day activity" close={() => setActivityOpen(false)}>
+          <p>{chatActivity}</p>
+          <p className="small muted">
+            {chatStatus.running
+              ? 'You can keep messaging. New requests wait their turn in this chat.'
+              : 'Ask about your day, update a task, or plan an appointment.'}
+          </p>
+          <p>{chatStatus.previews.length} changes waiting for your household to review.</p>
+          {chatStatus.error && <p className="field-error">{chatStatus.error}</p>}
+          <button
+            className="text-button"
+            onClick={() => {
+              setActivityOpen(false);
+              setPage('today');
+            }}
+          >
+            Today’s overview <ArrowRight size={15} />
+          </button>
+          <button
+            className="text-button"
+            onClick={() => {
+              setActivityOpen(false);
+              setPage('settings');
+            }}
+          >
+            Assistant settings <ArrowRight size={15} />
+          </button>
+        </Modal>
+      )}
       {planNotice && (
         <Modal
           title="Using the connected ChatGPT plan"
@@ -1050,6 +1302,7 @@ function App() {
         >
           <EventForm
             event={eventForm === 'new' ? undefined : eventForm}
+            defaultDate={eventForm === 'new' ? eventDate : undefined}
             zone={zone}
             busy={busy || !connected || state.calendar.status !== 'connected'}
             onSubmit={(event) =>
@@ -1069,7 +1322,11 @@ function App() {
         </Modal>
       )}
       {threadForm && (
-        <Modal inactive={Boolean(preview)} title="A new topic" close={() => setThreadForm(false)}>
+        <Modal
+          inactive={Boolean(preview)}
+          title="A shared channel"
+          close={() => setThreadForm(false)}
+        >
           <form
             className="form"
             onSubmit={(event) => {
@@ -1083,7 +1340,7 @@ function App() {
             }}
           >
             <label>
-              What’s the topic?
+              Channel name
               <input name="title" required maxLength={120} placeholder="Weekend plans" />
             </label>
             <label>
@@ -1096,7 +1353,7 @@ function App() {
             </label>
             <p className="small muted">Both of you can see and join this conversation.</p>
             <button className="primary" disabled={busy || !connected}>
-              Review topic <ArrowRight size={15} />
+              Review channel <ArrowRight size={15} />
             </button>
           </form>
         </Modal>

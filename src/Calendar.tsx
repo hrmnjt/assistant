@@ -1,7 +1,18 @@
 import { useState } from 'react';
 import { DateTime } from 'luxon';
-import { ArrowRight, CalendarDays, MapPin, Plus, RefreshCw, Repeat2, Trash2 } from 'lucide-react';
+import {
+  ArrowRight,
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  MapPin,
+  Plus,
+  RefreshCw,
+  Repeat2,
+  Trash2,
+} from 'lucide-react';
 import type { CalendarEvent, CalendarFields, CalendarSnapshot } from './types';
+import { monthDays, eventsForDay } from './calendar-days';
 
 export function CalendarCard({
   calendar,
@@ -70,129 +81,198 @@ export function CalendarView({
   calendar: CalendarSnapshot;
   zone: string;
   busy: boolean;
-  onNew: () => void;
+  onNew: (day: string) => void;
   onEdit: (event: CalendarEvent) => void;
   onRefresh: () => void;
 }) {
-  const now = DateTime.now().setZone(zone).startOf('day');
-  const events = calendar.events.filter((event) => DateTime.fromISO(event.end, { zone }) >= now);
-  const days = new Map<string, CalendarEvent[]>();
-  for (const event of events) {
-    const day = DateTime.fromISO(event.start, { zone }).setZone(zone).toISODate()!;
-    days.set(day, [...(days.get(day) || []), event]);
-  }
+  const today = DateTime.now().setZone(zone).toISODate()!;
+  const [month, setMonth] = useState(today.slice(0, 7));
+  const [selected, setSelected] = useState(today);
+  const monthDate = DateTime.fromISO(`${month}-01`, { zone });
+  const previous = monthDate.minus({ months: 1 }).toFormat('yyyy-MM');
+  const next = monthDate.plus({ months: 1 }).toFormat('yyyy-MM');
+  const first = calendar.months?.first;
+  const last = calendar.months?.last;
+  const loaded = !first || !last || (selected.slice(0, 7) >= first && selected.slice(0, 7) <= last);
+  const appointments = eventsForDay(calendar.events, selected, zone);
+  const move = (value: string) => {
+    setMonth(value);
+    setSelected(`${value}-01`);
+  };
   return (
     <>
-      <div className="eyebrow">PLANS, TOGETHER</div>
-      <div className="page-heading">
+      <div className="page-heading calendar-page-heading">
         <div>
-          <h1>Your shared calendar.</h1>
-          <p>The same appointments in iCloud and here.</p>
+          <div className="eyebrow">PLANS, TOGETHER</div>
+          <h1>Calendar</h1>
         </div>
         <button
           className="primary"
           disabled={busy || calendar.status !== 'connected'}
-          onClick={onNew}
+          onClick={() => onNew(selected)}
         >
-          <Plus size={17} /> Add appointment
+          <Plus size={17} /> Add
         </button>
       </div>
       <div className="calendar-status">
         <span className={`status-dot ${calendar.status !== 'connected' ? 'pending' : ''}`} />
         <span>
-          {calendar.name}
-          {calendar.syncedAt
-            ? ` · Updated ${DateTime.fromISO(calendar.syncedAt).setZone(zone).toFormat('HH:mm')}`
-            : ' · Not connected'}
+          {calendar.name} ·{' '}
+          {calendar.status === 'not-connected'
+            ? 'Not connected'
+            : calendar.status === 'error'
+              ? 'Needs refresh'
+              : 'Synced'}
         </span>
         <button
           className="text-button"
           onClick={onRefresh}
           disabled={busy || calendar.status === 'not-connected'}
+          aria-label="Refresh calendar"
         >
-          <RefreshCw size={13} /> Refresh
+          <RefreshCw size={15} />
         </button>
       </div>
-      {calendar.status === 'not-connected' ? (
-        <section className="card calendar-empty">
-          <CalendarDays size={32} />
-          <h2>A shared place for your plans.</h2>
-          <p>
-            The owner needs to connect your shared iCloud calendar. Once connected, either of you
-            can add or update appointments here, with a confirmation before every change.
-          </p>
-        </section>
-      ) : (
-        <>
-          {calendar.error && (
-            <p className="calendar-warning" role="status">
-              {calendar.error} Previously loaded appointments are shown below.
-            </p>
-          )}
-          <p className="small muted agenda-range">Upcoming appointments · next 90 days · {zone}</p>
-          {events.length ? (
-            <div className="agenda">
-              {[...days.entries()]
-                .sort(([a], [b]) => a.localeCompare(b))
-                .map(([day, appointments]) => {
-                  const date = DateTime.fromISO(day, { zone });
-                  return (
-                    <section className="agenda-day" key={day}>
-                      <div className="agenda-date">
-                        <strong>{date.day}</strong>
-                        <span>
-                          {date.toFormat('ccc')}
-                          <small>{date.toFormat('LLL')}</small>
-                        </span>
-                      </div>
-                      <div className="agenda-items">
-                        {appointments.map((event) => (
-                          <button
-                            className="card agenda-event"
-                            key={event.id}
-                            onClick={() => onEdit(event)}
-                          >
-                            <div className="agenda-time">
-                              {event.allDay
-                                ? 'All day'
-                                : DateTime.fromISO(event.start).setZone(zone).toFormat('HH:mm')}
-                              <small>
-                                {event.allDay
-                                  ? ''
-                                  : DateTime.fromISO(event.end).setZone(zone).toFormat('HH:mm')}
-                              </small>
-                            </div>
-                            <div>
-                              <strong>{event.title}</strong>
-                              {event.location && (
-                                <span className="agenda-location">
-                                  <MapPin size={11} />
-                                  {event.location}
-                                </span>
-                              )}
-                              {event.recurring && (
-                                <span className="agenda-location">
-                                  <Repeat2 size={11} /> Recurring
-                                </span>
-                              )}
-                            </div>
-                            <ArrowRight size={16} />
-                          </button>
-                        ))}
-                      </div>
-                    </section>
-                  );
-                })}
-            </div>
-          ) : (
-            <section className="card calendar-empty">
-              <CalendarDays size={30} />
-              <h2>Room for something good.</h2>
-              <p>No upcoming appointments in the loaded calendar window.</p>
-            </section>
-          )}
-        </>
+      <section className="card month-card" aria-label="Month calendar">
+        <div className="month-heading">
+          <h2 aria-live="polite">{monthDate.toFormat('LLLL yyyy')}</h2>
+          <div>
+            <button
+              className="text-button"
+              onClick={() => {
+                setMonth(today.slice(0, 7));
+                setSelected(today);
+              }}
+            >
+              Today
+            </button>
+            <button
+              className="icon-button"
+              aria-label="Previous month"
+              disabled={Boolean(first && previous < first)}
+              onClick={() => move(previous)}
+            >
+              <ChevronLeft size={20} />
+            </button>
+            <button
+              className="icon-button"
+              aria-label="Next month"
+              disabled={Boolean(last && next > last)}
+              onClick={() => move(next)}
+            >
+              <ChevronRight size={20} />
+            </button>
+          </div>
+        </div>
+        <div className="month-weekdays" aria-hidden="true">
+          {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, index) => (
+            <span key={index}>{day}</span>
+          ))}
+        </div>
+        <div className="month-grid" role="group" aria-label={monthDate.toFormat('LLLL yyyy')}>
+          {monthDays(month, zone).map((day) => {
+            const date = day.toISODate()!;
+            const count = eventsForDay(calendar.events, date, zone).length;
+            return (
+              <button
+                key={date}
+                className={`month-day ${day.month !== monthDate.month ? 'other-month' : ''} ${date === today ? 'is-today' : ''} ${date === selected ? 'is-selected' : ''}`}
+                aria-label={`${day.toFormat('cccc, d LLLL yyyy')}${calendar.status === 'not-connected' ? '' : `, ${count} appointment${count === 1 ? '' : 's'}`}`}
+                aria-pressed={date === selected}
+                aria-current={date === today ? 'date' : undefined}
+                disabled={Boolean(
+                  first && last && (date.slice(0, 7) < first || date.slice(0, 7) > last),
+                )}
+                onClick={() => {
+                  setSelected(date);
+                  if (day.month !== monthDate.month) setMonth(date.slice(0, 7));
+                }}
+              >
+                <span>{day.day}</span>
+                <span className="event-dots" aria-hidden="true">
+                  {Array.from({ length: Math.min(3, count) }, (_, index) => (
+                    <i key={index} />
+                  ))}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+      {calendar.error && (
+        <p className="calendar-warning" role="status">
+          {calendar.error} Previously loaded appointments remain visible.
+        </p>
       )}
+      <section className="day-agenda" aria-label="Selected day appointments" aria-live="polite">
+        <div className="section-heading">
+          <div>
+            <h2>
+              {selected === today ? 'Today' : DateTime.fromISO(selected, { zone }).toFormat('cccc')}
+            </h2>
+            <p className="small muted">
+              {DateTime.fromISO(selected, { zone }).toFormat('d LLLL')} · {zone}
+            </p>
+          </div>
+          <span className="soft-badge">
+            {calendar.status === 'not-connected' ? '—' : appointments.length}
+          </span>
+        </div>
+        {calendar.status === 'not-connected' ? (
+          <div className="day-empty">
+            <CalendarDays size={24} />
+            <h3>Connect your shared calendar</h3>
+            <p>
+              Once iCloud is connected, days with plans get a dot. Tap a day to see its appointments
+              here.
+            </p>
+          </div>
+        ) : !loaded ? (
+          <p className="day-empty">
+            This date is outside the loaded calendar range. Refresh to load the current months.
+          </p>
+        ) : appointments.length ? (
+          <div className="agenda-items">
+            {appointments.map((event) => (
+              <button className="card agenda-event" key={event.id} onClick={() => onEdit(event)}>
+                <div className="agenda-time">
+                  {event.allDay
+                    ? 'All day'
+                    : DateTime.fromISO(event.start).setZone(zone).toFormat('HH:mm')}
+                  <small>
+                    {event.allDay
+                      ? ''
+                      : DateTime.fromISO(event.end).setZone(zone).toFormat('HH:mm')}
+                  </small>
+                </div>
+                <div>
+                  <strong>{event.title}</strong>
+                  {event.location && (
+                    <span className="agenda-location">
+                      <MapPin size={11} />
+                      {event.location}
+                    </span>
+                  )}
+                  {event.recurring && (
+                    <span className="agenda-location">
+                      <Repeat2 size={11} /> Recurring
+                    </span>
+                  )}
+                </div>
+                <ArrowRight size={16} />
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="day-empty">
+            <p>
+              {calendar.status === 'error'
+                ? 'No appointments in the last loaded calendar for this day.'
+                : 'No appointments planned for this day.'}
+            </p>
+          </div>
+        )}
+      </section>
     </>
   );
 }
@@ -203,8 +283,10 @@ export function EventForm({
   busy,
   onSubmit,
   onDelete,
+  defaultDate,
 }: {
   event?: CalendarEvent;
+  defaultDate?: string;
   zone: string;
   busy: boolean;
   onSubmit: (fields: CalendarFields) => void;
@@ -213,9 +295,13 @@ export function EventForm({
   const [allDay, setAllDay] = useState(event?.allDay ?? false);
   const readOnly = Boolean(event?.readOnlyReason);
   const local = (value: string | undefined, end = false) => {
-    if (!value && allDay) return DateTime.now().setZone(zone).toISODate()!;
+    if (!value && allDay) return defaultDate ?? DateTime.now().setZone(zone).toISODate()!;
     if (value && allDay && end)
       return DateTime.fromISO(value, { zone }).minus({ days: 1 }).toISODate()!;
+    if (!value && defaultDate)
+      return DateTime.fromISO(defaultDate, { zone })
+        .set({ hour: end ? 10 : 9 })
+        .toFormat(allDay ? 'yyyy-MM-dd' : "yyyy-MM-dd'T'HH:mm");
     if (!value)
       return DateTime.now()
         .setZone(zone)

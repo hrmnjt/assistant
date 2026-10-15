@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { z } from 'zod';
+import { notifyPartner } from './changes.js';
 import type {
   CalendarEvent,
   CalendarFields,
@@ -99,7 +100,16 @@ export class CalendarService {
       };
   }
   snapshot(): CalendarSnapshot {
-    return this.state;
+    const base = DateTime.fromISO(this.state.syncedAt ?? this.clock().toISOString(), {
+      zone: 'UTC',
+    }).startOf('month');
+    return {
+      ...this.state,
+      months: {
+        first: base.minus({ months: 1 }).toFormat('yyyy-MM'),
+        last: base.plus({ months: 2 }).toFormat('yyyy-MM'),
+      },
+    };
   }
   private cached() {
     return this.db.sql
@@ -118,10 +128,10 @@ export class CalendarService {
   private async syncNow() {
     try {
       const collection = await this.transport!.collection();
-      const now = DateTime.fromJSDate(this.clock());
+      const now = DateTime.fromJSDate(this.clock(), { zone: 'UTC' }).startOf('month');
       const resources = await this.transport!.list(
-        now.minus({ days: 14 }).toUTC().toISO()!,
-        now.plus({ days: 90 }).toUTC().toISO()!,
+        now.minus({ months: 1, days: 2 }).toISO()!,
+        now.plus({ months: 3, days: 2 }).toISO()!,
       );
       const events = resources.flatMap((resource) =>
         parseEvents(resource).map((event) => ({ event, url: resource.url })),
@@ -351,6 +361,7 @@ export class CalendarService {
       return {
         operation: JSON.parse(String(row.operation)) as StoredOperation,
         previouslyAttempted: Boolean(row.attempted),
+        view: JSON.parse(String(row.view)) as Preview,
         expired,
       };
     });
@@ -400,6 +411,18 @@ export class CalendarService {
         this.db.sql
           .prepare('INSERT INTO audit(actor_id,kind,target_id,created_at) VALUES (?,?,?,?)')
           .run(actorId, operation.kind, result.targetId, this.clock().toISOString());
+        const view = claim.view;
+        notifyPartner(
+          this.db,
+          actorId,
+          previewId,
+          operation.kind,
+          result.targetId,
+          operation.fields?.title ??
+            view.details.find((detail) => detail.label === 'Appointment')?.after ??
+            'Shared appointment',
+          this.clock().toISOString(),
+        );
       });
       await this.sync();
       return result;

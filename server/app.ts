@@ -16,6 +16,7 @@ export function createApp(
   origin: string,
   calendar?: CalendarService,
 ) {
+  household.ensureSpaces();
   const app = express();
   app.disable('x-powered-by');
   // Listen on loopback; only the local tunnel/reverse proxy can reach this server.
@@ -58,7 +59,9 @@ export function createApp(
         })),
       notices: db.sql
         .prepare(
-          'SELECT id,title,body,created_at AS createdAt FROM notices WHERE user_id=? ORDER BY created_at DESC LIMIT 20',
+          `SELECT n.id,n.title,n.body,n.created_at AS createdAt,r.read_at AS readAt,t.kind AS targetKind,t.target_id AS targetId
+          FROM notices n LEFT JOIN notice_reads r ON r.notice_id=n.id LEFT JOIN notice_targets t ON t.notice_id=n.id
+          WHERE n.user_id=? ORDER BY n.created_at DESC,n.rowid DESC LIMIT 20`,
         )
         .all(me.id) as unknown as Snapshot['notices'],
       integrations: {
@@ -102,6 +105,21 @@ export function createApp(
     await calendar.sync();
     res.json(calendar.snapshot());
   });
+  app.post('/api/notices/read', (req, res) => {
+    const input = z
+      .object({ ids: z.array(z.string().min(1).max(500)).max(20) })
+      .strict()
+      .parse(req.body);
+    db.transaction(() => {
+      for (const id of input.ids)
+        db.sql
+          .prepare(
+            `INSERT OR IGNORE INTO notice_reads SELECT id,? FROM notices WHERE id=? AND user_id=?`,
+          )
+          .run(new Date().toISOString(), id, res.locals.me.id);
+    });
+    res.json({ ok: true });
+  });
   app.get('/api/threads/:id/messages', async (req, res) =>
     res.json(await conversations.messages(String(req.params.id))),
   );
@@ -110,7 +128,11 @@ export function createApp(
   );
   app.post('/api/threads/:id/messages', async (req, res) => {
     const input = z
-      .object({ text: z.string().trim().min(1).max(10000), requestId: z.string().uuid() })
+      .object({
+        text: z.string().trim().min(1).max(10000),
+        requestId: z.string().uuid(),
+        askAssistant: z.boolean().optional(),
+      })
       .strict()
       .parse(req.body);
     res.json(
@@ -119,6 +141,7 @@ export function createApp(
         res.locals.me.id,
         input.text,
         input.requestId,
+        input.askAssistant,
       ),
     );
   });

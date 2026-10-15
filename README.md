@@ -1,6 +1,6 @@
 # Household assistant
 
-Updated: 2026-10-14. Status: initial POC scope agreed; implementation and
+Updated: 2026-10-16. Status: initial POC scope agreed; implementation and
 remaining interaction decisions will evolve through pull requests.
 
 ## Purpose
@@ -41,7 +41,8 @@ To connect the calendar, create/share the iCloud `Household` calendar and set
 `ICLOUD_CALENDAR_NAME` in the local `.env`. Restart the server. If names are
 ambiguous, set `ICLOUD_CALENDAR_URL` to the exact calendar URL instead. Credentials
 stay on the server; neither spouse needs to enter them for everyday app use.
-The app refreshes the loaded window (14 days back, 90 days ahead) every minute
+The app refreshes complete months (previous month through two months ahead,
+with time-zone boundary padding) every minute
 and checks the live event version again before a confirmed write. Recurring
 events and invitations are readable; edit those in Apple Calendar initially.
 New appointments default to a configurable 30-minute reminder in the preview;
@@ -80,8 +81,9 @@ files are kept in `.cache/`; household data and push keys are kept in `data/`.
 - Provide morning and evening summaries, defaulting to 08:00 and 18:00.
   Each person can independently enable, disable, and change the time of each summary.
 - Support phone notifications for appointments.
-- Use separate topic threads, with an icon indicating when someone is interacting
-  with a thread.
+- Open directly into a persistent assistant chat for each login, with separate
+  histories that converge on shared tasks and events. Shared channels support
+  conversations together, with viewing/typing indicators.
 - Use iCloud as the initial shared-calendar integration.
 - Prefer the user's existing ChatGPT Plus subscription for AI model access;
   validate the supported sign-in route and actual account access during setup.
@@ -92,8 +94,11 @@ files are kept in `.cache/`; household data and push keys are kept in `data/`.
 
 ## Product experience
 
-The SPA, in-app tasks, and topic threads are agreed. The following view layout
-and interaction details remain proposals unless explicitly stated otherwise.
+Prioritize the iPhone SPA. The opening screen is a continuous assistant chat,
+with a compact activity header, a bottom composer, suggestions for an empty
+chat, and inline change previews. The laptop opens the same compact app surface;
+mobile drives the design. The interaction pattern takes inspiration from
+[Muse’s design](https://introducing.muse.ai/).
 
 - Today: appointments, due tasks, and overdue work relevant to the signed-in user.
 - Household: shared agenda and tasks, with filters by category and person.
@@ -101,10 +106,19 @@ and interaction details remain proposals unless explicitly stated otherwise.
   personal items. Other items remain accessible through filters.
 - Categories such as Household, Work, and Personal control default presentation.
 - Two individual sign-ins identify who is acting and who receives reminders.
-- Chat is accessible alongside calendar and task views, with links from responses
-  to the affected records.
-- Shared topic threads can cover household, work, and personal discussions.
-  Work categories and filters reduce clutter without making content secret.
+- Each login has its own ready assistant chat; no conversation creation is needed.
+  These separate histories reduce clutter rather than enforce secrecy.
+- Shared channels sit in a drawer on mobile. Messages go to the two humans;
+  mention `@assistant` or enable “Ask Our day” to involve the assistant.
+  Existing topics become channels without losing messages.
+- The calendar opens to the current month, with event dots. Selecting a date
+  shows its appointments, including multi-day and all-day spans.
+- The bell opens Updates: partner changes, reminders, and summaries. Settings
+  contains preferences and notification controls, not a duplicate reminder list.
+- A confirmed app/assistant task or event change notifies only the other spouse,
+  through Updates and phone push when enabled. Retrying confirmation does not
+  repeat the notification. Direct Apple Calendar edits sync without generating
+  change alerts, as chosen by the user. Updates link to the affected record.
 - Proposed presence indicator: show which person is viewing or typing in a
   thread; expire stale presence after disconnection. Distinguish this from an
   assistant response in progress.
@@ -236,7 +250,8 @@ inspecting and removing that directory; locks are never stolen automatically.
 The first connected session explains plan usage; the composer links to ChatGPT
 usage settings. Both household accounts use the server connection. This wires
 the requested experience but does not establish shared-plan eligibility or
-verify this account's access. Each topic admits one assistant request at a time.
+verify this account's access. Each chat runs one assistant request at a time and accepts up to ten queued
+messages while it works. Queued requests retain their authors and survive restarts.
 Pi persists the input, model/tool turns, and outstanding work; startup resumes
 pending inputs with the same request ID. Model calls are capped at eight per
 request, with a 90-second timeout per call and no automatic provider retries.
@@ -263,7 +278,7 @@ and [model/inference requirements](https://developers.openai.com/siwc/token-shar
 10. The installed phone app works away from home through the tunnel.
 11. Restarting the Mac service preserves tasks, conversations, and pending state.
 12. Summary times and toggles are independent for each person and each summary.
-13. Topic threads display current human interaction and clear stale indicators.
+13. Shared channels display current human interaction and clear stale indicators.
 14. Missed chores remain visible as occurrences or an accurate missed-count history.
 
 ## Outstanding decisions

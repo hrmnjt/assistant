@@ -22,7 +22,13 @@ export type Preferences = {
   evening: SummarySetting;
   revision: number;
 };
-export type Thread = { id: string; title: string; category: Category; createdAt: string };
+export type Thread = {
+  id: string;
+  title: string;
+  category: Category;
+  createdAt: string;
+  assistantFor?: string | null;
+};
 export type Message = {
   id: string;
   threadId: string;
@@ -31,7 +37,15 @@ export type Message = {
   createdAt: string;
 };
 export type Presence = { userId: string; threadId: string; typing: boolean };
-export type Notice = { id: string; title: string; body: string; createdAt: string };
+export type Notice = {
+  id: string;
+  title: string;
+  body: string;
+  createdAt: string;
+  readAt?: string | null;
+  targetKind?: 'task' | 'calendar' | null;
+  targetId?: string | null;
+};
 export type HouseholdMutation =
   | {
       kind: 'task.create';
@@ -83,6 +97,7 @@ export type CalendarSnapshot = {
   syncedAt: string | null;
   error: string | null;
   events: CalendarEvent[];
+  months?: { first: string; last: string };
 };
 export type CalendarMutation =
   | { kind: 'calendar.create'; event: CalendarFields }
@@ -99,6 +114,7 @@ export type ChatStatus = {
   running: boolean;
   error: string | null;
   previews: { actorId: string; preview: Preview }[];
+  queued?: number;
 };
 export type Snapshot = {
   me: Person;
