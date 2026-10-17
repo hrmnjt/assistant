@@ -12,11 +12,17 @@
     "dev:server": "node scripts/run.mjs server-watch",
     "dev:client": "node scripts/run.mjs client",
     "check": "node scripts/run.mjs check",
-    "test": "node scripts/run.mjs test",
+    "test": "node scripts/run.mjs test && node scripts/cloudflare.mjs test",
     "build": "node scripts/run.mjs build",
     "start": "node scripts/run.mjs server",
     "ai:connect": "node scripts/run.mjs ai-connect",
-    "ai:disconnect": "node scripts/run.mjs ai-disconnect"
+    "ai:disconnect": "node scripts/run.mjs ai-disconnect",
+    "cloudflare:configure": "node scripts/cloudflare-configure.mjs",
+    "cloudflare:dev": "node scripts/cloudflare.mjs dev",
+    "cloudflare:check": "node scripts/cloudflare.mjs check",
+    "cloudflare:test": "node scripts/cloudflare.mjs test",
+    "cloudflare:deploy": "node scripts/cloudflare.mjs deploy",
+    "cloudflare:wrangler": "node scripts/cloudflare.mjs wrangler"
   },
   "dependencies": {
     "@earendil-works/chord": "1.2.0",
@@ -34,6 +40,8 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.4",
+    "@cloudflare/workers-types": "5.20261016.1",
     "@types/express": "5.0.6",
     "@types/luxon": "3.7.6",
     "@types/node": "26.6.5",
@@ -44,6 +52,8 @@
     "prettier": "3.9.10",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
-    "vite": "8.3.4"
+    "vite": "8.3.4",
+    "vitest": "4.1.12",
+    "wrangler": "4.151.1"
   }
 }

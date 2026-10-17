@@ -11,3 +11,7 @@ data/
 auth.json
 .DS_Store
 test-results/
+
+.dev.vars*
+!.dev.vars.example
+.wrangler

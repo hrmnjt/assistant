@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { relative, isAbsolute, resolve } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
-import { createModels, type Credential, type CredentialStore } from '@earendil-works/pi-ai';
-import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
+import type { Credential, CredentialStore } from '@earendil-works/pi-ai';
+import { chatgptModels } from './chatgpt-models.js';
+export { chatgptModels } from './chatgpt-models.js';
 
 export function projectDataDir() {
   const path = resolve(process.env.DATA_DIR || './data');
@@ -85,35 +86,6 @@ export class LocalCredentials implements CredentialStore {
   }
 }
 
-export function chatgptModels(credentials: CredentialStore) {
-  const models = createModels({
-    credentials,
-    authContext: { env: async () => undefined, fileExists: async () => false },
-  });
-  const provider = openaiProvider();
-  // Do not consult API-key environment variables or other applications' credentials.
-  const subscription: typeof provider = {
-    ...provider,
-    auth: { oauth: provider.auth.oauth },
-    streamSimple: (model, context, options) =>
-      provider.streamSimple(model, context, {
-        ...options,
-        maxTokens: 4096,
-        onProviderStreamEvent: async (event, currentModel) => {
-          if (
-            typeof event === 'object' &&
-            event !== null &&
-            'type' in event &&
-            event.type === 'response.incomplete'
-          )
-            throw new Error('ChatGPT did not complete its response.');
-          await options?.onProviderStreamEvent?.(event, currentModel);
-        },
-      }),
-  };
-  models.setProvider(subscription);
-  return models;
-}
 export type AIConfig = { hostId: string; modelId?: string };
 export async function aiConfig(directory: string): Promise<AIConfig> {
   try {
