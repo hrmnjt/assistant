@@ -1,6 +1,6 @@
 # Household assistant
 
-Updated: 2026-10-16. Status: initial POC scope agreed; implementation and
+Updated: 2026-10-17. Status: initial POC scope agreed; implementation and
 remaining interaction decisions will evolve through pull requests.
 
 ## Purpose
@@ -51,6 +51,28 @@ alerts and the app's matching relative reminders are retained.
 
 Validation commands: `npm test` and `npm run build`. Test data and temporary
 files are kept in `.cache/`; household data and push keys are kept in `data/`.
+
+## Cloudflare compatibility prototype
+
+A separate Cloudflare prototype now evaluates Workers and one SQLite-backed
+Durable Object as a hosting option. It has two sign-ins, a shared persistent Pi
+conversation, durable test reminders, and optional read-only iCloud and phone
+push probes. It uses fixture replies by default, without calling an AI provider.
+The existing Mac application and its data remain separate; a full cloud migration
+is still proposed rather than implemented.
+
+```sh
+npm run cloudflare:configure
+npm run cloudflare:dev
+```
+
+Open `http://localhost:8787` and use the generated `owner` or `partner` password
+in `cloudflare/.dev.vars`. Local runtime state lives in `data/cloudflare/`.
+`npm test` includes the Cloudflare runtime tests; `npm run cloudflare:check`
+checks types and builds a deployment bundle without uploading it.
+See [Cloudflare setup and deployment](cloudflare/README.md) for secrets, live
+integration checks, recovery behavior, and remaining migration work. No cloud
+account deployment or real-device delivery is implied by local test results.
 
 ## Confirmed requirements
 
@@ -262,7 +284,6 @@ keeps its message and any surviving proposals visible for review.
 
 Verified against [OpenAI's local-app flow](https://developers.openai.com/siwc/token-sharing-open-source)
 and [model/inference requirements](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
-
 
 ## POC acceptance scenarios to refine
 

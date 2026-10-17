@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f5f2eb" />
+    <title>Our day · Cloudflare prototype</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="eyebrow">OUR DAY / CLOUD LAB</div>
+        <h1>A home in the cloud.</h1>
+        <p>Test persistent conversation and reminders while the Mac is off.</p>
+      </header>
+      <p class="note">
+        Isolated compatibility prototype. Its shared conversation and test jobs are visible to both
+        household accounts. Existing tasks and calendar edits remain in the main app.
+      </p>
+      <p id="error" role="alert"></p>
+      <form id="login" class="panel">
+        <h2>Come on in</h2>
+        <label
+          >Account<select name="username">
+            <option value="owner">Owner</option>
+            <option value="partner">Partner</option>
+          </select></label
+        ><label
+          >Password<input
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required /></label
+        ><button>Sign in</button>
+      </form>
+      <section id="workspace" hidden>
+        <div class="bar">
+          <span id="account"></span><button id="logout" class="secondary">Sign out</button>
+        </div>
+        <div class="panel">
+          <div class="eyebrow" id="mode"></div>
+          <h2>Leave a little note</h2>
+          <p id="model-help"></p>
+          <form id="chat">
+            <label
+              >Message<textarea
+                name="text"
+                maxlength="4000"
+                placeholder="A note to remember…"
+                required
+              ></textarea></label
+            ><button>Save &amp; run conversation test</button>
+          </form>
+          <div id="replies" aria-live="polite"></div>
+        </div>
+        <div class="grid">
+          <section class="panel">
+            <h2>Wake up later</h2>
+            <p>
+              Schedule a reminder, close this page, then come back. In a cloud deployment, your Mac
+              can be off.
+            </p>
+            <form id="reminder">
+              <label
+                >Remind me in<select name="seconds">
+                  <option value="10">10 seconds</option>
+                  <option value="60">1 minute</option>
+                  <option value="300">5 minutes</option>
+                </select></label
+              ><button>Schedule test reminder</button>
+            </form>
+            <button id="push" class="secondary">Enable phone push</button>
+            <p class="small">
+              On iPhone, install this page on the Home Screen first. Allow notifications, then
+              schedule a reminder.
+            </p>
+          </section>
+          <section class="panel">
+            <h2>Connect the calendar</h2>
+            <p>
+              Check iCloud access and read this month’s event count. This probe makes no calendar
+              changes.
+            </p>
+            <button id="calendar" class="secondary">Run read-only iCloud test</button>
+            <p id="calendar-help" class="small"></p>
+          </section>
+        </div>
+        <section class="panel">
+          <div class="bar">
+            <h2>Test activity</h2>
+            <button id="refresh" class="secondary">Refresh</button>
+          </div>
+          <p id="runtime" class="small"></p>
+          <div id="jobs" aria-live="polite"></div>
+        </section>
+      </section>
+      <footer>
+        Keep this prototype separate from your household data until migration and recovery have been
+        verified.
+      </footer>
+    </main>
+  </body>
+</html>
