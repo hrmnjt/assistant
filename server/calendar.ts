@@ -1,0 +1,446 @@
+import { randomUUID } from 'node:crypto';
+import { DateTime } from 'luxon';
+import { z } from 'zod';
+import { notifyPartner } from './changes.js';
+import type {
+  CalendarEvent,
+  CalendarFields,
+  CalendarMutation,
+  CalendarSnapshot,
+  Preview,
+} from '../src/types.js';
+import type { Database } from './database.js';
+import { DomainError } from './domain.js';
+import type { CalendarResource, CalendarTransport } from './caldav.js';
+import {
+  createEventData,
+  eventId,
+  hasOperation,
+  parseEvents,
+  updateEventData,
+} from './icalendar.js';
+
+const fields = z
+  .object({
+    title: z.string().trim().min(1).max(200),
+    notes: z.string().max(5000),
+    location: z.string().max(1000),
+    start: z.string().max(50),
+    end: z.string().max(50),
+    allDay: z.boolean(),
+    reminderMinutes: z.number().int().min(0).max(10080).nullable(),
+  })
+  .strict()
+  .superRefine((event, ctx) => {
+    const start = event.allDay
+      ? DateTime.fromISO(event.start, { zone: 'UTC' })
+      : DateTime.fromISO(event.start);
+    const end = event.allDay
+      ? DateTime.fromISO(event.end, { zone: 'UTC' })
+      : DateTime.fromISO(event.end);
+    const format = event.allDay ? /^\d{4}-\d{2}-\d{2}$/ : /T.*(?:Z|[+-]\d{2}:\d{2})$/;
+    if (
+      !format.test(event.start) ||
+      !format.test(event.end) ||
+      !start.isValid ||
+      !end.isValid ||
+      start.year < 2000 ||
+      end.year > 2100 ||
+      end <= start
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Choose valid start and end times, with the end after the start.',
+      });
+    }
+  });
+const calendarId = z.string().regex(/^[a-f0-9]{64}$/);
+const etag = z.string().min(1).max(1000);
+export const calendarMutationSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('calendar.create'), event: fields }).strict(),
+  z.object({ kind: z.literal('calendar.update'), id: calendarId, etag, event: fields }).strict(),
+  z.object({ kind: z.literal('calendar.delete'), id: calendarId, etag }).strict(),
+]);
+type StoredOperation = {
+  kind: CalendarMutation['kind'];
+  url: string;
+  etag: string | null;
+  data: string | null;
+  fields: CalendarFields | null;
+  uid: string;
+};
+
+export class CalendarService {
+  private state: CalendarSnapshot = {
+    status: 'not-connected',
+    name: 'Household',
+    syncedAt: null,
+    error: null,
+    events: [],
+  };
+  private syncing?: Promise<void>;
+  constructor(
+    private db: Database,
+    private transport?: CalendarTransport,
+    private clock: () => Date = () => new Date(),
+  ) {
+    db.sql
+      .exec(`CREATE TABLE IF NOT EXISTS calendar_cache (id TEXT PRIMARY KEY, value TEXT NOT NULL, resource_url TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS calendar_state (id INTEGER PRIMARY KEY CHECK(id=1), name TEXT NOT NULL, synced_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS calendar_operations (preview_id TEXT PRIMARY KEY REFERENCES previews(id) ON DELETE CASCADE,
+        value TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0, lease_until INTEGER NOT NULL DEFAULT 0);`);
+    const saved = db.sql.prepare('SELECT * FROM calendar_state WHERE id=1').get();
+    if (saved && transport)
+      this.state = {
+        status: 'error',
+        name: String(saved.name),
+        syncedAt: String(saved.synced_at),
+        error: 'Refreshing the calendar connection.',
+        events: this.cached(),
+      };
+  }
+  snapshot(): CalendarSnapshot {
+    const base = DateTime.fromISO(this.state.syncedAt ?? this.clock().toISOString(), {
+      zone: 'UTC',
+    }).startOf('month');
+    return {
+      ...this.state,
+      months: {
+        first: base.minus({ months: 1 }).toFormat('yyyy-MM'),
+        last: base.plus({ months: 2 }).toFormat('yyyy-MM'),
+      },
+    };
+  }
+  private cached() {
+    return this.db.sql
+      .prepare('SELECT value FROM calendar_cache ORDER BY id')
+      .all()
+      .map((row) => JSON.parse(String(row.value)) as CalendarEvent);
+  }
+  async sync() {
+    if (!this.transport) return;
+    if (!this.syncing)
+      this.syncing = this.syncNow().finally(() => {
+        this.syncing = undefined;
+      });
+    await this.syncing;
+  }
+  private async syncNow() {
+    try {
+      const collection = await this.transport!.collection();
+      const now = DateTime.fromJSDate(this.clock(), { zone: 'UTC' }).startOf('month');
+      const resources = await this.transport!.list(
+        now.minus({ months: 1, days: 2 }).toISO()!,
+        now.plus({ months: 3, days: 2 }).toISO()!,
+      );
+      const events = resources.flatMap((resource) =>
+        parseEvents(resource).map((event) => ({ event, url: resource.url })),
+      );
+      const syncedAt = this.clock().toISOString();
+      this.db.transaction(() => {
+        this.db.sql.prepare('DELETE FROM calendar_cache').run();
+        for (const entry of events)
+          this.db.sql
+            .prepare('INSERT OR REPLACE INTO calendar_cache VALUES (?,?,?)')
+            .run(entry.event.id, JSON.stringify(entry.event), entry.url);
+        this.db.sql
+          .prepare(
+            'INSERT INTO calendar_state VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,synced_at=excluded.synced_at',
+          )
+          .run(collection.name, syncedAt);
+      });
+      this.state = {
+        status: 'connected',
+        name: collection.name,
+        syncedAt,
+        error: null,
+        events: events.map((entry) => entry.event).sort((a, b) => a.start.localeCompare(b.start)),
+      };
+    } catch (error) {
+      this.state = {
+        ...this.state,
+        status: 'error',
+        error:
+          error instanceof DomainError
+            ? error.message
+            : 'The shared calendar could not be refreshed. The owner needs to check the connection.',
+      };
+    }
+  }
+  private resource(id: string) {
+    const row = this.db.sql.prepare('SELECT * FROM calendar_cache WHERE id=?').get(id);
+    if (!row)
+      throw new DomainError(
+        'This appointment is no longer in the calendar. Refresh before editing.',
+        409,
+      );
+    return { event: JSON.parse(String(row.value)) as CalendarEvent, url: String(row.resource_url) };
+  }
+  async preview(actorId: string, input: unknown): Promise<Preview> {
+    if (!this.transport) throw new DomainError('The shared calendar is not connected yet.', 503);
+    const parsed = calendarMutationSchema.safeParse(input);
+    if (!parsed.success)
+      throw new DomainError(parsed.error.issues.map((issue) => issue.message).join(' '));
+    const mutation = parsed.data;
+    const collection = await this.transport.collection();
+    const previewId = randomUUID();
+    let prior: CalendarEvent | undefined;
+    let resource: CalendarResource | null = null;
+    let url: string;
+    let uid: string;
+    if (mutation.kind === 'calendar.create') {
+      uid = randomUUID();
+      url = new URL(
+        `${uid}.ics`,
+        collection.url.endsWith('/') ? collection.url : `${collection.url}/`,
+      ).href;
+    } else {
+      const saved = this.resource(mutation.id);
+      if (saved.event.readOnlyReason) throw new DomainError(saved.event.readOnlyReason, 409);
+      resource = await this.transport.get(saved.url);
+      if (!resource || resource.etag !== mutation.etag)
+        throw new DomainError(
+          'This appointment changed in iCloud. Refresh and review a new preview.',
+          409,
+        );
+      const events = parseEvents(resource);
+      if (events.length !== 1 || events[0].uid !== saved.event.uid || events[0].readOnlyReason)
+        throw new DomainError(
+          events[0]?.readOnlyReason || 'The appointment changed. Refresh before editing.',
+          409,
+        );
+      prior = events[0];
+      uid = prior.uid;
+      url = saved.url;
+    }
+    const event =
+      mutation.kind === 'calendar.delete'
+        ? null
+        : {
+            ...mutation.event,
+            start: mutation.event.allDay
+              ? mutation.event.start
+              : new Date(mutation.event.start).toISOString(),
+            end: mutation.event.allDay
+              ? mutation.event.end
+              : new Date(mutation.event.end).toISOString(),
+          };
+    const operation: StoredOperation = {
+      kind: mutation.kind,
+      url,
+      uid,
+      etag: resource?.etag || null,
+      fields: event,
+      data: event
+        ? resource
+          ? updateEventData(resource, event, previewId)
+          : createEventData(uid, event, previewId)
+        : null,
+    };
+    const view: Preview = {
+      id: previewId,
+      title:
+        mutation.kind === 'calendar.create'
+          ? 'Add this appointment?'
+          : mutation.kind === 'calendar.update'
+            ? 'Save this appointment?'
+            : 'Delete this appointment?',
+      expiresAt: new Date(this.clock().getTime() + 600_000).toISOString(),
+      details: [{ label: 'Calendar', after: collection.name }],
+    };
+    if (event) {
+      view.details.push(
+        { label: 'Appointment', after: event.title, before: prior?.title },
+        { label: 'Starts', after: event.start, before: prior?.start },
+        {
+          label: event.allDay ? 'Through' : 'Ends',
+          after: event.allDay
+            ? DateTime.fromISO(event.end).minus({ days: 1 }).toISODate()!
+            : event.end,
+          before: prior
+            ? prior.allDay
+              ? DateTime.fromISO(prior.end).minus({ days: 1 }).toISODate()!
+              : prior.end
+            : undefined,
+        },
+        {
+          label: 'Location',
+          after: event.location || 'None',
+          before: prior ? prior.location || 'None' : undefined,
+        },
+        {
+          label: 'Reminder',
+          after:
+            event.reminderMinutes === null
+              ? 'No relative reminder'
+              : `${event.reminderMinutes} minutes before`,
+          before: prior
+            ? prior.reminderMinutes === null
+              ? 'No relative reminder'
+              : `${prior.reminderMinutes} minutes before`
+            : undefined,
+        },
+        {
+          label: 'Notes',
+          after: event.notes || 'None',
+          before: prior ? prior.notes || 'None' : undefined,
+        },
+      );
+    } else
+      view.details.push(
+        { label: 'Appointment', after: prior!.title },
+        { label: 'Starts', after: prior!.start },
+        { label: 'Result', after: 'Removes the shared appointment from iCloud for both of you.' },
+      );
+    this.db.transaction(() => {
+      this.db.sql
+        .prepare('INSERT INTO previews(id,user_id,mutation,view,expires_at) VALUES (?,?,?,?,?)')
+        .run(
+          previewId,
+          actorId,
+          JSON.stringify(mutation),
+          JSON.stringify(view),
+          Date.parse(view.expiresAt),
+        );
+      this.db.sql
+        .prepare('INSERT INTO calendar_operations(preview_id,value) VALUES (?,?)')
+        .run(previewId, JSON.stringify(operation));
+    });
+    return view;
+  }
+  isCalendarPreview(previewId: string, actorId: string) {
+    return Boolean(
+      this.db.sql
+        .prepare(
+          'SELECT p.id FROM previews p JOIN calendar_operations c ON c.preview_id=p.id WHERE p.id=? AND p.user_id=?',
+        )
+        .get(previewId, actorId),
+    );
+  }
+  cancel(actorId: string, previewId: string) {
+    const row = this.db.sql
+      .prepare(
+        'SELECT p.applied_at,c.attempted,c.lease_until FROM previews p JOIN calendar_operations c ON c.preview_id=p.id WHERE p.id=? AND p.user_id=?',
+      )
+      .get(previewId, actorId);
+    if (
+      row &&
+      row.applied_at === null &&
+      (row.attempted || Number(row.lease_until) > this.clock().getTime())
+    ) {
+      throw new DomainError(
+        'This calendar change may already be in progress. Retry confirmation to resolve its result before dismissing it.',
+        409,
+      );
+    }
+    this.db.sql
+      .prepare('DELETE FROM previews WHERE id=? AND user_id=? AND applied_at IS NULL')
+      .run(previewId, actorId);
+  }
+  async confirm(actorId: string, previewId: string) {
+    if (!this.transport) throw new DomainError('The shared calendar is not connected yet.', 503);
+    const claim = this.db.transaction(() => {
+      const row = this.db.sql
+        .prepare(
+          'SELECT p.*,c.value AS operation,c.attempted,c.lease_until FROM previews p JOIN calendar_operations c ON c.preview_id=p.id WHERE p.id=? AND p.user_id=?',
+        )
+        .get(previewId, actorId);
+      if (!row) throw new DomainError('This calendar preview is unavailable.', 404);
+      if (row.applied_at !== null) return { done: JSON.parse(String(row.result)) };
+      const expired = Number(row.expires_at) <= this.clock().getTime();
+      if (expired && !row.attempted)
+        throw new DomainError('This preview expired. Review a new preview.', 409);
+      if (Number(row.lease_until) > this.clock().getTime())
+        throw new DomainError(
+          'This confirmation is already in progress. Please wait before retrying.',
+          409,
+        );
+      this.db.sql
+        .prepare('UPDATE calendar_operations SET lease_until=? WHERE preview_id=?')
+        .run(this.clock().getTime() + 45_000, previewId);
+      return {
+        operation: JSON.parse(String(row.operation)) as StoredOperation,
+        previouslyAttempted: Boolean(row.attempted),
+        view: JSON.parse(String(row.view)) as Preview,
+        expired,
+      };
+    });
+    if ('done' in claim) return claim.done;
+    const operation = claim.operation!;
+    try {
+      const current = await this.transport.get(operation.url);
+      const alreadyWritten =
+        operation.fields && current && hasOperation(current, previewId, operation.fields);
+      const alreadyDeleted =
+        operation.kind === 'calendar.delete' && claim.previouslyAttempted && !current;
+      if (!alreadyWritten && !alreadyDeleted) {
+        if (claim.expired)
+          throw new DomainError(
+            'The previous attempt was not applied. This preview expired; review a new one.',
+            409,
+          );
+        if (operation.kind === 'calendar.create') {
+          if (current)
+            throw new DomainError(
+              'This appointment resource already exists. Refresh the calendar.',
+              409,
+            );
+          this.db.sql
+            .prepare('UPDATE calendar_operations SET attempted=1 WHERE preview_id=?')
+            .run(previewId);
+          await this.transport.put(operation.url, operation.data!, null);
+        } else {
+          if (!current || current.etag !== operation.etag)
+            throw new DomainError(
+              'This appointment changed in iCloud. Refresh and review a new preview.',
+              409,
+            );
+          this.db.sql
+            .prepare('UPDATE calendar_operations SET attempted=1 WHERE preview_id=?')
+            .run(previewId);
+          if (operation.kind === 'calendar.update')
+            await this.transport.put(operation.url, operation.data!, operation.etag);
+          else await this.transport.remove(operation.url, operation.etag!);
+        }
+      }
+      const result = { ok: true, targetId: eventId(operation.url, operation.uid) };
+      this.db.transaction(() => {
+        this.db.sql
+          .prepare('UPDATE previews SET applied_at=?,result=? WHERE id=?')
+          .run(this.clock().getTime(), JSON.stringify(result), previewId);
+        this.db.sql
+          .prepare('INSERT INTO audit(actor_id,kind,target_id,created_at) VALUES (?,?,?,?)')
+          .run(actorId, operation.kind, result.targetId, this.clock().toISOString());
+        const view = claim.view;
+        notifyPartner(
+          this.db,
+          actorId,
+          previewId,
+          operation.kind,
+          result.targetId,
+          operation.fields?.title ??
+            view.details.find((detail) => detail.label === 'Appointment')?.after ??
+            'Shared appointment',
+          this.clock().toISOString(),
+        );
+      });
+      await this.sync();
+      return result;
+    } catch (error) {
+      if (!claim.previouslyAttempted && error instanceof DomainError && error.status === 409) {
+        this.db.sql
+          .prepare('UPDATE calendar_operations SET attempted=0 WHERE preview_id=?')
+          .run(previewId);
+      }
+      if (error instanceof DomainError) throw error;
+      throw new DomainError(
+        'The calendar result could not be confirmed. Retry this same preview to check its result before making another change.',
+        503,
+      );
+    } finally {
+      this.db.sql
+        .prepare('UPDATE calendar_operations SET lease_until=0 WHERE preview_id=?')
+        .run(previewId);
+    }
+  }
+}
