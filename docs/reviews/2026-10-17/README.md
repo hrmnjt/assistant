@@ -5,6 +5,7 @@ This archive records the household assistant's implementation and architectural 
 - [Implementation and product review](review.md)
 - [Pi Durable architectural review](architecture.md)
 - [Reproduction evidence](evidence.md)
+- [Prioritized GitHub issue index](issues.md)
 
 ## How to read the findings
 
