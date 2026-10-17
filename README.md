@@ -325,6 +325,11 @@ as they arise during development.
 Changes are delivered through pull requests for the user to review and merge
 into `main`. See [AGENTS.md](AGENTS.md) for repository workflow instructions.
 
+The [17 October 2026 review](docs/reviews/2026-10-17/README.md) records implementation
+findings, Pi Durable architecture recommendations, and reproduction evidence at
+commit `c85e65a`. Its recommendations remain proposals; this README continues to
+define confirmed requirements, and hosting remains undecided.
+
 ## References
 
 - Pi Durable: https://github.com/earendil-works/pi/blob/main/packages/durable/README.md
