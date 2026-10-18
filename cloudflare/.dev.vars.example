@@ -7,7 +7,7 @@
 # a deployment, `npm run dev` has no sign-in, and the two names and emails are
 # entered in the app at its first sign-in.
 # Phone push: a stable VAPID keypair (changing it breaks existing subscriptions)
-# and a contact. Without PUSH_CONTACT, the email of whoever set up the household is used.
+# and a contact. Without PUSH_CONTACT, the app's own address is used.
 VAPID_PUBLIC_KEY=
 VAPID_PRIVATE_KEY=
 # PUSH_CONTACT=mailto:you@example.com
