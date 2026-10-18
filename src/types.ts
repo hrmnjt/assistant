@@ -1,5 +1,8 @@
 export type Category = 'household' | 'work' | 'personal';
+/** One of the two people; `username` is the email they sign in with (or their id in development). */
 export type Person = { id: string; name: string; username: string };
+/** Before the household is set up: who signed in (no one, in development). */
+export type SetupNeeded = { email: string | null; development: boolean };
 export type Schedule = { frequency: 'daily' | 'weekly'; timezone: string };
 export type Task = {
   id: string;

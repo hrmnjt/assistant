@@ -109,7 +109,14 @@ test('Pi tools read household state and only prepare actor-bound changes; retrie
     (context) => {
       const result = context.messages.findLast((message) => message.role === 'toolResult');
       const first = result?.role === 'toolResult' ? result.content[0] : undefined;
-      assert.equal(first?.type === 'text' ? JSON.parse(first.text).actorId : undefined, 'owner');
+      const read = first?.type === 'text' ? JSON.parse(first.text) : undefined;
+      assert.equal(read?.actorId, 'owner');
+      // The model learns the two names, never their email addresses.
+      assert.deepEqual(read?.people, [
+        { id: 'owner', name: 'Alex' },
+        { id: 'partner', name: 'Sam' },
+      ]);
+      assert(!first || !JSON.stringify(first).includes('@example.com'));
       return fauxAssistantMessage(fauxToolCall('prepare_task_change', { change }), {
         stopReason: 'toolUse',
       });

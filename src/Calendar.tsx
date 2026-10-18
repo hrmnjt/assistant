@@ -46,7 +46,7 @@ export function CalendarCard({
         <>
           <p className="muted">Waiting for the iCloud connection.</p>
           <p className="small">
-            Your household appointments will appear here once the owner finishes setup.
+            Your household appointments will appear here once the iCloud calendar is connected.
           </p>
         </>
       ) : (
