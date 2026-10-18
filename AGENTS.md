@@ -20,7 +20,8 @@
   the preceding PR's branch; the bottom PR targets `main`.
 - Keep dependent PRs stacked and describe their order. Retarget a child after
   its parent is merged, without merging either PR on the user's behalf.
-- Use a focused branch with the `codex/` prefix unless the user specifies a name.
+- Use a focused branch named `<type>/<area>/<short-slug>` (for example
+  `feat/ui/shadcn`, `fix/meta/review-issues`) unless the user specifies a name.
 - Commit the relevant changes, push the branch, and open a pull request as part
   of completing the requested work.
 - The user reviews and merges pull requests. Do not merge a pull request or
@@ -32,8 +33,7 @@
   require adding application tests.
 - If authentication, permissions, or repository setup prevent creating a pull
   request, preserve the prepared changes and clearly report the blocker.
-- Include the pull request link in the final handoff. When available, attach
-  the pull request to the current Codex chat.
+- Include the pull request link in the final handoff.
 
 ## Repository boundary
 
