@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { Database } from '../server/database.js';
 import { Household, DomainError } from '../server/domain.js';
-import { CalendarService } from '../server/calendar.js';
+import { CalendarOutcomeError, CalendarService } from '../server/calendar.js';
 import type { CalendarResource, CalendarTransport } from '../server/caldav.js';
 import { createEventData, parseEvents, updateEventData } from '../server/icalendar.js';
 import type { CalendarFields } from '../src/types.js';
@@ -79,8 +79,8 @@ class MemoryCalendar implements CalendarTransport {
     });
   }
 }
-function fixture() {
-  const db = new Database(':memory:');
+function fixture(path = ':memory:') {
+  const db = new Database(path);
   for (const id of ['owner', 'partner'])
     db.sql.prepare('INSERT INTO users VALUES (?,?,?,?)').run(id, id, id, 'unused-test-password');
   const transport = new MemoryCalendar();
@@ -280,6 +280,7 @@ test('a preview is blocked from cancellation while its confirmation is in progre
     const confirmation = f.service.confirm('owner', preview.id);
     await reached;
     assert.throws(() => f.service.cancel('owner', preview.id), DomainError);
+    assert.throws(() => f.service.dismiss('owner', preview.id), DomainError);
     release();
     await confirmation;
     assert.equal(f.transport.writes, 1);
@@ -431,6 +432,195 @@ test('appointment reminders are planned once for each person, without removing n
   } finally {
     f.db.close();
     rmSync(path, { recursive: true, force: true });
+  }
+});
+
+for (const kind of ['calendar.create', 'calendar.update', 'calendar.delete'] as const) {
+  for (const external of ['edit', 'delete'] as const) {
+    test(`lost ${kind} response after external ${external} and expiry never sends another write`, async () => {
+      const f = fixture();
+      try {
+        const originalUrl = kind === 'calendar.create' ? undefined : f.transport.seed();
+        await f.service.sync();
+        const event = f.service.snapshot().events[0];
+        const preview = await f.service.preview(
+          'owner',
+          kind === 'calendar.create'
+            ? { kind, event: fields }
+            : kind === 'calendar.update'
+              ? {
+                  kind,
+                  id: event.id,
+                  etag: event.etag,
+                  event: { ...fields, title: 'Requested edit' },
+                }
+              : { kind, id: event.id, etag: event.etag },
+        );
+        if (kind === 'calendar.delete') f.transport.loseDeleteResponse = true;
+        else f.transport.losePutResponse = true;
+        await assert.rejects(
+          f.service.confirm('owner', preview.id),
+          (error: unknown) =>
+            error instanceof CalendarOutcomeError && error.calendarOutcome.status === 'unknown',
+        );
+        const url = originalUrl ?? [...f.transport.resources.keys()][0];
+        if (external === 'delete') f.transport.resources.delete(url);
+        else if (kind === 'calendar.delete') {
+          // A person recreated the same resource after our uncertain deletion.
+          const uid = event.uid;
+          f.transport.resources.set(url, {
+            url,
+            etag: '"recreated"',
+            data: createEventData(uid, fields, 'human'),
+          });
+        } else f.transport.humanEdit(url, 'Keep this human edit');
+        const before = JSON.stringify([...f.transport.resources]);
+        const writes = f.transport.writes;
+        const removals = f.transport.removals;
+        const reopened = new CalendarService(
+          f.db,
+          f.transport,
+          () => new Date('2026-10-14T07:20:00Z'),
+        );
+        const result = await reopened.confirm('owner', preview.id);
+        const expected =
+          kind === 'calendar.delete' && external === 'delete' ? 'applied' : 'unknown';
+        assert.equal(result.calendarOutcome?.status, expected);
+        assert.equal(result.ok, expected === 'applied');
+        assert.equal(f.transport.writes, writes);
+        assert.equal(f.transport.removals, removals);
+        assert.equal(JSON.stringify([...f.transport.resources]), before);
+        if (expected === 'unknown') {
+          assert.equal(f.db.sql.prepare('SELECT id FROM notices').all().length, 0);
+          assert.throws(() => reopened.dismiss('partner', preview.id), DomainError);
+          reopened.dismiss('owner', preview.id);
+          reopened.dismiss('owner', preview.id);
+          await assert.rejects(reopened.confirm('owner', preview.id), /dismissed/);
+          const saved = f.db.sql
+            .prepare('SELECT result,applied_at FROM previews WHERE id=?')
+            .get(preview.id)!;
+          assert.equal(saved.applied_at, null);
+          assert.equal(JSON.parse(String(saved.result)).calendarOutcome.status, 'unknown');
+          assert.ok(JSON.parse(String(saved.result)).dismissedAt);
+        }
+      } finally {
+        f.db.close();
+      }
+    });
+  }
+}
+
+test('a disk reopen preserves unknown outcomes, actor binding and dismissal without another write', async () => {
+  mkdirSync(resolve('.cache/tests'), { recursive: true });
+  const path = mkdtempSync(resolve('.cache/tests/calendar-recovery-'));
+  const f = fixture(resolve(path, 'app.sqlite'));
+  let db = f.db;
+  try {
+    const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
+    f.transport.losePutResponse = true;
+    await assert.rejects(f.service.confirm('owner', preview.id));
+    f.transport.humanEdit([...f.transport.resources.keys()][0], 'Human edit across restart');
+    db.close();
+    db = new Database(resolve(path, 'app.sqlite'));
+    const reopened = new CalendarService(db, f.transport, () => new Date('2026-10-14T08:00:00Z'));
+    await assert.rejects(reopened.confirm('partner', preview.id));
+    assert.equal((await reopened.confirm('owner', preview.id)).calendarOutcome?.status, 'unknown');
+    reopened.dismiss('owner', preview.id);
+    db.close();
+    db = new Database(resolve(path, 'app.sqlite'));
+    await assert.rejects(
+      new CalendarService(db, f.transport).confirm('owner', preview.id),
+      /dismissed/,
+    );
+    assert.equal(f.transport.writes, 1);
+    assert.equal(
+      parseEvents([...f.transport.resources.values()][0])[0].title,
+      'Human edit across restart',
+    );
+  } finally {
+    db.close();
+    rmSync(path, { recursive: true, force: true });
+  }
+});
+
+test('a retained operation receipt proves the original write without overwriting later fields', async () => {
+  const f = fixture();
+  try {
+    const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
+    f.transport.losePutResponse = true;
+    await assert.rejects(f.service.confirm('owner', preview.id));
+    const [url, resource] = [...f.transport.resources][0];
+    resource.data = resource.data.replace('SUMMARY:Dinner together', 'SUMMARY:Later human edit');
+    resource.etag = '"later-version"';
+    const reopened = new CalendarService(f.db, f.transport, () => new Date('2026-10-14T08:00:00Z'));
+    const result = await reopened.confirm('owner', preview.id);
+    assert.equal(result.calendarOutcome?.status, 'applied');
+    assert.equal(f.transport.writes, 1);
+    assert.equal(f.transport.resources.get(url)?.etag, '"later-version"');
+    assert.equal(reopened.snapshot().events[0].title, 'Later human edit');
+    assert.equal(reopened.snapshot().events[0].uid, parseEvents(resource)[0].uid);
+  } finally {
+    f.db.close();
+  }
+});
+
+test('an expired unattempted preview records failure without contacting iCloud', async () => {
+  const f = fixture();
+  try {
+    const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
+    f.transport.get = async () => {
+      throw new Error('Must not contact iCloud');
+    };
+    const reopened = new CalendarService(f.db, f.transport, () => new Date('2026-10-14T07:10:00Z'));
+    await assert.rejects(
+      reopened.confirm('owner', preview.id),
+      (error: unknown) =>
+        error instanceof CalendarOutcomeError && error.calendarOutcome.status === 'failed',
+    );
+    assert.equal(f.transport.writes, 0);
+    const result = JSON.parse(
+      String(f.db.sql.prepare('SELECT result FROM previews WHERE id=?').get(preview.id)!.result),
+    );
+    assert.equal(result.calendarOutcome.status, 'failed');
+    reopened.dismiss('owner', preview.id);
+    await assert.rejects(reopened.confirm('owner', preview.id));
+  } finally {
+    f.db.close();
+  }
+});
+
+test('a failed read before admission does not consume authorization or claim an uncertain write', async () => {
+  const f = fixture();
+  try {
+    const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
+    const get = f.transport.get.bind(f.transport);
+    f.transport.get = async () => {
+      throw new Error('Offline');
+    };
+    await assert.rejects(f.service.confirm('owner', preview.id), /No write was attempted/);
+    assert.equal(f.db.sql.prepare('SELECT attempted FROM calendar_operations').get()?.attempted, 0);
+    f.transport.get = get;
+    assert.equal((await f.service.confirm('owner', preview.id)).ok, true);
+  } finally {
+    f.db.close();
+  }
+});
+
+test('uncertain writes remain read-only even before expiry when the remote request did not land', async () => {
+  const f = fixture();
+  try {
+    const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
+    f.transport.put = async () => {
+      throw new Error('Transport failed before acceptance');
+    };
+    await assert.rejects(f.service.confirm('owner', preview.id));
+    f.transport.put = async () => {
+      assert.fail('A reconciliation must never retry a write');
+    };
+    assert.equal((await f.service.confirm('owner', preview.id)).calendarOutcome?.status, 'unknown');
+    assert.equal(f.transport.resources.size, 0);
+  } finally {
+    f.db.close();
   }
 });
 

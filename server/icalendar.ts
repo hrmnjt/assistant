@@ -141,28 +141,17 @@ export function updateEventData(
   setFields(events[0], fields, operationId, prior[0]);
   return calendar.toString();
 }
-export function hasOperation(
-  resource: CalendarResource,
-  operationId: string,
-  expected: CalendarFields,
-) {
+// The operation marker is a receipt for the original write, not a fingerprint
+// of today's fields. Apple Calendar may preserve it while editing those fields.
+export function hasOperation(resource: CalendarResource, operationId: string, uid: string) {
   try {
-    const calendar = component(resource.data);
-    const event = calendar.getFirstSubcomponent('vevent');
-    if (event?.getFirstPropertyValue('x-household-operation') !== operationId) return false;
-    const saved = parseEvents(resource)[0];
-    return (
-      saved &&
-      saved.title === expected.title &&
-      saved.notes === expected.notes &&
-      saved.location === expected.location &&
-      saved.allDay === expected.allDay &&
-      saved.reminderMinutes === expected.reminderMinutes &&
-      (expected.allDay
-        ? saved.start === expected.start && saved.end === expected.end
-        : Date.parse(saved.start) === Date.parse(expected.start) &&
-          Date.parse(saved.end) === Date.parse(expected.end))
-    );
+    return component(resource.data)
+      .getAllSubcomponents('vevent')
+      .some(
+        (event) =>
+          event.getFirstPropertyValue('uid') === uid &&
+          event.getFirstPropertyValue('x-household-operation') === operationId,
+      );
   } catch {
     return false;
   }

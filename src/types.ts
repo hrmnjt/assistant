@@ -104,7 +104,18 @@ export type CalendarMutation =
   | { kind: 'calendar.update'; id: string; etag: string; event: CalendarFields }
   | { kind: 'calendar.delete'; id: string; etag: string };
 export type Mutation = HouseholdMutation | CalendarMutation;
+export type CalendarOutcome = {
+  status: 'applied' | 'conflicted' | 'failed' | 'unknown';
+  message: string;
+};
+export type ConfirmationResult = {
+  ok: boolean;
+  targetId: string;
+  calendarOutcome?: CalendarOutcome;
+  dismissedAt?: string;
+};
 export type Preview = {
+  calendarOutcome?: CalendarOutcome;
   id: string;
   title: string;
   details: { label: string; before?: string; after: string }[];

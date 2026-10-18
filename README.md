@@ -191,6 +191,15 @@ Preserve event identity when updating an appointment. Refresh human edits and
 deletions, detect conflicting updates, and show pending or failed synchronization.
 Do not treat a calendar subscription or exported copy as two-way integration.
 
+If a confirmed calendar write loses its response, checking that preview is
+read-only, even after the preview expires. A retained operation receipt can
+prove the original write while preserving later human edits. If the receipt is
+lost or the resource has since changed/disappeared, the app reports an unknown
+result rather than claiming failure or issuing another write. An absent event
+satisfies an uncertain deletion, without proving which client deleted it.
+Explicit dismissal keeps the operation record and does not undo any remote
+change; review the current calendar before preparing a replacement proposal.
+
 Read/write access to the actual shared calendar must be validated before
 committing to the integration. Radicale remains a fallback if iCloud access is
 unsuitable or self-hosting the calendar becomes preferable.
