@@ -68,6 +68,7 @@ export class Reminders {
               event.title,
               `${start <= DateTime.fromJSDate(now) ? 'Started' : 'Starts'} ${start.setZone(preferences.timezone).toFormat('d LLL, HH:mm')}${event.location ? ` · ${event.location}` : ''}`,
               now,
+              DateTime.min(trigger.plus({ hours: 2 }), end)!.toJSDate(),
             );
           }
         }
@@ -83,6 +84,8 @@ export class Reminders {
               task.title,
               `Due ${due.toFormat('d LLL, HH:mm')}${task.missedDates.length ? ` · Missed ${task.missedDates.length} times` : ''}`,
               now,
+              // An overdue task stays in Updates, but is pushed only near its original deadline.
+              due.plus({ hours: 2 }).toJSDate(),
             );
             this.db.sql
               .prepare('INSERT OR IGNORE INTO task_notice_deadlines VALUES (?,?,?,?)')
@@ -124,6 +127,7 @@ export class Reminders {
           kind === 'morning' ? 'Good morning. Here’s your day.' : 'A little evening check-in.',
           `${appointments === null ? '' : `${appointments} appointment${appointments === 1 ? '' : 's'} ${kind === 'morning' ? 'today' : 'tomorrow'} · `}${today} task${today === 1 ? '' : 's'} due today · ${overdue} overdue. Open your tasks to review what needs attention.`,
           now,
+          scheduled.plus({ hours: 2 }).toJSDate(),
         );
       }
     }
@@ -131,10 +135,24 @@ export class Reminders {
   private appointmentId(event: CalendarEvent, userId: string) {
     return `appointment:${event.id}:${event.start}:${event.reminderMinutes}:${userId}`;
   }
-  private insert(id: string, userId: string, title: string, body: string, now: Date) {
+  private insert(
+    id: string,
+    userId: string,
+    title: string,
+    body: string,
+    now: Date,
+    pushUntil: Date,
+  ) {
     this.db.sql
-      .prepare('INSERT OR IGNORE INTO notices(id,user_id,title,body,created_at) VALUES (?,?,?,?,?)')
-      .run(id, userId, title, body, now.toISOString());
+      .prepare(
+        'INSERT OR IGNORE INTO notices(id,user_id,title,body,created_at,push_until) VALUES (?,?,?,?,?,?)',
+      )
+      .run(id, userId, title, body, now.toISOString(), pushUntil.toISOString());
+  }
+  /** Whether a phone push is no longer useful; the inbox record is kept either way. */
+  private pushExpired(notice: Record<string, unknown>) {
+    // Fails closed for a missing or malformed deadline.
+    return !(this.clock().getTime() <= Date.parse(String(notice.push_until)));
   }
   private taskDeadlineCurrent(noticeId: string, recipientId: string) {
     const deadline = this.db.sql
@@ -177,8 +195,8 @@ export class Reminders {
       // Retire expired push work before any dependency check, across the whole
       // queue rather than just the first batch. Keep its historical inbox row.
       this.db.sql
-        .prepare("UPDATE notices SET delivery='inbox' WHERE delivery='pending' AND created_at<?")
-        .run(new Date(now - 7200_000).toISOString());
+        .prepare("UPDATE notices SET delivery='inbox' WHERE delivery='pending' AND push_until<?")
+        .run(new Date(now).toISOString());
       // Round-robin recipient/kind lanes. One broken integration or device must
       // not monopolize all twenty slots while unrelated work is ready.
       const notices = this.db.sql
@@ -243,7 +261,7 @@ export class Reminders {
             .prepare('SELECT id FROM push_deliveries WHERE id=?')
             .get(deliveryId);
           if (sent) continue;
-          if (this.clock().getTime() - Date.parse(String(notice.created_at)) > 7200_000) continue;
+          if (this.pushExpired(notice)) continue;
           try {
             await webpush.sendNotification(
               JSON.parse(String(subscription.value)),
@@ -279,7 +297,7 @@ export class Reminders {
                 .prepare('SELECT id FROM push_deliveries WHERE id=?')
                 .get(`${notice.id}:${String(subscription.endpoint)}`),
           );
-        if (!remaining || this.clock().getTime() - Date.parse(String(notice.created_at)) > 7200_000)
+        if (!remaining || this.pushExpired(notice))
           this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
         else this.defer(String(notice.id), 'push-transient');
       }

@@ -22,13 +22,17 @@ export function notifyPartner(
   for (const person of db.sql.prepare('SELECT id FROM users WHERE id<>?').all(actorId)) {
     const id = `change:${operationId}:${person.id}`;
     db.sql
-      .prepare('INSERT OR IGNORE INTO notices(id,user_id,title,body,created_at) VALUES (?,?,?,?,?)')
+      .prepare(
+        'INSERT OR IGNORE INTO notices(id,user_id,title,body,created_at,push_until) VALUES (?,?,?,?,?,?)',
+      )
       .run(
         id,
         String(person.id),
         `${actor?.name ?? 'Your partner'} ${action} ${targetKind === 'task' ? 'a task' : 'an appointment'}`,
         label,
         at,
+        // A partner-change push is useful for two hours after the change.
+        new Date(Date.parse(at) + 7200_000).toISOString(),
       );
     db.sql
       .prepare('INSERT OR IGNORE INTO notice_targets VALUES (?,?,?)')
