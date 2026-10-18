@@ -1,4 +1,5 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scrypt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
 import type { Request, Response, NextFunction } from 'express';
 import type { Database } from './database.js';
 import type { Person } from '../src/types.js';
@@ -7,9 +8,15 @@ export function hashPassword(password: string) {
   const salt = randomBytes(16).toString('hex');
   return `${salt}:${scryptSync(password, salt, 64).toString('hex')}`;
 }
-export function verifyPassword(password: string, hash: string) {
+const derive = promisify(scrypt) as (
+  password: string,
+  salt: string,
+  length: number,
+) => Promise<Buffer>;
+/** Runs the derivation on the libuv pool so sign-in does not stall household scheduling. */
+export async function verifyPassword(password: string, hash: string) {
   const [salt, expected] = hash.split(':');
-  return timingSafeEqual(scryptSync(password, salt, 64), Buffer.from(expected, 'hex'));
+  return timingSafeEqual(await derive(password, salt, 64), Buffer.from(expected, 'hex'));
 }
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const defaultPreferences = {
@@ -45,7 +52,21 @@ export function provision(
   );
 }
 
-export function auth(db: Database, origin: string) {
+type Throttle = {
+  /** Distinct clients tracked at once; the oldest window is dropped beyond this. */
+  maxClients?: number;
+  /** Password derivations in flight at once; further sign-ins are asked to retry. */
+  maxConcurrent?: number;
+  now?: () => number;
+};
+const attemptWindow = 900_000;
+const attemptLimit = 10;
+
+export function auth(
+  db: Database,
+  origin: string,
+  { maxClients = 1000, maxConcurrent = 2, now = Date.now }: Throttle = {},
+) {
   const secure = origin.startsWith('https:');
   const cookieName = secure ? '__Host-household' : 'household';
   const cookie = {
@@ -55,7 +76,23 @@ export function auth(db: Database, origin: string) {
     path: '/',
     maxAge: 30 * 86400_000,
   };
+  // In-memory and per client address, so a restart clears it; derivation cost
+  // still bounds guessing. Behind the local tunnel, req.ip is the forwarded client.
   const attempts = new Map<string, { count: number; until: number }>();
+  let verifying = 0;
+  function admit(key: string) {
+    const at = now();
+    for (const [client, attempt] of attempts) if (attempt.until <= at) attempts.delete(client);
+    const current = attempts.get(key);
+    if (current && current.count >= attemptLimit) return false;
+    if (!current && attempts.size >= maxClients) attempts.delete(attempts.keys().next().value!);
+    // Count each attempt before verifying, so concurrent guesses share one limit.
+    attempts.set(key, {
+      count: (current?.count ?? 0) + 1,
+      until: current?.until ?? at + attemptWindow,
+    });
+    return true;
+  }
   // A fixed dummy hash keeps unknown-user password checks comparable in cost.
   const dummyHash = hashPassword(randomBytes(32).toString('hex'));
   const person = (row: Record<string, unknown>): Person => ({
@@ -88,13 +125,8 @@ export function auth(db: Database, origin: string) {
     }
     next();
   }
-  function login(req: Request, res: Response) {
+  async function login(req: Request, res: Response) {
     const key = req.ip || 'local';
-    const attempt = attempts.get(key);
-    if (attempt && attempt.until > Date.now() && attempt.count >= 10) {
-      res.status(429).json({ error: 'Too many sign-in attempts. Please wait 15 minutes.' });
-      return;
-    }
     const { username, password } = req.body ?? {};
     if (
       typeof username !== 'string' ||
@@ -105,12 +137,23 @@ export function auth(db: Database, origin: string) {
       res.status(400).json({ error: 'Enter your username and password.' });
       return;
     }
+    if (verifying >= maxConcurrent) {
+      res.status(429).json({ error: 'Sign-in is busy. Please try again in a moment.' });
+      return;
+    }
+    if (!admit(key)) {
+      res.status(429).json({ error: 'Too many sign-in attempts. Please wait 15 minutes.' });
+      return;
+    }
     const row = db.sql.prepare('SELECT * FROM users WHERE username=?').get(username);
-    const valid = verifyPassword(password, row ? String(row.password_hash) : dummyHash);
+    let valid: boolean;
+    verifying++;
+    try {
+      valid = await verifyPassword(password, row ? String(row.password_hash) : dummyHash);
+    } finally {
+      verifying--;
+    }
     if (!row || !valid) {
-      const value =
-        attempt && attempt.until > Date.now() ? attempt : { count: 0, until: Date.now() + 900_000 };
-      attempts.set(key, { ...value, count: value.count + 1 });
       res.status(401).json({ error: 'The username or password is incorrect.' });
       return;
     }
