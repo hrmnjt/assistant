@@ -150,7 +150,10 @@ export class Household {
           JSON.stringify(defaultPreferences),
         );
       }
-      await tx.run("INSERT INTO settings VALUES ('setup', ?)", this.clock().toISOString());
+      await tx.run(
+        "INSERT INTO settings VALUES ('setup', ?)",
+        JSON.stringify(this.clock().toISOString()),
+      );
       await this.spaces(tx);
     });
   }

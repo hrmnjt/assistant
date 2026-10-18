@@ -1,17 +1,33 @@
 import { DateTime } from 'luxon';
+import { z } from 'zod';
 import { defineExtension, section } from '@earendil-works/pi-durable';
 import type { Row } from '../../database.js';
 import { DomainError } from '../../errors.js';
-import { json } from '../../http.js';
+import { body, json } from '../../http.js';
 import type { ChangeOwner, NoticeStatus, Plugin, PluginHost } from '../../plugin.js';
-import type { CalendarEvent } from '../../../src/types.js';
+import type { CalendarEvent, Person } from '../../../src/types.js';
+import { iCloud, type CalendarAccount, type CalendarConnector } from './caldav.js';
 import { calendarMutationSchema, type CalendarService } from './service.js';
 
 /** The parts of the calendar service the plugin uses; tests can supply a stand-in. */
 export type CalendarSource = Pick<
   CalendarService,
-  'connected' | 'snapshot' | 'sync' | 'preview' | 'confirm' | 'cancel' | 'dismiss'
+  'connected' | 'connect' | 'snapshot' | 'sync' | 'preview' | 'confirm' | 'cancel' | 'dismiss'
 >;
+/** The saved iCloud connection, kept in the household's settings and never sent to the app. */
+export type CalendarConnection = CalendarAccount & { calendarUrl: string; calendarName: string };
+
+const connectionInput = z
+  .object({
+    username: z.string().trim().min(3, 'Enter your Apple ID.').max(200),
+    password: z.string().trim().min(8, 'Enter an app-specific password.').max(200),
+    calendarUrl: z.string().url().optional(),
+  })
+  .strict();
+const onlySetUpBy = (me: Person) => {
+  if (me.id !== 'owner')
+    throw new DomainError('Only the person who set up the household manages the calendar.', 403);
+};
 
 const syncInterval = 5 * 60_000;
 const activeAge = 60_000;
@@ -48,10 +64,46 @@ export class CalendarPlugin implements Plugin {
         return json(this.service.snapshot());
       },
     },
+    {
+      // Without a calendar: the account's calendars to choose from. With one: connect it.
+      method: 'POST',
+      path: /^\/api\/calendar\/connection$/,
+      handle: async (request: Request, me: Person) => {
+        onlySetUpBy(me);
+        const { calendarUrl, ...account } = connectionInput.parse(await body(request));
+        const calendars = await this.connector.calendars(account).catch(() => {
+          throw new DomainError(
+            'iCloud did not accept that Apple ID and app-specific password, or could not be reached. Check them and try again.',
+          );
+        });
+        if (!calendarUrl) return json({ calendars });
+        const chosen = calendars.find((calendar) => calendar.url === calendarUrl);
+        if (!chosen) throw new DomainError('Choose one of the listed calendars.');
+        const connection: CalendarConnection = {
+          ...account,
+          calendarUrl,
+          calendarName: chosen.name,
+        };
+        await this.host.settings.set('icloud', connection);
+        await this.service.connect(this.connector.open(connection));
+        return json(this.service.snapshot());
+      },
+    },
+    {
+      method: 'DELETE',
+      path: /^\/api\/calendar\/connection$/,
+      handle: async (_request: Request, me: Person) => {
+        onlySetUpBy(me);
+        await this.host.settings.delete('icloud');
+        await this.service.connect(undefined);
+        return json({ ok: true });
+      },
+    },
   ];
   constructor(
     private host: PluginHost,
     readonly service: CalendarSource,
+    private connector: CalendarConnector = iCloud,
   ) {
     this.changes = {
       kinds: ['calendar.create', 'calendar.update', 'calendar.delete'],
@@ -86,9 +138,21 @@ export class CalendarPlugin implements Plugin {
       ],
     });
   }
-  async snapshot() {
+  async snapshot(me: Person) {
     const calendar = this.service.snapshot();
-    return { calendar, integrations: { calendar: calendar.status } };
+    // Whoever manages the connection sees which Apple ID it uses; the password never leaves.
+    const connection =
+      me.id === 'owner' ? await this.host.settings.get<CalendarConnection>('icloud') : undefined;
+    return {
+      calendar,
+      integrations: { calendar: calendar.status },
+      ...(connection ? { calendarAccount: connection.username } : {}),
+    };
+  }
+  /** The saved connection, opened at startup. */
+  static async saved(host: Pick<PluginHost, 'settings'>, connector: CalendarConnector = iCloud) {
+    const connection = await host.settings.get<CalendarConnection>('icloud');
+    return connection ? connector.open(connection) : undefined;
   }
   private syncedAt() {
     return Date.parse(this.service.snapshot().syncedAt ?? '') || 0;

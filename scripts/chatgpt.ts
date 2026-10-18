@@ -7,18 +7,16 @@ import { chatgptModels } from '../server/chatgpt-models.js';
 // npm run ai:connect [-- --production]     sign in with ChatGPT and save the connection
 // npm run ai:disconnect [-- --production]  remove it
 // Local values go to cloudflare/.dev.vars; production values to cloudflare/.prod.vars,
-// uploaded by `npm run secrets`. Tokens are never printed.
+// uploaded by `npm run secrets`. Tokens are never printed. The model is chosen in
+// the app's Settings.
 process.umask(0o077);
 process.env.PI_OAUTH_CALLBACK_HOST = '127.0.0.1';
 const path = process.argv.includes('--production')
   ? 'cloudflare/.prod.vars'
   : 'cloudflare/.dev.vars';
-if (!existsSync(path)) {
-  console.error(`Create ${path} first with npm run configure.`);
-  process.exit(1);
-}
+// CHATGPT_MODEL_ID is no longer used; saving drops it from older files.
 const keys = ['CHATGPT_HOST_ID', 'CHATGPT_MODEL_ID', 'CHATGPT_CREDENTIAL_JSON'] as const;
-const lines = readFileSync(path, 'utf8').split('\n');
+const lines = existsSync(path) ? readFileSync(path, 'utf8').split('\n') : [];
 const value = (key: string) =>
   lines
     .find((line) => line.startsWith(`${key}=`))
@@ -73,34 +71,10 @@ if (process.argv.includes('--remove')) {
       },
       { getDeviceId: () => hostId, agentName: 'Our day household assistant' },
     );
-    const auth = await models.getAuth('openai', { signal: AbortSignal.timeout(15000) });
-    if (!auth?.auth.apiKey || !credential) throw new Error('No OAuth access token was returned.');
-    const response = await fetch('https://api.openai.com/v1/models', {
-      headers: { Authorization: `Bearer ${auth.auth.apiKey}` },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!response.ok)
-      throw new Error('The account model catalog is unavailable. Try reconnecting.');
-    const body = (await response.json()) as {
-      models?: { slug: string; display_name: string; visibility: string }[];
-    };
-    const available = body.models?.filter(
-      (model) => model.visibility === 'list' && models.getModel('openai', model.slug),
-    );
-    if (!available?.length) throw new Error('No supported model was found for this account.');
-    available.forEach((model, index) =>
-      console.log(`${index + 1}. ${model.display_name} (${model.slug})`),
-    );
-    const index = Number(await terminal.question('Choose a model number: ')) - 1;
-    if (!Number.isInteger(index) || !available[index])
-      throw new Error('Choose a listed model number.');
-    save({
-      CHATGPT_HOST_ID: hostId,
-      CHATGPT_MODEL_ID: available[index].slug,
-      CHATGPT_CREDENTIAL_JSON: JSON.stringify(credential),
-    });
+    if (!credential) throw new Error('No OAuth credential was returned.');
+    save({ CHATGPT_HOST_ID: hostId, CHATGPT_CREDENTIAL_JSON: JSON.stringify(credential) });
     console.log(
-      `Saved the ChatGPT connection in ${path}. ${path.includes('prod') ? 'Run npm run secrets to upload it.' : 'Restart npm run dev.'} Send a message to validate completed inference; shared use by both spouses still needs account eligibility validation.`,
+      `Saved the ChatGPT connection in ${path}. ${path.includes('prod') ? 'Run npm run secrets to upload it' : 'Restart npm run dev'}, then choose the model in the app's Settings. Send a message to validate completed inference; shared use by both of you still needs account eligibility validation.`,
     );
   } catch {
     console.error(

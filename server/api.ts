@@ -5,11 +5,13 @@ import { previewOwner } from './changes.js';
 import { DomainError } from './errors.js';
 import { email, personName, type Household } from './household.js';
 import type { Conversations } from './conversations.js';
+import type { AssistantModel } from './ai.js';
 import { validPushEndpoint, type Notices } from './notices.js';
 import type { ApiRoute, Plugin } from './plugin.js';
 import { CalendarOutcomeError } from './plugins/calendar/service.js';
 import { recoverablePreviews } from './preview-recovery.js';
 import { body, json, RequestError } from './http.js';
+import { Settings } from './settings.js';
 import type { Person, Snapshot } from '../src/types.js';
 
 /** The household application behind `/api`: one instance per household runtime. */
@@ -18,6 +20,8 @@ export type App = {
   auth: Auth;
   household: Household;
   conversations: Conversations;
+  /** The assistant's model, chosen in Settings. */
+  assistantModel: AssistantModel;
   notices: Notices;
   /** Features beyond the conversation: tasks, the calendar, the dashboard. */
   plugins: readonly Plugin[];
@@ -91,10 +95,7 @@ async function setUp(app: App, request: Request, signedIn: string | null) {
       .parse(await body(request));
     await app.household.setUp({ name: input.name, email: signedIn ?? undefined }, input.partner);
     // The app's own address, as Web Push's contact.
-    await app.db.run(
-      "INSERT INTO settings VALUES ('origin', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-      JSON.stringify(url.origin),
-    );
+    await new Settings(app.db).set('origin', url.origin);
     return json({ ok: true });
   }
   return json(
@@ -104,7 +105,11 @@ async function setUp(app: App, request: Request, signedIn: string | null) {
 }
 
 function routes(app: App): ApiRoute[] {
-  const { db, auth, household, conversations, notices, plugins } = app;
+  const { db, auth, household, conversations, assistantModel, notices, plugins } = app;
+  const onlySetUpBy = (me: Person) => {
+    if (me.id !== 'owner')
+      throw new DomainError('Only the person who set up the household manages this.', 403);
+  };
   const id = '([^/]+)';
   const owners = [household.changes, ...plugins.flatMap((plugin) => plugin.changes ?? [])];
   const route = (method: string, path: RegExp, handle: ApiRoute['handle']): ApiRoute => ({
@@ -139,7 +144,11 @@ function routes(app: App): ApiRoute[] {
         ),
         integrations: {
           calendar: 'not-connected',
-          ai: conversations.configured ? 'configured' : 'not-connected',
+          ai: conversations.configured
+            ? 'configured'
+            : (await assistantModel.connected())
+              ? 'needs-model'
+              : 'not-connected',
         },
       };
       // Each plugin adds its part; integration statuses merge rather than replace.
@@ -164,13 +173,25 @@ function routes(app: App): ApiRoute[] {
     }),
     // The person who set up the household can correct the other person's email.
     route('POST', /^\/api\/people\/partner$/, async (request, me) => {
-      if (me.id !== 'owner')
-        throw new DomainError('Only the person who set up the household can change this.', 403);
+      onlySetUpBy(me);
       const input = z
         .object({ email })
         .strict()
         .parse(await body(request));
       await household.changeEmail('partner', input.email);
+      return json({ ok: true });
+    }),
+    route('GET', /^\/api\/assistant\/models$/, async (_request, me) => {
+      onlySetUpBy(me);
+      return json(await assistantModel.catalog());
+    }),
+    route('POST', /^\/api\/assistant\/model$/, async (request, me) => {
+      onlySetUpBy(me);
+      const input = z
+        .object({ id: z.string().min(1).max(100) })
+        .strict()
+        .parse(await body(request));
+      await assistantModel.choose(input.id);
       return json({ ok: true });
     }),
     route('GET', /^\/api\/previews$/, async (_request, me) =>

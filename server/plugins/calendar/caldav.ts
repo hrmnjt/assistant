@@ -23,6 +23,20 @@ function allowedICloudUrl(value: string) {
   return url;
 }
 
+/** An iCloud account: the Apple ID and an app-specific password, never the account password. */
+export type CalendarAccount = { username: string; password: string };
+/** One of the account's calendars that holds events. */
+export type CalendarChoice = { name: string; url: string };
+/** Opens calendar connections; tests can supply a stand-in for iCloud. */
+export type CalendarConnector = {
+  calendars(account: CalendarAccount): Promise<CalendarChoice[]>;
+  open(account: CalendarAccount & { calendarUrl: string }): CalendarTransport;
+};
+export const iCloud: CalendarConnector = {
+  calendars: (account) => new ICloudTransport({ ...account, calendarName: '' }).calendars(),
+  open: (account) => new ICloudTransport({ ...account, calendarName: '' }),
+};
+
 export class ICloudTransport implements CalendarTransport {
   private client: DAVClient;
   private selected?: DAVCalendar;
@@ -64,6 +78,17 @@ export class ICloudTransport implements CalendarTransport {
     this.fetch = safeFetch;
   }
   private fetch: typeof fetch;
+  /** The account's calendars that hold events, to choose one. */
+  async calendars(): Promise<CalendarChoice[]> {
+    await this.client.login({ loadCollections: false, loadObjects: false });
+    return (await this.client.fetchCalendars())
+      .filter((calendar) => !calendar.components || calendar.components.includes('VEVENT'))
+      .map((calendar) => {
+        allowedICloudUrl(calendar.url);
+        // The exact URL, as connecting later matches it.
+        return { name: String(calendar.displayName), url: calendar.url };
+      });
+  }
   private async calendar() {
     if (this.selected) return this.selected;
     if (!this.connecting)
@@ -77,7 +102,7 @@ export class ICloudTransport implements CalendarTransport {
         );
         if (matches.length !== 1)
           throw new DomainError(
-            'Select one shared iCloud calendar using its exact name or calendar URL in the server settings.',
+            'The chosen iCloud calendar was not found. Connect the calendar again in Settings.',
             503,
           );
         allowedICloudUrl(matches[0].url);

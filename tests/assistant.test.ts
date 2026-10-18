@@ -15,7 +15,8 @@ import { Conversations } from '../server/conversations.js';
 import { boundedModels, dailyMaintenanceCalls } from '../server/assistant-tools.js';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import type { Conversation } from '@earendil-works/pi-durable';
-import { aiConnection, chatgptModels, StoredCredentials } from '../server/ai.js';
+import { aiConnection, AssistantModel, chatgptModels, StoredCredentials } from '../server/ai.js';
+import { Settings } from '../server/settings.js';
 import { recoverablePreviews } from '../server/preview-recovery.js';
 import type { Store } from '../server/database.js';
 import { directory, householdParts, householdStore, openStore, type Row } from './support.js';
@@ -428,8 +429,9 @@ test('the stored ChatGPT credential serializes refreshes and rejects API credent
   }
 });
 
-test('the assistant is configured only by a known model and a readable connection', async () => {
+test('the assistant is configured only by a model chosen in Settings and a readable connection', async () => {
   const db = await householdStore();
+  const settings = new Settings(db);
   const credential = JSON.stringify({
     type: 'oauth',
     access: 'synthetic-access',
@@ -437,35 +439,76 @@ test('the assistant is configured only by a known model and a readable connectio
     expires: Date.now() + 3600000,
   });
   try {
-    assert.equal((await aiConnection(db, {})).model, undefined);
+    assert.equal((await aiConnection(db, {}, settings)).model, undefined);
+    // Connected, but no model chosen yet.
     assert.equal(
-      (
-        await aiConnection(db, {
-          CHATGPT_MODEL_ID: 'gpt-6.1-sol',
-          CHATGPT_CREDENTIAL_JSON: '{not json',
-        })
-      ).model,
+      (await aiConnection(db, { CHATGPT_CREDENTIAL_JSON: credential }, settings)).model,
       undefined,
     );
+    await settings.set('ai_model', 'not-a-model');
     assert.equal(
-      (
-        await aiConnection(db, {
-          CHATGPT_MODEL_ID: 'not-a-model',
-          CHATGPT_CREDENTIAL_JSON: credential,
-        })
-      ).model,
+      (await aiConnection(db, { CHATGPT_CREDENTIAL_JSON: credential }, settings)).model,
+      undefined,
+    );
+    await settings.set('ai_model', 'gpt-6.1-sol');
+    assert.equal(
+      (await aiConnection(db, { CHATGPT_CREDENTIAL_JSON: '{not json' }, settings)).model,
       undefined,
     );
     assert.deepEqual(
-      (
-        await aiConnection(db, {
-          CHATGPT_MODEL_ID: 'gpt-6.1-sol',
-          CHATGPT_CREDENTIAL_JSON: credential,
-        })
-      ).model,
-      { provider: 'openai', modelId: 'gpt-6.1-sol' },
+      (await aiConnection(db, { CHATGPT_CREDENTIAL_JSON: credential }, settings)).model,
+      {
+        provider: 'openai',
+        modelId: 'gpt-6.1-sol',
+      },
     );
   } finally {
+    await db.close();
+  }
+});
+
+test('whoever set up chooses the model from the account catalog, and it applies at once', async () => {
+  const db = await householdStore();
+  const settings = new Settings(db);
+  const { models } = await aiConnection(
+    db,
+    {
+      CHATGPT_CREDENTIAL_JSON: JSON.stringify({
+        type: 'oauth',
+        access: 'synthetic-access',
+        refresh: 'synthetic-refresh',
+        expires: Date.now() + 3600000,
+      }),
+    },
+    settings,
+  );
+  const original = globalThis.fetch;
+  const asked: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    asked.push(`${String(input)} ${new Headers(init?.headers).get('authorization')}`);
+    return Response.json({
+      models: [
+        { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1 Sol', visibility: 'list' },
+        { slug: 'gpt-hidden', display_name: 'Hidden', visibility: 'hide' },
+        { slug: 'unknown-model', display_name: 'Unknown', visibility: 'list' },
+      ],
+    });
+  }) as typeof fetch;
+  const used: unknown[] = [];
+  try {
+    const model = new AssistantModel(db, settings, models, (ref) => used.push(ref));
+    assert.equal(await model.connected(), true);
+    assert.deepEqual(await model.catalog(), {
+      current: null,
+      models: [{ id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' }],
+    });
+    assert.deepEqual(asked, ['https://api.openai.com/v1/models Bearer synthetic-access']);
+    await assert.rejects(model.choose('gpt-hidden'), /listed models/);
+    await model.choose('gpt-6.1-sol');
+    assert.deepEqual(used, [{ provider: 'openai', modelId: 'gpt-6.1-sol' }]);
+    assert.equal((await model.catalog()).current, 'gpt-6.1-sol');
+  } finally {
+    globalThis.fetch = original;
     await db.close();
   }
 });

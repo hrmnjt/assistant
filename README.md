@@ -46,10 +46,10 @@ npm run dev
 Open `http://localhost:8787` (or `http://127.0.0.1:8787`) and set up the
 household with two names (emails are optional locally). Development has no
 sign-in: it answers only on this computer and acts as whoever set it up;
-Settings has an "Act as" button to try shared features as the other person.
-`npm run configure` optionally creates the private `cloudflare/.dev.vars` with a
-push keypair (it never overwrites it); add iCloud or ChatGPT settings there and
-restart `npm run dev`. `npm run dev` runs `wrangler dev` with the client
+Settings has an "Act as" button to try shared features as the other person,
+and connects the calendar and chooses the assistant's model as on a
+deployment. `npm run ai:connect` saves a local ChatGPT connection in the
+private `cloudflare/.dev.vars`; restart `npm run dev` afterward. `npm run dev` runs `wrangler dev` with the client
 rebuilt on each change (reload the page to see it). Local state lives in
 `data/cloudflare/` and survives restarts; delete that folder to start over. The
 local app stops with its process. Phones use the deployment.
@@ -71,13 +71,16 @@ refuses every request.
 3. Open the app and sign in. The first person to sign in sets up the household:
    both names and the other person's email. After that only those two emails
    get in.
-4. Optional: `npm run configure -- --production` writes the private
-   `cloudflare/.prod.vars` with a stable push keypair; add iCloud or ChatGPT
-   settings there and run `npm run secrets` to upload them as Worker secrets.
-   They apply without a redeploy; secrets left out of the file keep their value.
+4. In Settings, that person connects the iCloud calendar (an Apple ID and an
+   app-specific password, then the calendar to share).
+5. Optional: connect ChatGPT from the Mac with `npm run ai:connect -- --production`
+   and `npm run secrets` (see [AI access](#ai-access)), then choose the model in
+   Settings.
+
+There is no other configuration: push keys are made by the app on first start.
 
 `npm run deploy` uploads code only and keeps the Worker's secrets and any
-variables added in the dashboard. Run `npm run check` first to typecheck and
+variables added in the dashboard; settings made in the app live in its storage. Run `npm run check` first to typecheck and
 build the bundle without uploading. Keep the Durable Object class, binding, and
 migration history on later deploys so they keep addressing the same storage.
 There is no export or backup command yet.
@@ -85,7 +88,7 @@ There is no export or backup command yet.
 ### Continuous deployment
 
 After the checks pass on `main`, GitHub Actions deploys the Worker (code only;
-secrets stay as set by `npm run secrets`). It needs two repository secrets
+the ChatGPT secret and everything set in the app are kept). It needs two repository secrets
 (Settings → Secrets and variables → Actions): `CLOUDFLARE_ACCOUNT_ID`, the
 account ID from the Cloudflare dashboard, and `CLOUDFLARE_API_TOKEN`, a token
 made from the "Edit Cloudflare Workers" template for that account. The deploy
@@ -101,22 +104,23 @@ The two people's names and emails live only in the household's own storage on
 Cloudflare: never in the repository, configuration files, or deployment
 settings. The first sign-in sets them up; afterwards each person can change
 their own name in Settings, and whoever set up the household can correct the
-other person's email (Access must allow it too) and manages the connections.
+other person's email (Access must allow it too) and manages the connections:
+the calendar and the assistant's model.
 Changing a name or email keeps the person's records. Email addresses are not
 sent to ChatGPT; the assistant reads names only. Sign out (Settings) ends the
 Access session; Access decides how long a sign-in lasts. Use the deployment's
 stable HTTPS address on phones, which the service worker and push require.
 
-Set `PUSH_CONTACT` to a real `mailto:` address, or the app's own address is used,
-so neither person's email goes to Apple or Google.
-Keep the generated VAPID keys: changing them breaks existing phone subscriptions.
-Without push setup, reminders stay available in the app's Updates.
+Phone push needs no setup: the app makes its Web Push keys once and keeps them
+(new keys would break existing phone subscriptions), with the app's own address
+as the push services' contact, so neither email goes to Apple or Google. Without notification
+permission, reminders stay available in the app's Updates.
 
-To connect the calendar, create/share the iCloud `Household` calendar and set
-`ICLOUD_USERNAME`, `ICLOUD_APP_PASSWORD` (an Apple app-specific password), and
-`ICLOUD_CALENDAR_NAME` in the vars file, then restart or run `npm run secrets`. If names are
-ambiguous, set `ICLOUD_CALENDAR_URL` to the exact calendar URL instead.
-Credentials stay in the Worker's secrets; neither spouse enters them in the app.
+To connect the calendar, create and share the iCloud calendar in Apple
+Calendar, then in Settings sign in with an Apple ID and an Apple app-specific
+password and pick the calendar. The password is stored in the household's
+storage, sent once and never shown again; the other person sees only the
+connection's status. Disconnecting removes it and the cached appointments.
 The app refreshes complete months (previous month through two months ahead,
 with time-zone boundary padding) every five minutes in the background, and
 within a minute while someone is using the app. It checks the live event version
@@ -131,7 +135,8 @@ relative reminders are retained.
 `npm test` runs the Node suite (the application on Node's SQLite through the
 same storage interface) and the Workers suite in workerd: the real Worker with
 and without a Cloudflare Access identity, assets, Durable Object restart,
-alarm-driven Web Push, and CalDAV parsing with mocked HTTP. `npm run check` typechecks and builds the deployment bundle.
+alarm-driven Web Push with keys the app made, and CalDAV discovery and parsing
+with mocked HTTP. `npm run check` typechecks and builds the deployment bundle.
 Install the repository-local browsers once with `npm run test:ui:install`, then
 run `npm run test:ui` for the design-system/browser checks against fixture API
 responses, and `npm run test:browser` for preview recovery against the built UI
@@ -422,9 +427,10 @@ so the Node test suite runs the same code on Node's SQLite.
 Restrict access to the two users through Cloudflare Access. A public hostname
 does not imply public registration or access to household data. Use a stable HTTPS origin for the
 installable app's service worker and push features. Enable notifications after
-installing on each iPhone Home Screen and obtaining permission. Keep VAPID keys
-stable. Configure integrations once for the selected deployment; local tests use
-isolated fixture credentials/data, not implicit copies of production secrets.
+installing on each iPhone Home Screen and obtaining permission. The app keeps its
+push keys stable itself. Integrations are connected once per deployment, in the
+app; local tests use isolated fixture credentials/data, not implicit copies of
+production secrets.
 
 Live iCloud, ChatGPT eligibility/inference, and device acceptance remain pending
 user configuration and validation (#24, #36). Hosted ChatGPT eligibility is not
@@ -455,10 +461,12 @@ neither library support nor a Pro upgrade alone resolves it. Keep application
 sign-in distinct from the account authorizing model usage.
 
 Run `npm run ai:connect` in a terminal on the Mac to authorize the local app
-with Sign in with ChatGPT and choose a model from the account's catalog; it saves
-the connection in `cloudflare/.dev.vars`, so restart `npm run dev` afterward.
-`npm run ai:connect -- --production` saves a separate connection in
-`cloudflare/.prod.vars` for `npm run secrets`. Tokens are never printed, and the
+with Sign in with ChatGPT; it saves the connection in `cloudflare/.dev.vars`, so
+restart `npm run dev` afterward. `npm run ai:connect -- --production` saves a
+separate connection in `cloudflare/.prod.vars`; `npm run secrets` uploads it as
+the Worker's only secret. The sign-in needs a browser on the Mac, so it cannot
+run from the app. Whoever set up the household then chooses the model in
+Settings from the account's catalog; the choice applies at once. Tokens are never printed, and the
 app never reads Codex's tokens or falls back to an API key. The Durable Object
 adopts a newly connected credential once and keeps refreshed tokens in its own
 storage. `npm run ai:disconnect` (with `-- --production` for the deployment)

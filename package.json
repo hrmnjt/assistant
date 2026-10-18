@@ -7,7 +7,6 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "configure": "node scripts/configure.mjs",
     "dev": "node scripts/dev.mjs",
     "build": "node scripts/run.mjs build",
     "check": "npm run build && node scripts/cloudflare.mjs check",

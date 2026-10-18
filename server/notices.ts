@@ -18,7 +18,7 @@ export function validPushEndpoint(endpoint: string) {
   }
 }
 
-export type PushConfig = { contact?: string; publicKey?: string; privateKey?: string };
+export type PushConfig = { publicKey?: string; privateKey?: string };
 export type PushSubscription = webpush.PushSubscription;
 /** Sends one encrypted Web Push request and returns the push service's HTTP status. */
 export type PushSender = (
@@ -192,7 +192,7 @@ export class Notices {
               url: '/?updates=1',
             }),
             {
-              subject: this.push.contact ?? (await this.contact()),
+              subject: await this.contact(),
               publicKey: this.push.publicKey!,
               privateKey: this.push.privateKey!,
             },

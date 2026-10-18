@@ -7,9 +7,7 @@ import { fileURLToPath } from 'node:url';
 // There is no sign-in; it answers only on this computer.
 process.chdir(fileURLToPath(new URL('..', import.meta.url)));
 if (!existsSync('cloudflare/.dev.vars'))
-  console.log(
-    'No cloudflare/.dev.vars: running without phone push, iCloud or ChatGPT. npm run configure creates one.',
-  );
+  console.log('No cloudflare/.dev.vars: the assistant is off until npm run ai:connect.');
 const vite = 'node_modules/vite/bin/vite.js';
 if (spawnSync(process.execPath, [vite, 'build'], { stdio: 'inherit' }).status !== 0)
   process.exit(1);

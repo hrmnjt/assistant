@@ -6,35 +6,32 @@ import { Household } from './household.js';
 import { Conversations } from './conversations.js';
 import { Notices, type PushSender } from './notices.js';
 import { AssistantKit, coreExtension } from './assistant-tools.js';
-import { aiConnection } from './ai.js';
+import { aiConnection, AssistantModel } from './ai.js';
+import { Settings } from './settings.js';
 import type { Plugin, PluginHost } from './plugin.js';
 import { CalendarPlugin } from './plugins/calendar/index.js';
 import { CalendarService } from './plugins/calendar/service.js';
-import { ICloudTransport, type CalendarTransport } from './plugins/calendar/caldav.js';
+import {
+  iCloud,
+  type CalendarConnector,
+  type CalendarTransport,
+} from './plugins/calendar/caldav.js';
 import { TasksPlugin } from './plugins/tasks.js';
 import { DashboardPlugin } from './plugins/dashboard.js';
 import type { App } from './api.js';
 
-/** Deployment secrets and variables; see `cloudflare/.dev.vars.example`. */
-export type Config = Partial<
-  Record<
-    | 'HOUSEHOLD_DEVELOPMENT'
-    | 'ICLOUD_USERNAME'
-    | 'ICLOUD_APP_PASSWORD'
-    | 'ICLOUD_CALENDAR_NAME'
-    | 'ICLOUD_CALENDAR_URL'
-    | 'PUSH_CONTACT'
-    | 'VAPID_PUBLIC_KEY'
-    | 'VAPID_PRIVATE_KEY'
-    | 'CHATGPT_MODEL_ID'
-    | 'CHATGPT_CREDENTIAL_JSON',
-    string
-  >
->;
+/**
+ * The only settings outside the app: `npm run dev` sets HOUSEHOLD_DEVELOPMENT,
+ * and `npm run ai:connect` hands over a ChatGPT credential once. Everything
+ * else (people, push keys, the calendar, the model) the app keeps itself.
+ */
+export type Config = Partial<Record<'HOUSEHOLD_DEVELOPMENT' | 'CHATGPT_CREDENTIAL_JSON', string>>;
 /** Replaceable integrations, for tests and local fixtures. */
 export type Overrides = {
   clock?: () => Date;
+  /** A fixed calendar, instead of the one connected in Settings. */
   transport?: CalendarTransport;
+  connector?: CalendarConnector;
   models?: Models;
   model?: ModelRef;
   send?: PushSender;
@@ -61,36 +58,24 @@ export async function openHousehold(
   await migrate(db);
   const household = new Household(db, clock);
   await household.ensureSpaces();
-  const transport =
-    overrides.transport ??
-    (config.ICLOUD_USERNAME && config.ICLOUD_APP_PASSWORD
-      ? new ICloudTransport({
-          username: config.ICLOUD_USERNAME,
-          password: config.ICLOUD_APP_PASSWORD,
-          calendarName: config.ICLOUD_CALENDAR_NAME || 'Household',
-          calendarUrl: config.ICLOUD_CALENDAR_URL || undefined,
-        })
-      : undefined);
-  const notices = new Notices(
-    db,
-    {
-      contact: config.PUSH_CONTACT || undefined,
-      publicKey: config.VAPID_PUBLIC_KEY,
-      privateKey: config.VAPID_PRIVATE_KEY,
-    },
-    clock,
-    overrides.send,
-  );
+  const settings = new Settings(db);
+  const connector = overrides.connector ?? iCloud;
+  const transport = overrides.transport ?? (await CalendarPlugin.saved({ settings }, connector));
+  const notices = new Notices(db, await settings.pushKeys(), clock, overrides.send);
   const assistant = new AssistantKit(db);
-  const host: PluginHost = { db, clock, household, notices, assistant };
-  const calendar = new CalendarPlugin(host, await new CalendarService(db, transport, clock).load());
+  const host: PluginHost = { db, clock, household, notices, assistant, settings };
+  const calendar = new CalendarPlugin(
+    host,
+    await new CalendarService(db, transport, clock).load(),
+    connector,
+  );
   const tasks = new TasksPlugin(host);
   // The calendar refreshes before the dashboard summarizes it.
   const plugins: Plugin[] = [calendar, tasks, new DashboardPlugin(host, tasks, calendar)];
   notices.use(plugins);
   const ai = overrides.models
     ? { models: overrides.models, model: overrides.model }
-    : await aiConnection(db, config);
+    : await aiConnection(db, config, settings);
   const conversations = await Conversations.open(db, {
     ...ai,
     household,
@@ -99,6 +84,9 @@ export async function openHousehold(
       ...plugins.flatMap((plugin) => (plugin.extension ? [plugin.extension] : [])),
     ],
   });
+  const assistantModel = new AssistantModel(db, settings, ai.models, (model) =>
+    conversations.setModel(model),
+  );
   // `npm run dev` sets HOUSEHOLD_DEVELOPMENT; a deployment never does.
   const auth = new Auth(household, config.HOUSEHOLD_DEVELOPMENT === 'true');
   const nextWake = async () => {
@@ -113,6 +101,7 @@ export async function openHousehold(
     auth,
     household,
     conversations,
+    assistantModel,
     notices,
     plugins,
     nextWake,
