@@ -225,14 +225,17 @@ export class Conversations {
           throw new DomainError('This message ID was already used for different text.', 409);
         return { ok: true };
       }
-      if (
+      const paused =
         !this.configured &&
-        this.db.sql
-          .prepare(
-            "SELECT 1 FROM assistant_runs WHERE thread_id=? AND status IN ('running','queued')",
-          )
-          .get(threadId)
-      )
+        Boolean(
+          this.db.sql
+            .prepare(
+              "SELECT 1 FROM assistant_runs WHERE thread_id=? AND status IN ('running','queued')",
+            )
+            .get(threadId),
+        );
+      // Only new assistant requests wait for the paused one; human messages stay available.
+      if (paused && askAssistant)
         throw new DomainError(
           'This conversation has an unfinished assistant request. Reconnect ChatGPT on the server to resume it.',
           409,
@@ -244,7 +247,26 @@ export class Conversations {
         text,
         createdAt: new Date().toISOString(),
       };
-      if (!this.configured || !askAssistant) {
+      if (paused) {
+        // Submitting would also start Pi's scheduler, which would run the paused
+        // input without a model and fail it. Append the display-only entry and
+        // its request receipt in one commit instead, as Pi admits such writes;
+        // the resumed request still receives recent messages as quoted context.
+        await conversation.commit(async (tx) => {
+          if (await tx.submissionByRequest(conversation.id, requestKey)) return;
+          const entry = await tx.appendEntry(conversation.id, {
+            kind: 'household.message',
+            data: message,
+          });
+          await tx.createSubmission({
+            conversationId: conversation.id,
+            requestId: requestKey,
+            type: 'write',
+            status: 'done',
+            entry: entry.id,
+          });
+        }, ctx);
+      } else if (!this.configured || !askAssistant) {
         const submission = await conversation.submit(
           {
             type: 'write',
