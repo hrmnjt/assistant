@@ -29,6 +29,7 @@ const commands = {
   ],
   'ai-connect': [['--import', 'tsx', 'scripts/chatgpt.ts']],
   'ai-disconnect': [['--import', 'tsx', 'scripts/chatgpt.ts', '--logout']],
+  accounts: [['--import', 'tsx', 'scripts/accounts.ts', ...process.argv.slice(3)]],
   server: [['--import', 'tsx', 'server/index.ts']],
   'server-watch': [['--watch', '--import', 'tsx', 'server/index.ts']],
   client: [['./node_modules/vite/bin/vite.js', '--host', '127.0.0.1']],
