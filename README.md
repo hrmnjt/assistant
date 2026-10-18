@@ -62,8 +62,9 @@ issuer and the application's audience tag, and maps its email to one of the two
 people. Until its Access settings are in place, a deployment refuses every
 request.
 
-1. Deploy the Worker: `npm run wrangler -- login`, then `npm run deploy`. It
-   appears as `household-assistant.<subdomain>.workers.dev`.
+1. Deploy the Worker: `npm run wrangler -- login`, then `npm run deploy` (or
+   let [continuous deployment](#continuous-deployment) do it). It appears as
+   `household-assistant.<subdomain>.workers.dev`.
 2. In the Cloudflare dashboard, open the Worker's Settings → Domains & Routes
    and enable Cloudflare Access for workers.dev. Note the team domain and the
    audience (AUD) tag the dialog shows. In Zero Trust → Access, edit the
@@ -79,6 +80,19 @@ variables added in the dashboard. Run `npm run check` first to typecheck and
 build the bundle without uploading. Keep the Durable Object class, binding, and
 migration history on later deploys so they keep addressing the same storage.
 There is no export or backup command yet.
+
+### Continuous deployment
+
+After the checks pass on `main`, GitHub Actions deploys the Worker (code only;
+secrets stay as set by `npm run secrets`). It needs two repository secrets
+(Settings → Secrets and variables → Actions): `CLOUDFLARE_ACCOUNT_ID`, the
+account ID from the Cloudflare dashboard, and `CLOUDFLARE_API_TOKEN`, a token
+made from the "Edit Cloudflare Workers" template for that account. The deploy
+job runs in the `production` environment, one deploy at a time; add a required
+reviewer there to approve each deploy. Run the CI workflow manually to redeploy
+`main`. Use this as the only deployment path: if the repository is also
+connected to Cloudflare's own Git builds, disconnect them, so a push does not
+deploy twice or to a second Worker.
 
 ### Accounts and settings
 
@@ -120,7 +134,7 @@ responses, and `npm run test:browser` for preview recovery against the built UI
 and the real API handler, as a development server, with a synthetic calendar. No suite loads
 `cloudflare/.dev.vars` values or calls live providers. Browser binaries, reports,
 and test data stay in `.cache/`. GitHub Actions runs these checks on pull
-requests, without secrets.
+requests and `main`, without secrets; on `main` a deploy follows.
 
 The household database records its schema version and applies ordered
 migrations at startup; a database written by a newer app version is refused.
