@@ -27,6 +27,29 @@
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-serif: Georgia, 'Times New Roman', serif;
   --navigation-height: 4.5rem;
+  color-scheme: light;
+}
+
+/* Dark: the same sage and warm character on deep green-grey surfaces. Every text
+   pair meets WCAG AA; public/theme.js and src/theme.ts set the class. */
+.dark {
+  color-scheme: dark;
+  --background: #151b18;
+  --foreground: #e4eae2;
+  --card: #1d2521;
+  --popover: #222b26;
+  --primary: #8cbd9b;
+  --primary-foreground: #0f2219;
+  --secondary: #2a3830;
+  --secondary-foreground: #d5e4d5;
+  --muted: #0f1411;
+  --muted-foreground: #a0aea1;
+  --accent: #2a3830;
+  --accent-foreground: #e4eae2;
+  --destructive: #f08a7a;
+  --border: #2e3a34;
+  --input: #4a5b51;
+  --ring: #8cbd9b;
 }
 
 @theme inline {

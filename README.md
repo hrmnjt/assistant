@@ -206,7 +206,10 @@ wider content and a visible channel rail; mobile drives the design. The interact
 Adopt shadcn/ui's **New York** style with Radix primitives and Tailwind v4.
 `components.json` records the preset; `src/components/ui/` holds the standard
 component source. Shared tokens in `src/styles.css` retain the sage primary,
-warm light surfaces, serif headings, and system body font. Use Tailwind's shared
+warm light surfaces, serif headings, and system body font. A dark palette of the
+same tokens follows the device's light/dark setting by default; Settings ›
+Appearance can fix Light or Dark per device. Every text color pair meets WCAG AA
+in both. Use Tailwind's shared
 spacing scale, theme radii, and 44px default controls rather than one-off designs.
 
 Tasks, events, notices, and confirmation previews compose standard components.
