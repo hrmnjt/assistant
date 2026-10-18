@@ -10,7 +10,6 @@ import { updateEventData } from '../server/plugins/calendar/icalendar.js';
 import type { CalendarResource, CalendarTransport } from '../server/plugins/calendar/caldav.js';
 import type { Preview, Snapshot } from '../src/types.js';
 import {
-  accounts,
   client,
   directory,
   householdParts,
@@ -151,7 +150,7 @@ test('authenticated state/list endpoints restore only the actor previews and nev
   const parts = householdParts(f.db, { clock: () => start, calendar });
   const app = {
     db: f.db,
-    auth: new Auth(accounts),
+    auth: new Auth(parts.household, true),
     household: parts.household,
     conversations,
     notices: parts.notices,

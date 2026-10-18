@@ -43,11 +43,12 @@ npm ci --cache ./.cache/npm --ignore-scripts
 npm run dev
 ```
 
-Open `http://localhost:8787` (or `http://127.0.0.1:8787`). Development has no
-sign-in: it answers only on this computer and acts as the owner; Settings has
-an "Act as" button to try shared features as the partner. `npm run configure`
-optionally creates the private `cloudflare/.dev.vars` with names and a push
-keypair (it never overwrites it); add iCloud or ChatGPT settings there and
+Open `http://localhost:8787` (or `http://127.0.0.1:8787`) and set up the
+household with two names (emails are optional locally). Development has no
+sign-in: it answers only on this computer and acts as whoever set it up;
+Settings has an "Act as" button to try shared features as the other person.
+`npm run configure` optionally creates the private `cloudflare/.dev.vars` with a
+push keypair (it never overwrites it); add iCloud or ChatGPT settings there and
 restart `npm run dev`. `npm run dev` runs `wrangler dev` with the client
 rebuilt on each change (reload the page to see it). Local state lives in
 `data/cloudflare/` and survives restarts; delete that folder to start over. The
@@ -56,23 +57,23 @@ local app stops with its process. Phones use the deployment.
 ### Deploy to Cloudflare
 
 Cloudflare Access signs the two people in; the app has no passwords of its own.
-A deployment trusts only the token Access adds to each request
-(`Cf-Access-Jwt-Assertion`), verified against the team's published keys, the
-issuer and the application's audience tag, and maps its email to one of the two
-people. Until its Access settings are in place, a deployment refuses every
-request.
+With Access enabled on the Worker, Cloudflare gives it the verified email of
+each request (`ctx.access`); the Worker passes that on to the household, which
+recognizes only the two emails it was set up with. A deployment without Access
+refuses every request.
 
 1. Deploy the Worker: `npm run wrangler -- login`, then `npm run deploy` (or
    let [continuous deployment](#continuous-deployment) do it). It appears as
    `household-assistant.<subdomain>.workers.dev`.
 2. In the Cloudflare dashboard, open the Worker's Settings → Domains & Routes
-   and enable Cloudflare Access for workers.dev. Note the team domain and the
-   audience (AUD) tag the dialog shows. In Zero Trust → Access, edit the
-   Worker's policy so it allows exactly the two email addresses.
-3. `npm run configure -- --production` writes the private
-   `cloudflare/.prod.vars` with a stable push keypair. Fill in
-   `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, the names, and `OWNER_EMAIL` and
-   `PARTNER_EMAIL`, then run `npm run secrets` to upload them as Worker secrets.
+   and enable Cloudflare Access for workers.dev. In Zero Trust → Access, edit
+   the Worker's policy so it allows exactly the two email addresses.
+3. Open the app and sign in. The first person to sign in sets up the household:
+   both names and the other person's email. After that only those two emails
+   get in.
+4. Optional: `npm run configure -- --production` writes the private
+   `cloudflare/.prod.vars` with a stable push keypair; add iCloud or ChatGPT
+   settings there and run `npm run secrets` to upload them as Worker secrets.
    They apply without a redeploy; secrets left out of the file keep their value.
 
 `npm run deploy` uploads code only and keeps the Worker's secrets and any
@@ -96,15 +97,17 @@ deploy twice or to a second Worker.
 
 ### Accounts and settings
 
-The two people are the owner and the partner, named by `OWNER_NAME` and
-`PARTNER_NAME`. A deployment knows them by `OWNER_EMAIL` and `PARTNER_EMAIL`,
-which must be distinct and match the addresses Access allows; an Access
-sign-in with any other email is refused. Changing a name or email keeps the
-person's records. Sign out (Settings) ends the Access session; Access decides
-how long a sign-in lasts. Use the deployment's stable HTTPS address on phones,
-which the service worker and push require.
+The two people's names and emails live only in the household's own storage on
+Cloudflare: never in the repository, configuration files, or deployment
+settings. The first sign-in sets them up; afterwards each person can change
+their own name in Settings, and whoever set up the household can correct the
+other person's email (Access must allow it too) and manages the connections.
+Changing a name or email keeps the person's records. Email addresses are not
+sent to ChatGPT; the assistant reads names only. Sign out (Settings) ends the
+Access session; Access decides how long a sign-in lasts. Use the deployment's
+stable HTTPS address on phones, which the service worker and push require.
 
-Set `PUSH_CONTACT` to a real `mailto:` address, or `mailto:` the owner's email is used.
+Set `PUSH_CONTACT` to a real `mailto:` address, or the email of whoever set up the household is used.
 Keep the generated VAPID keys: changing them breaks existing phone subscriptions.
 Without push setup, reminders stay available in the app's Updates.
 
@@ -155,6 +158,10 @@ Durable Object restarts and resumes pending assistant work from committed state.
 - Sign in through Cloudflare Access in front of the deployment, with no
   passwords or sessions in the app; development needs no sign-in (decided 18
   October 2026).
+- The app is for this one household and speaks of the two people by name. Their
+  names and emails are entered in the app at its first sign-in and stay in its
+  storage, never in the repository or any configuration (decided 18 October
+  2026). Whoever sets the household up manages its connections.
 - Use text chat, with the iPhone keyboard's dictation for speech input.
 - Every change needs explicit confirmation. Decided: a one-tap Confirm card in
   the conversation, replacing the separate review dialog (planned; today's app
@@ -182,7 +189,7 @@ Durable Object restarts and resumes pending assistant work from committed state.
   task system to import or synchronize.
 - Show missed recurring chores through individual occurrences or a visible
   missed-count indicator, preserving the history rather than hiding misses.
-- Send task deadline notifications to the owner.
+- Send task deadline notifications to the person following up.
 - Provide morning and evening summaries, defaulting to 08:00 and 18:00.
   Each person can independently enable, disable, and change the time of each summary.
 - Support phone notifications for appointments.
@@ -440,7 +447,7 @@ Do not silently fall back to separately billed API-key requests.
 
 The user has ChatGPT Plus and is willing to consider Pro if usage requires it.
 The desired experience is an owner-configured AI connection with no provider
-setup required of the wife. The official documentation reviewed confirms
+setup required of the other person. The official documentation reviewed confirms
 eligible per-user plan usage, but does not establish that one Plus subscription
 can fund both spouses' interactive use. Keep this eligibility question explicit;
 neither library support nor a Pro upgrade alone resolves it. Keep application

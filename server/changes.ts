@@ -29,7 +29,7 @@ export async function notifyPartner(
       'INSERT OR IGNORE INTO notices(id,user_id,title,body,created_at,push_until) VALUES (?,?,?,?,?,?)',
       id,
       String(person.id),
-      `${actor?.name ?? 'Your partner'} ${action} ${targetKind === 'task' ? 'a task' : 'an appointment'}`,
+      `${actor?.name ?? 'Someone'} ${action} ${targetKind === 'task' ? 'a task' : 'an appointment'}`,
       label,
       at,
       // A partner-change push is useful for two hours after the change.
