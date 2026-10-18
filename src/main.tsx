@@ -22,6 +22,7 @@ import {
   Send,
   Settings,
   Sun,
+  SunMoon,
   Sunset,
   Trash2,
   Users,
@@ -65,6 +66,7 @@ import {
   rememberOverlayOpener,
   TaskCollection,
 } from '@/components/app-patterns';
+import { followSystemAppearance, saveAppearance, savedAppearance, type Appearance } from './theme';
 import './styles.css';
 
 async function api<T>(
@@ -1269,6 +1271,7 @@ function App() {
                   notifications are enabled. Appointment alerts also come from Apple Calendar.
                 </p>
               </Card>
+              <AppearanceSettings />
               <Card className="settings-card">
                 <h2>
                   <MessageCircle size={19} /> Household assistant
@@ -2015,6 +2018,33 @@ function SummarySettings({
   );
 }
 
+function AppearanceSettings() {
+  const [appearance, setAppearance] = useState(savedAppearance);
+  return (
+    <Card className="settings-card">
+      <h2>
+        <SunMoon size={19} /> Appearance
+      </h2>
+      <Label className="timezone-label">
+        Light or dark
+        <NativeSelect
+          value={appearance}
+          onChange={(event) => {
+            const next = event.target.value as Appearance;
+            setAppearance(next);
+            saveAppearance(next);
+          }}
+        >
+          <option value="system">Match this device</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </NativeSelect>
+      </Label>
+      <p className="small muted">This choice is saved on this device only.</p>
+    </Card>
+  );
+}
+
 function PushSettings({ onError }: { onError: (message: string) => void }) {
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
@@ -2071,6 +2101,7 @@ function PushSettings({ onError }: { onError: (message: string) => void }) {
   );
 }
 
+followSystemAppearance();
 if ('serviceWorker' in navigator)
   void navigator.serviceWorker.register('/sw.js').catch(() => undefined);
 createRoot(document.getElementById('root')!).render(<App />);
