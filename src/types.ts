@@ -131,6 +131,7 @@ export type Snapshot = {
   me: Person;
   people: Person[];
   tasks: Task[];
+  previews: Preview[];
   preferences: Preferences;
   threads: Thread[];
   presence: Presence[];

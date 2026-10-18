@@ -23,6 +23,7 @@ export function snapshot(): Snapshot {
       morning: { enabled: true, time: '08:00' },
       evening: { enabled: true, time: '18:00' },
     },
+    previews: [],
     tasks: [
       {
         id: 'task-1',
@@ -165,6 +166,7 @@ export class HouseholdFixture {
         return json(this.messages[threadId] ?? []);
       }
       if (path === '/previews') {
+        if (request.method() === 'GET') return json(this.state.previews);
         const id = crypto.randomUUID();
         this.proposals.set(id, body);
         const preview: Preview = {
@@ -199,24 +201,30 @@ export class HouseholdFixture {
                       : String(value),
             })),
         };
+        this.state.previews.push(preview);
         return json(preview);
       }
       if (path.startsWith('/previews/')) {
         const id = path.split('/')[2],
           mutation = this.proposals.get(id)!;
         if (request.method() === 'DELETE') {
+          this.state.previews = this.state.previews.filter((preview) => preview.id !== id);
           this.proposals.delete(id);
           return json({ ok: true });
         }
         if (path.endsWith('/dismiss')) {
+          this.state.previews = this.state.previews.filter((preview) => preview.id !== id);
           this.proposals.delete(id);
           return json({ ok: true });
         }
-        if (this.confirmationError)
+        if (this.confirmationError) {
+          const pending = this.state.previews.find((preview) => preview.id === id);
+          if (pending && this.calendarOutcome) pending.calendarOutcome = this.calendarOutcome;
           return json(
             { error: this.confirmationError, calendarOutcome: this.calendarOutcome },
             this.confirmationStatus,
           );
+        }
         if (mutation.kind === 'task.create')
           this.state.tasks.push({
             ...mutation.task,
@@ -241,7 +249,8 @@ export class HouseholdFixture {
             category: mutation.category,
             createdAt: new Date().toISOString(),
           });
-        return json({ targetId: id });
+        this.state.previews = this.state.previews.filter((preview) => preview.id !== id);
+        return json({ ok: true, targetId: id });
       }
       if (path === '/calendar/refresh') return json(this.state.calendar);
       return json({ error: 'Unhandled fixture request: ' + path }, 500);

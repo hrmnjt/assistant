@@ -49,11 +49,14 @@ New appointments default to a configurable 30-minute reminder in the preview;
 existing alarms are preserved unless explicitly changed. Both native calendar
 alerts and the app's matching relative reminders are retained.
 
-Validation commands: `npm test` and `npm run build`. For browser checks, run
-`npm run test:ui:install` once, then `npm run test:ui`. Browser binaries, reports,
-screenshots, and temporary test data stay in `.cache/`; household data and push
-keys stay in `data/`. The browser suite exercises the production build with
-fixture API responses, not real household credentials or live integrations.
+Validation commands: `npm test` and `npm run build`. Install the repository-local
+browsers once with `npm run test:ui:install`, then run `npm run test:ui` for
+the design-system/browser checks against fixture API responses. Run
+`npm run test:browser` for preview recovery against the built UI and an isolated
+Express/SQLite/Pi test server with a synthetic calendar. Neither suite loads
+production credentials or calls live providers. Browser binaries, reports,
+screenshots, temporary profiles, and test data stay in `.cache/`; household data
+and push keys stay in `data/`.
 
 ## Cloudflare compatibility prototype
 
@@ -199,6 +202,15 @@ result rather than claiming failure or issuing another write. An absent event
 satisfies an uncertain deletion, without proving which client deleted it.
 Explicit dismissal keeps the operation record and does not undo any remote
 change; review the current calendar before preparing a replacement proposal.
+
+On reload or sign-in, Saved changes restores the signed-in person's direct and
+assistant-created previews, including expired but unresolved calendar attempts.
+The clipboard button reopens the list. Reviewing is not confirmation. Uncertain
+results offer read-only checking, a link back to the current calendar, and
+explicit dismissal; expiry alone never claims that an attempted write failed.
+Completed, cancelled, dismissed, and never-attempted expired previews are omitted.
+The authenticated `/api/previews` read model and `/api/state` expose these views,
+not the stored mutation payloads or CalDAV resource URLs.
 
 Read/write access to the actual shared calendar must be validated before
 committing to the integration. Radicale remains a fallback if iCloud access is

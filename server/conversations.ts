@@ -13,6 +13,7 @@ import type { Database } from './database.js';
 import { DomainError, type Household } from './domain.js';
 import type { CalendarService } from './calendar.js';
 import type { ChatStatus, Message, Preview } from '../src/types.js';
+import { recoverablePreviews } from './preview-recovery.js';
 import { assistantTables, boundedModels, householdExtension } from './assistant-tools.js';
 
 const messageSchema = z.object({
@@ -177,10 +178,18 @@ export class Conversations {
       .get(threadId);
     const previews = this.db.sql
       .prepare(
-        `SELECT a.actor_id,p.view,p.applied_at,p.expires_at FROM assistant_previews a
-      JOIN previews p ON p.id=a.preview_id WHERE a.thread_id=? AND p.applied_at IS NULL AND p.expires_at>? ORDER BY a.created_at`,
+        'SELECT actor_id,preview_id FROM assistant_previews WHERE thread_id=? ORDER BY created_at,preview_id',
       )
-      .all(threadId, Date.now());
+      .all(threadId);
+    const recovered = new Map<string, Map<string, Preview>>();
+    for (const row of previews) {
+      const actorId = String(row.actor_id);
+      if (!recovered.has(actorId))
+        recovered.set(
+          actorId,
+          new Map(recoverablePreviews(this.db, actorId).map((preview) => [preview.id, preview])),
+        );
+    }
     const running = Boolean(
       this.db.sql
         .prepare("SELECT 1 FROM assistant_runs WHERE thread_id=? AND status='running'")
@@ -201,10 +210,11 @@ export class Conversations {
         : (running || queued > 0) && !this.configured
           ? 'An unfinished assistant request is paused. Reconnect ChatGPT on the household server to resume it.'
           : null,
-      previews: previews.map((row) => ({
-        actorId: String(row.actor_id),
-        preview: JSON.parse(String(row.view)) as Preview,
-      })),
+      previews: previews.flatMap((row) => {
+        const actorId = String(row.actor_id);
+        const preview = recovered.get(actorId)?.get(String(row.preview_id));
+        return preview ? [{ actorId, preview }] : [];
+      }),
     };
   }
   send(threadId: string, authorId: string, text: string, requestId: string, askAssistant = true) {
