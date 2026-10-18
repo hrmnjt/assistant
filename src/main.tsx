@@ -74,8 +74,10 @@ async function api<T>(
   path: string,
   body?: unknown,
   method = body === undefined ? 'GET' : 'POST',
+  init: RequestInit = {},
 ): Promise<T> {
   const response = await fetch(`/api${path}`, {
+    ...init,
     method,
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', 'X-Household-Client': '1' },
@@ -406,21 +408,27 @@ function App() {
   useEffect(() => {
     if (!state?.me.id) return;
     const active = page === 'chat' ? threadId : null;
+    // Keepalive lets the "left" update finish when the page is hidden or unloads.
     const beat = () =>
-      void api('/presence', {
-        threadId: document.hidden ? null : active,
-        clientId: clientId.current,
-        typing: Boolean(draftValue.current) && Date.now() - lastTyping.current < 8000,
-      }).catch(() => undefined);
+      void api(
+        '/presence',
+        {
+          threadId: document.hidden ? null : active,
+          clientId: clientId.current,
+          typing: Boolean(draftValue.current) && Date.now() - lastTyping.current < 8000,
+        },
+        'POST',
+        { keepalive: true },
+      ).catch(() => undefined);
     beat();
     const timer = setInterval(beat, 10_000);
     document.addEventListener('visibilitychange', beat);
     return () => {
       clearInterval(timer);
       document.removeEventListener('visibilitychange', beat);
-      void api('/presence', { threadId: null, clientId: clientId.current, typing: false }).catch(
-        () => undefined,
-      );
+      void api('/presence', { threadId: null, clientId: clientId.current, typing: false }, 'POST', {
+        keepalive: true,
+      }).catch(() => undefined);
     };
   }, [page, threadId, state?.me.id]);
   useEffect(() => {
