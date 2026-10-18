@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, lstatSync, renameSync, symlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, lstatSync, readFileSync, renameSync, symlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -49,9 +49,6 @@ const commands = {
       '127.0.0.1',
       '--port',
       '8787',
-      // No sign-in in development; a deployment never sets this.
-      '--var',
-      'HOUSEHOLD_DEVELOPMENT:true',
     ],
   ],
   // Code only, as continuous deployment does; secrets and dashboard variables are kept.
@@ -79,6 +76,19 @@ if (!selected) throw new Error('Unknown Cloudflare command');
 if (process.argv[2] === 'secrets') {
   if (!existsSync('cloudflare/.prod.vars')) {
     console.error('Create cloudflare/.prod.vars first: npm run configure -- --production');
+    process.exit(1);
+  }
+  // A deployment without these refuses every request, so catch them before uploading.
+  const values = Object.fromEntries(
+    [...readFileSync('cloudflare/.prod.vars', 'utf8').matchAll(/^([A-Z_]+)=(.*)$/gm)].map(
+      ([, key, value]) => [key, value.trim().replace(/^(['"])(.*)\1$/, '$2')],
+    ),
+  );
+  const missing = ['ACCESS_TEAM_DOMAIN', 'ACCESS_AUD', 'OWNER_EMAIL', 'PARTNER_EMAIL'].filter(
+    (key) => !values[key],
+  );
+  if (missing.length) {
+    console.error(`Set ${missing.join(', ')} in cloudflare/.prod.vars first.`);
     process.exit(1);
   }
 }

@@ -34,7 +34,7 @@ test('signed out: loading, then the reason and a way back through Cloudflare Acc
   await expect(page.getByRole('status')).toHaveText('Finding our place…');
   release();
   await expect(page.getByRole('alert')).toHaveText(
-    'Sign in through Cloudflare Access with one of the two email addresses set up for this household.',
+    'Sign in through Cloudflare Access with one of the household’s two email addresses.',
   );
   await expect(page.getByRole('link', { name: 'Use a different email' })).toHaveAttribute(
     'href',
@@ -65,64 +65,6 @@ test('signed out: loading, then the reason and a way back through Cloudflare Acc
   await expect(page.getByRole('alert')).toHaveText(
     'Your sign-in has ended. Sign in again to continue.',
   );
-});
-
-test('first sign-in: name both people and add the other email, then the app opens', async ({
-  page,
-  household,
-}, info) => {
-  household.setup = { email: 'alex@example.com', development: false };
-  await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Set up your household.' })).toBeVisible();
-  await expect(page.getByText('You’re signed in as alex@example.com.')).toBeVisible();
-  await page.getByLabel('Your name').fill('Alex');
-  await page.getByLabel('The other person’s name').fill('Sam');
-  await page.getByLabel('Their email address').fill('alex@example.com');
-  await page.getByRole('button', { name: 'Set up our household' }).click();
-  await expect(page.getByRole('alert')).toHaveText(
-    'Use a different email address for each of you.',
-  );
-  await noHorizontalOverflow(page);
-  await shot(page, info, 'setup');
-  await page.getByLabel('Their email address').fill('sam@example.com');
-  await page.getByRole('button', { name: 'Set up our household' }).click();
-  await expect(page.getByLabel('Message', { exact: true })).toBeVisible();
-  expect(household.calls.findLast((call) => call.path === '/setup')?.body).toEqual({
-    name: 'Alex',
-    partner: { name: 'Sam', email: 'sam@example.com' },
-  });
-});
-
-test('settings: your own name, and the other person’s email for whoever set up', async ({
-  page,
-  household,
-}) => {
-  await page.goto('/');
-  await navigate(page, 'Settings');
-  await expect(page.getByText('You’re signed in as alex@example.com.')).toBeVisible();
-  await expect(page.getByText('Sam sets their own.')).toBeVisible();
-  const saveName = page.getByRole('button', { name: 'Save name' });
-  await expect(saveName).toBeDisabled();
-  await page.getByLabel('Your name').fill('Alexandra');
-  await saveName.click();
-  await expect(page.getByText('These settings are just for Alexandra.')).toBeVisible();
-  await page.getByLabel('Sam’s email').fill('sam@new.example');
-  await page.getByRole('button', { name: 'Save email' }).click();
-  await expect(page.getByRole('button', { name: 'Save email' })).toBeDisabled();
-  expect(household.state.people[1].username).toBe('sam@new.example');
-  // Only whoever set up the household corrects the other email.
-  household.state.me = household.state.people[1];
-  household.state.threads.push({
-    id: 'assistant-partner',
-    title: 'Sam’s assistant',
-    category: 'personal',
-    createdAt: new Date().toISOString(),
-    assistantFor: 'partner',
-  });
-  await page.reload();
-  await navigate(page, 'Settings');
-  await expect(page.getByLabel('Your name')).toHaveValue('Sam');
-  await expect(page.getByLabel(/’s email$/)).toHaveCount(0);
 });
 
 test('settings: sign out through Access, or act as the other person in development', async ({
@@ -204,7 +146,7 @@ test('tasks: tabs, missed history, form draft, cancel, explicit confirmation, me
   await shot(page, info, 'tasks');
   await page.getByRole('button', { name: 'Add task' }).click();
   await page.getByLabel('What needs doing?').fill('Pick up groceries');
-  await page.getByLabel('Who follows up').selectOption('partner');
+  await page.getByLabel('Follow-up owner').selectOption('partner');
   await page.getByRole('combobox', { name: 'Space', exact: true }).selectOption('household');
   await page.getByLabel('Anything else?').fill('Oat milk and lemons');
   await noHorizontalOverflow(page);
@@ -214,7 +156,7 @@ test('tasks: tabs, missed history, form draft, cancel, explicit confirmation, me
   await shot(page, info, 'confirmation');
   await page.getByRole('button', { name: 'Go back' }).click();
   await expect(page.getByLabel('What needs doing?')).toHaveValue('Pick up groceries');
-  await expect(page.getByLabel('Who follows up')).toHaveValue('partner');
+  await expect(page.getByLabel('Follow-up owner')).toHaveValue('partner');
   await page.getByRole('button', { name: 'Review task', exact: true }).click();
   await page.getByRole('button', { name: 'Confirm change' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);

@@ -19,7 +19,13 @@ export default defineConfig({
       miniflare: {
         bindings: {
           ...blank,
-          // A deployment: no HOUSEHOLD_DEVELOPMENT, so people need a Cloudflare Access identity.
+          // A deployment behind Cloudflare Access; the tests sign its tokens with their own key.
+          ACCESS_TEAM_DOMAIN: 'https://household.cloudflareaccess.com',
+          ACCESS_AUD: 'test-audience',
+          OWNER_NAME: 'Alex',
+          OWNER_EMAIL: 'alex@example.com',
+          PARTNER_NAME: 'Sam',
+          PARTNER_EMAIL: 'sam@example.com',
           PUSH_CONTACT: 'mailto:test@example.com',
           VAPID_PUBLIC_KEY: vapid.publicKey,
           VAPID_PRIVATE_KEY: vapid.privateKey,

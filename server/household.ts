@@ -39,16 +39,6 @@ export const householdChangeSchema = z.discriminatedUnion('kind', [
 ]);
 type HouseholdChange = z.infer<typeof householdChangeSchema>;
 
-export const personName = z.string().trim().min(1, 'Enter a name.').max(60);
-export const email = z.string().trim().toLowerCase().email('Enter a valid email address.');
-const defaultPreferences = {
-  timezone: 'Asia/Dubai',
-  morning: { enabled: true, time: '08:00' },
-  evening: { enabled: true, time: '18:00' },
-};
-/** One of the two people at setup; a development server may leave emails out. */
-export type Member = { name: string; email?: string };
-
 /**
  * The core household: the two people, their settings, and the conversations
  * (each person's assistant chat and the shared channels). Features such as
@@ -114,70 +104,20 @@ export class Household {
       },
     });
   }
-  /** The two people once the household is set up: `owner` set it up, `partner` is the other. */
   async people(q: Executor = this.db): Promise<Person[]> {
-    if (!(await this.setUpAt(q))) return [];
     return q.all<Person>('SELECT id, username, name FROM users ORDER BY id');
   }
-  /** When the household was set up, or null before its first sign-in. */
-  async setUpAt(q: Executor = this.db) {
-    const row = await q.get<Row>("SELECT value FROM settings WHERE key='setup'");
-    return row ? String(row.value) : null;
-  }
-  /**
-   * First sign-in: the person setting up and the other person, with their
-   * settings and assistant chats. Names and emails live only in this database;
-   * afterwards only these two emails are recognized.
-   */
-  async setUp(owner: Member, partner: Member) {
-    if (owner.email && owner.email === partner.email)
-      throw new DomainError('Use a different email address for each of you.');
-    await this.db.transaction(async (tx) => {
-      if (await this.setUpAt(tx)) throw new DomainError('This household is already set up.', 409);
-      for (const [id, member] of [
-        ['owner', owner],
-        ['partner', partner],
-      ] as const) {
-        await tx.run(
-          'INSERT INTO users VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET username=excluded.username,name=excluded.name',
-          id,
-          member.email || id,
-          member.name,
-        );
-        await tx.run(
-          'INSERT OR IGNORE INTO preferences VALUES (?, ?, 1)',
-          id,
-          JSON.stringify(defaultPreferences),
-        );
-      }
-      await tx.run("INSERT INTO settings VALUES ('setup', ?)", this.clock().toISOString());
-      await this.spaces(tx);
-    });
-  }
-  async rename(personId: string, name: string) {
-    await this.db.run('UPDATE users SET name=? WHERE id=?', personName.parse(name), personId);
-  }
-  /** Correct the other person's email; the person who set up keeps the one they signed in with. */
-  async changeEmail(personId: 'partner', address: string) {
-    const value = email.parse(address);
-    await this.db.transaction(async (tx) => {
-      if (await tx.get('SELECT 1 AS found FROM users WHERE username=? AND id<>?', value, personId))
-        throw new DomainError('Use a different email address for each of you.');
-      await tx.run('UPDATE users SET username=? WHERE id=?', value, personId);
-    });
-  }
   async ensureSpaces() {
-    await this.db.transaction((tx) => this.spaces(tx));
-  }
-  private async spaces(tx: Executor) {
-    for (const person of await this.people(tx))
-      await this.ensureSpace(
-        tx,
-        `assistant:${person.id}`,
-        `${person.name}'s assistant`,
-        'personal',
-      );
-    await this.ensureSpace(tx, 'household', 'household', 'household');
+    await this.db.transaction(async (tx) => {
+      for (const person of await this.people(tx))
+        await this.ensureSpace(
+          tx,
+          `assistant:${person.id}`,
+          `${person.name}'s assistant`,
+          'personal',
+        );
+      await this.ensureSpace(tx, 'household', 'household', 'household');
+    });
   }
   private async ensureSpace(
     q: Executor,

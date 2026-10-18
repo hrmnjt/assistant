@@ -110,8 +110,6 @@ export class HouseholdFixture {
   state = snapshot();
   signedIn = true;
   offline = false;
-  /** Before the household's first sign-in sets it up. */
-  setup: { email: string | null; development: boolean } | null = null;
   confirmationError = '';
   confirmationStatus = 409;
   calendarOutcome?: CalendarOutcome;
@@ -138,15 +136,6 @@ export class HouseholdFixture {
       const body = request.postDataJSON();
       this.calls.push({ path, body, method: request.method() });
       const json = (value: unknown, status = 200) => route.fulfill({ status, json: value });
-      if (this.setup && path === '/setup') {
-        if (body.partner.email === this.setup.email)
-          return json({ error: 'Use a different email address for each of you.' }, 400);
-        this.setup = null;
-        this.state.me = { ...this.state.me, name: body.name };
-        this.state.people = [this.state.me, { ...this.state.people[1], name: body.partner.name }];
-        return json({ ok: true });
-      }
-      if (this.setup) return json({ error: 'Set up the household first.', setup: this.setup }, 428);
       if (path === '/state')
         return this.offline
           ? json({ error: 'Offline' }, 503)
@@ -155,21 +144,10 @@ export class HouseholdFixture {
             : json(
                 {
                   error:
-                    'Sign in through Cloudflare Access with one of the two email addresses set up for this household.',
+                    'Sign in through Cloudflare Access with one of the household’s two email addresses.',
                 },
                 401,
               );
-      if (path === '/people/me') {
-        this.state.me = { ...this.state.me, name: body.name };
-        this.state.people = this.state.people.map((p) => (p.id === 'owner' ? this.state.me : p));
-        return json({ ok: true });
-      }
-      if (path === '/people/partner') {
-        this.state.people = this.state.people.map((p) =>
-          p.id === 'partner' ? { ...p, username: body.email } : p,
-        );
-        return json({ ok: true });
-      }
       if (path === '/presence' || path === '/notices/read') return json({ ok: true });
       if (path.endsWith('/assistant')) return json(this.status);
       if (path.endsWith('/messages')) {
@@ -218,7 +196,7 @@ export class HouseholdFixture {
                   {
                     title: 'Task',
                     notes: 'Notes',
-                    ownerId: 'Who follows up',
+                    ownerId: 'Follow-up owner',
                     category: 'Space',
                     dueAt: 'Due',
                     schedule: 'Repeat',

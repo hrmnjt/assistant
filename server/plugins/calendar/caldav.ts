@@ -198,7 +198,7 @@ export class ICloudTransport implements CalendarTransport {
       );
     if (response.status === 401 || response.status === 403)
       throw new DomainError(
-        'iCloud did not permit this calendar operation. Check the iCloud connection and that it may edit this calendar.',
+        'iCloud did not permit this calendar operation. The owner needs to check the connection and editing permission.',
         503,
       );
     throw new DomainError(

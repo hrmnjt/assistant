@@ -88,7 +88,6 @@ async function fixture(path = ':memory:') {
   await migrate(db);
   for (const id of ['owner', 'partner'])
     await db.run('INSERT INTO users VALUES (?,?,?)', id, id, id);
-  await db.run("INSERT INTO settings VALUES ('setup', '2026-10-01T00:00:00Z')");
   const transport = new MemoryCalendar();
   const service = new CalendarService(db, transport, () => new Date('2026-10-14T07:00:00Z'));
   return { db, transport, service };

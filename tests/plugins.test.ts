@@ -1,11 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { openHousehold } from '../server/runtime.js';
-import { client, config, openStore, setUp } from './support.js';
+import { client, config, openStore } from './support.js';
 
 test('the conversation is the core and each feature is a plugin with its own changes and tools', async () => {
   const app = await openHousehold(openStore(), config);
-  await setUp(app.household);
   try {
     assert.deepEqual(
       app.plugins.map((plugin) => plugin.id),

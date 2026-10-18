@@ -14,7 +14,17 @@ if (existsSync(path)) {
   writeFileSync(
     path,
     [
-      // Names and emails are entered in the app at its first sign-in, never here.
+      ...(production
+        ? [
+            '# From Cloudflare Access: the team domain and the application audience (AUD) tag.',
+            'ACCESS_TEAM_DOMAIN=',
+            'ACCESS_AUD=',
+          ]
+        : ['# No sign-in: development serves only this computer. Leave out ACCESS_* here.']),
+      'OWNER_NAME=You',
+      ...(production ? ['OWNER_EMAIL='] : []),
+      'PARTNER_NAME=Partner',
+      ...(production ? ['PARTNER_EMAIL='] : []),
       `VAPID_PUBLIC_KEY=${keys.publicKey}`,
       `VAPID_PRIVATE_KEY=${keys.privateKey}`,
       '# PUSH_CONTACT=mailto:you@example.com',
@@ -27,7 +37,7 @@ if (existsSync(path)) {
   );
   console.log(
     production
-      ? `Created ${path} with a stable push keypair. Run npm run secrets to upload it. Keep it private.`
-      : `Created ${path} with a stable push keypair. Keep it private.`,
+      ? `Created ${path} with a stable push keypair. Add the Cloudflare Access settings and the two email addresses, then run npm run secrets. Keep it private.`
+      : `Created ${path} with names and a stable push keypair. Keep it private.`,
   );
 }

@@ -1,7 +1,8 @@
 import type { Models } from '@earendil-works/pi-ai';
 import type { ModelRef } from '@earendil-works/pi-durable';
+import type { JWTVerifyGetKey } from 'jose';
 import { migrate, type Store } from './database.js';
-import { Auth } from './auth.js';
+import { accountsFrom, Auth, provision } from './auth.js';
 import { Household } from './household.js';
 import { Conversations } from './conversations.js';
 import { Notices, type PushSender } from './notices.js';
@@ -18,7 +19,12 @@ import type { App } from './api.js';
 /** Deployment secrets and variables; see `cloudflare/.dev.vars.example`. */
 export type Config = Partial<
   Record<
-    | 'HOUSEHOLD_DEVELOPMENT'
+    | 'ACCESS_TEAM_DOMAIN'
+    | 'ACCESS_AUD'
+    | 'OWNER_NAME'
+    | 'OWNER_EMAIL'
+    | 'PARTNER_NAME'
+    | 'PARTNER_EMAIL'
     | 'ICLOUD_USERNAME'
     | 'ICLOUD_APP_PASSWORD'
     | 'ICLOUD_CALENDAR_NAME'
@@ -38,6 +44,8 @@ export type Overrides = {
   models?: Models;
   model?: ModelRef;
   send?: PushSender;
+  /** Access signing keys, instead of the team's published certificates. */
+  accessKeys?: JWTVerifyGetKey;
 };
 export type Runtime = App & {
   /** Background work: each plugin's refreshes and planned notices, then delivery. Returns the next wake time. */
@@ -58,7 +66,19 @@ export async function openHousehold(
   overrides: Overrides = {},
 ): Promise<Runtime> {
   const clock = overrides.clock ?? (() => new Date());
+  // Cloudflare Access settings make this a deployment; without them it is a local development server.
+  if (Boolean(config.ACCESS_TEAM_DOMAIN) !== Boolean(config.ACCESS_AUD))
+    throw new Error('Configure both ACCESS_TEAM_DOMAIN and ACCESS_AUD from Cloudflare Access.');
+  const access = config.ACCESS_TEAM_DOMAIN
+    ? {
+        teamDomain: config.ACCESS_TEAM_DOMAIN,
+        audience: config.ACCESS_AUD!,
+        keys: overrides.accessKeys,
+      }
+    : undefined;
+  const accounts = accountsFrom(config, Boolean(access));
   await migrate(db);
+  await provision(db, accounts);
   const household = new Household(db, clock);
   await household.ensureSpaces();
   const transport =
@@ -74,7 +94,8 @@ export async function openHousehold(
   const notices = new Notices(
     db,
     {
-      contact: config.PUSH_CONTACT || undefined,
+      contact:
+        config.PUSH_CONTACT || (config.OWNER_EMAIL ? `mailto:${config.OWNER_EMAIL}` : undefined),
       publicKey: config.VAPID_PUBLIC_KEY,
       privateKey: config.VAPID_PRIVATE_KEY,
     },
@@ -99,8 +120,7 @@ export async function openHousehold(
       ...plugins.flatMap((plugin) => (plugin.extension ? [plugin.extension] : [])),
     ],
   });
-  // `npm run dev` sets HOUSEHOLD_DEVELOPMENT; a deployment never does.
-  const auth = new Auth(household, config.HOUSEHOLD_DEVELOPMENT === 'true');
+  const auth = new Auth(accounts, access);
   const nextWake = async () => {
     const now = clock();
     const times = [now.getTime() + fallbackWake, (await notices.nextWake(now)) ?? Infinity];

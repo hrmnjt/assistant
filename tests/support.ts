@@ -1,9 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
+import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { mkdirSync, mkdtempSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { NodeSqliteDatabase } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { migrate, type Store } from '../server/database.js';
-import { developmentPersonCookie, identityHeader } from '../server/auth.js';
+import { provision, type Account } from '../server/auth.js';
 import { handle, type App } from '../server/api.js';
 import { AssistantKit, coreExtension } from '../server/assistant-tools.js';
 import { previewOwner } from '../server/changes.js';
@@ -18,17 +19,39 @@ import { TasksPlugin } from '../server/plugins/tasks.js';
 
 export type Row = Record<string, any>;
 export const origin = 'http://localhost:5173';
-/** The two test people: Alex set the household up, Sam is the other person. */
-export const people = {
-  owner: { name: 'Alex', email: 'alex@example.com' },
-  partner: { name: 'Sam', email: 'sam@example.com' },
+export const accounts: Account[] = [
+  { id: 'owner', name: 'Alex', email: 'alex@example.com' },
+  { id: 'partner', name: 'Sam', email: 'sam@example.com' },
+];
+/** A development server: no Cloudflare Access, so requests on this computer need no sign-in. */
+export const config = {
+  OWNER_NAME: 'Alex',
+  OWNER_EMAIL: accounts[0].email,
+  PARTNER_NAME: 'Sam',
+  PARTNER_EMAIL: accounts[1].email,
 };
-/** A development server: no sign-in, answering only on this computer. */
-export const config = { HOUSEHOLD_DEVELOPMENT: 'true' };
-/** A deployment: people are known by the email Cloudflare Access verified. */
-export const deployment = {};
-/** Set the household up as its first sign-in does. */
-export const setUp = (household: Household) => household.setUp(people.owner, people.partner);
+
+/** Cloudflare Access for tests: a local signing key and tokens naming an email. */
+export async function testAccess(teamDomain = 'https://household.cloudflareaccess.com') {
+  const { privateKey, publicKey } = await generateKeyPair('RS256');
+  const jwk = { ...(await exportJWK(publicKey)), kid: 'test', alg: 'RS256' };
+  const audience = 'test-audience';
+  return {
+    config: { ...config, ACCESS_TEAM_DOMAIN: teamDomain, ACCESS_AUD: audience },
+    keys: createLocalJWKSet({ keys: [jwk] }),
+    token: (
+      email: string,
+      overrides: { audience?: string; issuer?: string; expires?: string } = {},
+    ) =>
+      new SignJWT({ email })
+        .setProtectedHeader({ alg: 'RS256', kid: 'test' })
+        .setIssuer(overrides.issuer ?? teamDomain)
+        .setAudience(overrides.audience ?? audience)
+        .setIssuedAt()
+        .setExpirationTime(overrides.expires ?? '10m')
+        .sign(privateKey),
+  };
+}
 
 /** Push settings for tests that inject a fake sender; no push service is called. */
 export const push = {
@@ -43,11 +66,11 @@ export function openStore(path = ':memory:'): Store {
   raw.exec('PRAGMA foreign_keys = ON');
   return new NodeSqliteDatabase(raw);
 }
-/** A migrated store with the household set up. */
+/** A migrated store with the two test accounts. */
 export async function householdStore(path?: string) {
   const db = openStore(path);
   await migrate(db);
-  await setUp(new Household(db));
+  await provision(db, accounts);
   return db;
 }
 export function directory(prefix = 'run') {
@@ -56,17 +79,11 @@ export function directory(prefix = 'run') {
 }
 
 /**
- * A client calling the API handler directly as one person: on a development
- * server by its cookie, on a deployment by the email header the Worker sets
- * from Cloudflare Access. `null` sends neither.
+ * A client calling the API handler directly. On a development server it acts
+ * as the given person; with Access, pass that person's token header instead.
  */
-export function client(app: App, person: 'owner' | 'partner' | null = 'owner', base = origin) {
-  const as: Record<string, string> = person
-    ? {
-        [identityHeader]: people[person].email,
-        ...(person === 'partner' ? { Cookie: `${developmentPersonCookie}=partner` } : {}),
-      }
-    : {};
+export function client(app: App, person: 'owner' | 'partner' = 'owner', base = origin) {
+  const cookie = person === 'partner' ? 'household-dev-person=partner' : '';
   const call = async (
     path: string,
     body?: unknown,
@@ -81,7 +98,7 @@ export function client(app: App, person: 'owner' | 'partner' | null = 'owner', b
           'Content-Type': 'application/json',
           'X-Household-Client': '1',
           Origin: base,
-          ...as,
+          ...(cookie ? { Cookie: cookie } : {}),
           ...headers,
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),

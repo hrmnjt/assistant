@@ -80,9 +80,9 @@ export function repeatedOccurrence(
 const utc = (value: string | null) => (value ? DateTime.fromISO(value).toUTC().toISO()! : null);
 
 /**
- * Tasks: one person follows up on each, either person can complete them, and
+ * Tasks: one follow-up owner each, either spouse can complete them, and
  * daily/weekly chores keep every occurrence's outcome. Deadline notices go to
- * the person following up.
+ * the owner.
  */
 export class TasksPlugin implements Plugin {
   readonly id = 'tasks';
@@ -132,7 +132,7 @@ export class TasksPlugin implements Plugin {
         section(
           'tasks',
           () =>
-            `Tasks: one person follows up on each and either of them can complete it. Read tasks with read_tasks before preparing a change with prepare_task_change. Daily/weekly tasks preserve local wall-clock time.`,
+            `Tasks: one person owns each follow-up and either spouse can complete it. Read tasks with read_tasks before preparing a change with prepare_task_change. Daily/weekly tasks preserve local wall-clock time.`,
           { tag: false },
         ),
       ],
@@ -306,7 +306,7 @@ export class TasksPlugin implements Plugin {
       if (
         !(await this.host.household.people(q)).some((person) => person.id === change.task.ownerId)
       )
-        throw new DomainError('Choose which of you follows up.');
+        throw new DomainError('Choose a household member as the owner.');
       if (change.task.schedule && !change.task.dueAt)
         throw new DomainError('A recurring task needs its first due date.');
     }
@@ -342,7 +342,11 @@ export class TasksPlugin implements Plugin {
     if (change.kind === 'task.create' || change.kind === 'task.update') {
       const prior = change.kind === 'task.update' ? await this.get(change.id) : undefined;
       detail('Task', change.task.title, prior?.title);
-      detail('Who follows up', personName(change.task.ownerId), prior && personName(prior.ownerId));
+      detail(
+        'Follow-up owner',
+        personName(change.task.ownerId),
+        prior && personName(prior.ownerId),
+      );
       detail('Space', change.task.category, prior?.category);
       detail(
         'Due',

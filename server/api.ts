@@ -3,7 +3,7 @@ import type { Row, Store } from './database.js';
 import type { Auth } from './auth.js';
 import { previewOwner } from './changes.js';
 import { DomainError } from './errors.js';
-import { email, personName, type Household } from './household.js';
+import type { Household } from './household.js';
 import type { Conversations } from './conversations.js';
 import { validPushEndpoint, type Notices } from './notices.js';
 import type { ApiRoute, Plugin } from './plugin.js';
@@ -29,18 +29,19 @@ export async function handle(app: App, request: Request): Promise<Response> {
   try {
     const url = new URL(request.url);
     if (!auth.served(request))
-      throw new RequestError('This development server answers only on this computer.', 403);
+      throw new RequestError(
+        'Sign-in is not set up for this address. Deployments need Cloudflare Access (ACCESS_TEAM_DOMAIN and ACCESS_AUD); a development server answers only on this computer.',
+        403,
+      );
     if (url.pathname === '/api/health' && request.method === 'GET')
       return json({ ok: app.conversations.healthy });
     if (!auth.writeAllowed(request)) throw new RequestError('Request origin is not allowed.', 403);
-    const caller = await auth.caller(request);
-    if (!caller)
+    const me = await auth.current(request);
+    if (!me)
       throw new RequestError(
-        'Sign in through Cloudflare Access with one of the two email addresses set up for this household.',
+        'Sign in through Cloudflare Access with one of the household’s two email addresses.',
         401,
       );
-    if ('setup' in caller) return await setUp(app, request, caller.setup.email);
-    const me = caller.person;
     for (const route of routes(app)) {
       const match = route.path.exec(url.pathname);
       if (match && route.method === request.method)
@@ -70,32 +71,6 @@ export async function handle(app: App, request: Request): Promise<Response> {
       500,
     );
   }
-}
-
-/**
- * Before the household is set up, the first person to sign in names both
- * people and gives the other person's email; nothing else is available yet.
- */
-async function setUp(app: App, request: Request, signedIn: string | null) {
-  const url = new URL(request.url);
-  const development = app.auth.mode === 'development';
-  if (url.pathname === '/api/setup' && request.method === 'POST') {
-    const input = z
-      .object({
-        name: personName,
-        partner: z
-          .object({ name: personName, email: development ? email.optional() : email })
-          .strict(),
-      })
-      .strict()
-      .parse(await body(request));
-    await app.household.setUp({ name: input.name, email: signedIn ?? undefined }, input.partner);
-    return json({ ok: true });
-  }
-  return json(
-    { error: 'Set up the household first.', setup: { email: signedIn, development } },
-    428,
-  );
 }
 
 function routes(app: App): ApiRoute[] {
@@ -148,25 +123,6 @@ function routes(app: App): ApiRoute[] {
         };
       }
       return json(state);
-    }),
-    route('POST', /^\/api\/people\/me$/, async (request, me) => {
-      const input = z
-        .object({ name: personName })
-        .strict()
-        .parse(await body(request));
-      await household.rename(me.id, input.name);
-      return json({ ok: true });
-    }),
-    // The person who set up the household can correct the other person's email.
-    route('POST', /^\/api\/people\/partner$/, async (request, me) => {
-      if (me.id !== 'owner')
-        throw new DomainError('Only the person who set up the household can change this.', 403);
-      const input = z
-        .object({ email })
-        .strict()
-        .parse(await body(request));
-      await household.changeEmail('partner', input.email);
-      return json({ ok: true });
     }),
     route('GET', /^\/api\/previews$/, async (_request, me) =>
       json(await recoverablePreviews(db, me.id, household.clock())),
