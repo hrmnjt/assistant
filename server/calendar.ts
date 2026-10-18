@@ -101,11 +101,6 @@ export class CalendarService {
     private transport?: CalendarTransport,
     private clock: () => Date = () => new Date(),
   ) {
-    db.sql
-      .exec(`CREATE TABLE IF NOT EXISTS calendar_cache (id TEXT PRIMARY KEY, value TEXT NOT NULL, resource_url TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS calendar_state (id INTEGER PRIMARY KEY CHECK(id=1), name TEXT NOT NULL, synced_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS calendar_operations (preview_id TEXT PRIMARY KEY REFERENCES previews(id) ON DELETE CASCADE,
-        value TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0, lease_until INTEGER NOT NULL DEFAULT 0);`);
     const saved = db.sql.prepare('SELECT * FROM calendar_state WHERE id=1').get();
     if (saved && transport)
       this.state = {

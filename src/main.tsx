@@ -39,6 +39,7 @@ import type {
   Preview,
   Snapshot,
   Task,
+  TaskOccurrence,
 } from './types';
 import { CalendarCard, CalendarView, EventForm } from './Calendar';
 import { Button } from '@/components/ui/button';
@@ -1695,6 +1696,11 @@ function TaskForm({
         <Textarea name="notes" rows={3} maxLength={5000} defaultValue={task?.notes} />
       </Label>
       <p className="small muted">Either of you can help or mark this task complete.</p>
+      {task && (
+        <Disclosure className="task-history" title="History">
+          <TaskHistory task={task} state={state} />
+        </Disclosure>
+      )}
       <div className="dialog-actions">
         {onDelete && (
           <Button
@@ -1713,6 +1719,41 @@ function TaskForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+function TaskHistory({ task, state }: { task: Task; state: Snapshot }) {
+  const [history, setHistory] = useState<TaskOccurrence[] | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    setError('');
+    api<TaskOccurrence[]>(`/tasks/${task.id}/history`)
+      .then((value) => active && setHistory(value))
+      .catch((problem) => active && setError((problem as Error).message));
+    return () => {
+      active = false;
+    };
+  }, [task.id, task.revision]);
+  const zone = state.preferences.timezone;
+  const when = (value: string) =>
+    DateTime.fromISO(value).setZone(zone).toFormat('d LLL yyyy, HH:mm');
+  const person = (id: string) =>
+    state.people.find((person) => person.id === id)?.name ?? 'Household';
+  if (error) return <p className="field-error">{error}</p>;
+  if (!history) return <p role="status">Loading history…</p>;
+  if (!history.length) return <p>Nothing recorded yet.</p>;
+  return (
+    <ul>
+      {history.map((item) => (
+        <li key={`${item.dueAt}:${item.outcome}`}>
+          {item.dueAt ? `Due ${when(item.dueAt)} · ` : ''}
+          {item.outcome === 'missed'
+            ? 'Missed'
+            : `Completed by ${person(item.completedBy ?? '')}${item.completedAt ? ` on ${when(item.completedAt)}` : ' (time not recorded)'}`}
+        </li>
+      ))}
+    </ul>
   );
 }
 

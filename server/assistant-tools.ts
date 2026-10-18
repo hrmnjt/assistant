@@ -13,20 +13,6 @@ import { DomainError, Household, mutationSchema } from './domain.js';
 import { CalendarService, calendarMutationSchema } from './calendar.js';
 import type { Mutation } from '../src/types.js';
 
-export function assistantTables(db: Database) {
-  db.sql.exec(`CREATE TABLE IF NOT EXISTS assistant_runs (
-    thread_id TEXT NOT NULL REFERENCES threads(id), request_key TEXT NOT NULL,
-    author_id TEXT NOT NULL REFERENCES users(id), text TEXT NOT NULL, message_id TEXT NOT NULL,
-    created_at TEXT NOT NULL, status TEXT NOT NULL, error TEXT,
-    PRIMARY KEY(thread_id,request_key));
-    CREATE UNIQUE INDEX IF NOT EXISTS assistant_one_run ON assistant_runs(thread_id) WHERE status='running';
-    CREATE TABLE IF NOT EXISTS assistant_previews (
-    call_key TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id),
-    actor_id TEXT NOT NULL REFERENCES users(id), preview_id TEXT NOT NULL, created_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS assistant_model_calls (task_id TEXT PRIMARY KEY,thread_id TEXT NOT NULL,request_key TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS assistant_sessions (session_id TEXT PRIMARY KEY,thread_id TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS assistant_reply_times (task_id TEXT PRIMARY KEY,created_at TEXT NOT NULL);`);
-}
 export function boundedModels(db: Database, models: Models): Models {
   const stream: Models['streamSimple'] = (model, context, options) => {
     const session = options?.sessionId;
@@ -80,7 +66,6 @@ export function boundedModels(db: Database, models: Models): Models {
   });
 }
 export function householdExtension(db: Database, household: Household, calendar?: CalendarService) {
-  assistantTables(db);
   const actor = (conversationId: number) => {
     const row = db.sql
       .prepare(
