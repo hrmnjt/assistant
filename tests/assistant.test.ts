@@ -10,7 +10,7 @@ import {
   fauxAssistantMessage,
   fauxToolCall,
 } from '@earendil-works/pi-ai';
-import { Household, DomainError } from '../server/domain.js';
+import { DomainError } from '../server/errors.js';
 import { Conversations } from '../server/conversations.js';
 import { boundedModels, dailyMaintenanceCalls } from '../server/assistant-tools.js';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
@@ -18,19 +18,19 @@ import type { Conversation } from '@earendil-works/pi-durable';
 import { aiConnection, chatgptModels, StoredCredentials } from '../server/ai.js';
 import { recoverablePreviews } from '../server/preview-recovery.js';
 import type { Store } from '../server/database.js';
-import { directory, householdStore, openStore, type Row } from './support.js';
+import { directory, householdParts, householdStore, openStore, type Row } from './support.js';
 
 /** A file-backed household store shared with Pi; closing Pi closes it, as when a runtime stops. */
 async function fixture() {
   const path = directory('assistant');
   const file = resolve(path, 'household.sqlite');
   let db: Store = await householdStore(file);
-  let household = new Household(db);
+  let parts = householdParts(db);
   const thread = (
-    await household.confirm(
+    await parts.changes.confirm(
       'owner',
       (
-        await household.preview('owner', {
+        await parts.changes.preview('owner', {
           kind: 'thread.create',
           title: 'Home',
           category: 'household',
@@ -47,18 +47,18 @@ async function fixture() {
     get db() {
       return db;
     },
-    get household() {
-      return household;
+    get parts() {
+      return parts;
     },
     thread,
     faux,
     get options() {
-      return { models, model, household };
+      return { models, model, household: parts.household, extensions: parts.extensions };
     },
     /** Open the same store again after Pi closed it. */
     reopen() {
       db = openStore(file);
-      household = new Household(db);
+      parts = householdParts(db);
     },
     async close() {
       await db.close();
@@ -98,14 +98,19 @@ test('Pi tools read household state and only prepare actor-bound changes; retrie
       const tools = context.messages
         .filter((message) => message.role === 'system')
         .flatMap((message) => (message.role === 'system' ? (message.toolsAdded ?? []) : []));
-      assert.deepEqual(tools.map((tool) => tool.name).sort(), ['prepare_change', 'read_household']);
+      assert.deepEqual(tools.map((tool) => tool.name).sort(), [
+        'prepare_household_change',
+        'prepare_task_change',
+        'read_household',
+        'read_tasks',
+      ]);
       return fauxAssistantMessage(fauxToolCall('read_household', {}), { stopReason: 'toolUse' });
     },
     (context) => {
       const result = context.messages.findLast((message) => message.role === 'toolResult');
       const first = result?.role === 'toolResult' ? result.content[0] : undefined;
       assert.equal(first?.type === 'text' ? JSON.parse(first.text).actorId : undefined, 'owner');
-      return fauxAssistantMessage(fauxToolCall('prepare_change', { change }), {
+      return fauxAssistantMessage(fauxToolCall('prepare_task_change', { change }), {
         stopReason: 'toolUse',
       });
     },
@@ -115,7 +120,7 @@ test('Pi tools read household state and only prepare actor-bound changes; retrie
     await conversations.send(f.thread, 'owner', 'Add buy milk for Sam', request);
     await finished(conversations, f.thread);
     assert.equal((await conversations.status(f.thread)).error, null);
-    assert.equal((await f.household.tasks()).length, 0);
+    assert.equal((await f.parts.tasks.list()).length, 0);
     const proposal = (await conversations.status(f.thread)).previews[0];
     assert.equal(proposal.actorId, 'owner');
     assert.deepEqual(
@@ -124,7 +129,7 @@ test('Pi tools read household state and only prepare actor-bound changes; retrie
     );
     assert.deepEqual(await recoverablePreviews(f.db, 'partner'), []);
     await assert.rejects(
-      async () => await f.household.confirm('partner', proposal.preview.id),
+      async () => await f.parts.changes.confirm('partner', proposal.preview.id),
       DomainError,
     );
     const messages = await conversations.messages(f.thread);
@@ -149,8 +154,8 @@ test('Pi tools read household state and only prepare actor-bound changes; retrie
       (await recoverablePreviews(f.db, 'owner')).map((p) => p.id),
       [proposal.preview.id],
     );
-    await f.household.confirm('owner', proposal.preview.id);
-    assert.equal((await f.household.tasks())[0].ownerId, 'partner');
+    await f.parts.changes.confirm('owner', proposal.preview.id);
+    assert.equal((await f.parts.tasks.list())[0].ownerId, 'partner');
     assert.equal((await conversations.status(f.thread)).previews.length, 0);
   } finally {
     await conversations.close();
@@ -170,7 +175,9 @@ test('messages queue while the assistant works without changing the requesting a
       await gate;
       return fauxAssistantMessage('Hello Alex');
     },
-    fauxAssistantMessage(fauxToolCall('prepare_change', { change }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage(fauxToolCall('prepare_task_change', { change }), {
+      stopReason: 'toolUse',
+    }),
     fauxAssistantMessage('Ready for review'),
   ]);
   try {
@@ -194,7 +201,7 @@ test('messages queue while the assistant works without changing the requesting a
     await finished(conversations, f.thread);
 
     assert.equal((await conversations.status(f.thread)).previews[0].actorId, 'partner');
-    assert.equal((await f.household.tasks()).length, 0);
+    assert.equal((await f.parts.tasks.list()).length, 0);
   } finally {
     release();
     await conversations.close();
@@ -241,7 +248,9 @@ test('queued requests resume after restart with their own authors and without re
     'queued',
   );
   f.faux.setResponses([
-    fauxAssistantMessage(fauxToolCall('prepare_change', { change }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage(fauxToolCall('prepare_task_change', { change }), {
+      stopReason: 'toolUse',
+    }),
     fauxAssistantMessage('Prepared'),
   ]);
   const conversations = await Conversations.open(f.db, f.options);
@@ -259,7 +268,7 @@ test('queued requests resume after restart with their own authors and without re
 test('an unsupported confirmation tool cannot bypass human confirmation', async () => {
   const f = await fixture();
   const conversations = await Conversations.open(f.db, f.options);
-  const preview = await f.household.preview('owner', change);
+  const preview = await f.parts.changes.preview('owner', change);
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall('confirm_change', { id: preview.id }), {
       stopReason: 'toolUse',
@@ -269,7 +278,7 @@ test('an unsupported confirmation tool cannot bypass human confirmation', async 
   try {
     await conversations.send(f.thread, 'owner', 'Yes confirm it', randomUUID());
     await finished(conversations, f.thread);
-    assert.equal((await f.household.tasks()).length, 0);
+    assert.equal((await f.parts.tasks.list()).length, 0);
   } finally {
     await conversations.close();
     await f.close();
@@ -341,7 +350,9 @@ test('startup recovers a persisted request before Pi admission and keeps its act
     'running',
   );
   f.faux.setResponses([
-    fauxAssistantMessage(fauxToolCall('prepare_change', { change }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage(fauxToolCall('prepare_task_change', { change }), {
+      stopReason: 'toolUse',
+    }),
     fauxAssistantMessage('Prepared for review.'),
   ]);
   const conversations = await Conversations.open(f.db, f.options);
@@ -352,7 +363,7 @@ test('startup recovers a persisted request before Pi admission and keeps its act
     assert.equal(messages.filter((message) => message.id === messageId).length, 1);
     await conversations.send(f.thread, 'partner', 'Buy milk', request);
     assert.equal(f.faux.state.callCount, 2);
-    assert.equal((await f.household.tasks()).length, 0);
+    assert.equal((await f.parts.tasks.list()).length, 0);
   } finally {
     await conversations.close();
     await f.close();

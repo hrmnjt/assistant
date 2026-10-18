@@ -3,18 +3,17 @@ import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Auth } from '../server/auth.js';
-import { Household } from '../server/domain.js';
-import { CalendarService } from '../server/calendar.js';
+import { CalendarService } from '../server/plugins/calendar/service.js';
 import { Conversations } from '../server/conversations.js';
-import { Reminders } from '../server/reminders.js';
 import { recoverablePreviews } from '../server/preview-recovery.js';
-import { updateEventData } from '../server/icalendar.js';
-import type { CalendarResource, CalendarTransport } from '../server/caldav.js';
+import { updateEventData } from '../server/plugins/calendar/icalendar.js';
+import type { CalendarResource, CalendarTransport } from '../server/plugins/calendar/caldav.js';
 import type { Preview, Snapshot } from '../src/types.js';
 import {
   accounts,
   client,
   directory,
+  householdParts,
   householdStore,
   openStore,
   origin,
@@ -66,9 +65,8 @@ async function fixture() {
   };
   return {
     path,
-    db,
     transport,
-    household: new Household(db, () => start),
+    ...householdParts(db, { clock: () => start }),
     get writes() {
       return writes;
     },
@@ -86,10 +84,10 @@ async function fixture() {
 test('recovery lists actor-owned unexpired previews without calendar tables and omits settled/cancelled/expired previews', async () => {
   const f = await fixture();
   try {
-    const own = await f.household.preview('owner', { kind: 'task.create', task });
-    await f.household.preview('partner', { kind: 'task.create', task });
-    const cancelled = await f.household.preview('owner', { kind: 'task.create', task });
-    await f.household.cancel('owner', cancelled.id);
+    const own = await f.changes.preview('owner', { kind: 'task.create', task });
+    await f.changes.preview('partner', { kind: 'task.create', task });
+    const cancelled = await f.changes.preview('owner', { kind: 'task.create', task });
+    await f.changes.cancel('owner', cancelled.id);
     assert.deepEqual(
       (await recoverablePreviews(f.db, 'owner', start)).map((p) => p.id),
       [own.id],
@@ -99,7 +97,7 @@ test('recovery lists actor-owned unexpired previews without calendar tables and 
       await recoverablePreviews(f.db, 'owner', new Date(start.getTime() + 600_000)),
       [],
     );
-    await f.household.confirm('owner', own.id);
+    await f.changes.confirm('owner', own.id);
     assert.deepEqual(await recoverablePreviews(f.db, 'owner', start), []);
   } finally {
     await f.db.close();
@@ -147,17 +145,18 @@ test('a real attempted write survives disk reopen and expiry even without config
 test('authenticated state/list endpoints restore only the actor previews and never expose executable operations', async () => {
   const f = await fixture();
   const calendar = new CalendarService(f.db, f.transport, () => start);
-  const direct = await f.household.preview('owner', { kind: 'task.create', task });
+  const direct = await f.changes.preview('owner', { kind: 'task.create', task });
   const uncertain = await calendar.preview('owner', { kind: 'calendar.create', event });
   await assert.rejects(calendar.confirm('owner', uncertain.id));
   const conversations = await Conversations.open(f.db);
+  const parts = householdParts(f.db, { clock: () => start, calendar });
   const app = {
     db: f.db,
     auth: new Auth(f.db, accounts, origin),
-    household: f.household,
+    household: parts.household,
     conversations,
-    reminders: new Reminders(f.db, f.household),
-    calendar,
+    notices: parts.notices,
+    plugins: parts.plugins,
   };
   await f.household.ensureSpaces();
   // Exercise status indexing separately from the real prepare_change tool test.

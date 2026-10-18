@@ -7,7 +7,7 @@ import {
 } from 'cloudflare:test';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createECDH, randomBytes } from 'node:crypto';
-import { ICloudTransport } from '../../server/caldav.js';
+import { ICloudTransport } from '../../server/plugins/calendar/caldav.js';
 import type { Runtime } from '../../server/runtime.js';
 import type { Env, Household } from '../worker.js';
 

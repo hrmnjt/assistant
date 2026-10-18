@@ -2,12 +2,17 @@ import type { Models } from '@earendil-works/pi-ai';
 import type { ModelRef } from '@earendil-works/pi-durable';
 import { migrate, type Store } from './database.js';
 import { accountsFrom, Auth, provision } from './auth.js';
-import { Household } from './domain.js';
-import { CalendarService } from './calendar.js';
-import { ICloudTransport, type CalendarTransport } from './caldav.js';
+import { Household } from './household.js';
 import { Conversations } from './conversations.js';
-import { Reminders, type PushSender } from './reminders.js';
+import { Notices, type PushSender } from './notices.js';
+import { AssistantKit, coreExtension } from './assistant-tools.js';
 import { aiConnection } from './ai.js';
+import type { Plugin, PluginHost } from './plugin.js';
+import { CalendarPlugin } from './plugins/calendar/index.js';
+import { CalendarService } from './plugins/calendar/service.js';
+import { ICloudTransport, type CalendarTransport } from './plugins/calendar/caldav.js';
+import { TasksPlugin } from './plugins/tasks.js';
+import { DashboardPlugin } from './plugins/dashboard.js';
 import type { App } from './api.js';
 
 /** Deployment secrets and variables; see `cloudflare/.dev.vars.example`. */
@@ -41,7 +46,7 @@ export type Overrides = {
   send?: PushSender;
 };
 export type Runtime = App & {
-  /** Background work: calendar refresh, reminder planning and delivery. Returns the next wake time. */
+  /** Background work: each plugin's refreshes and planned notices, then delivery. Returns the next wake time. */
   tick(): Promise<number>;
   /** The next time background work is due, for the host's single wakeup. */
   nextWake(): Promise<number>;
@@ -49,8 +54,7 @@ export type Runtime = App & {
   refreshIfStale(): Promise<void>;
 };
 
-const calendarInterval = 5 * 60_000;
-const activeCalendarAge = 60_000;
+const fallbackWake = 15 * 60_000;
 const assistantRecovery = 30_000;
 
 /** Open the household application on one store; the same code runs in a Durable Object and in tests. */
@@ -77,53 +81,64 @@ export async function openHousehold(
           calendarUrl: config.ICLOUD_CALENDAR_URL || undefined,
         })
       : undefined);
-  const calendar = await new CalendarService(db, transport, clock).load();
-  const ai = overrides.models
-    ? { models: overrides.models, model: overrides.model }
-    : await aiConnection(db, config);
-  const conversations = await Conversations.open(db, { ...ai, household, calendar });
-  const reminders = new Reminders(
+  const notices = new Notices(
     db,
-    household,
     {
       contact: config.PUSH_CONTACT || (origin.startsWith('https:') ? origin : undefined),
       publicKey: config.VAPID_PUBLIC_KEY,
       privateKey: config.VAPID_PRIVATE_KEY,
     },
-    () => calendar.snapshot(),
     clock,
     overrides.send,
   );
+  const assistant = new AssistantKit(db);
+  const host: PluginHost = { db, clock, household, notices, assistant };
+  const calendar = new CalendarPlugin(host, await new CalendarService(db, transport, clock).load());
+  const tasks = new TasksPlugin(host);
+  // The calendar refreshes before the dashboard summarizes it.
+  const plugins: Plugin[] = [calendar, tasks, new DashboardPlugin(host, tasks, calendar)];
+  notices.use(plugins);
+  const ai = overrides.models
+    ? { models: overrides.models, model: overrides.model }
+    : await aiConnection(db, config);
+  const conversations = await Conversations.open(db, {
+    ...ai,
+    household,
+    extensions: [
+      coreExtension(db, assistant, household),
+      ...plugins.flatMap((plugin) => (plugin.extension ? [plugin.extension] : [])),
+    ],
+  });
   const auth = new Auth(db, accounts, origin, () => clock().getTime());
-  const syncedAt = () => Date.parse(calendar.snapshot().syncedAt ?? '') || 0;
   const nextWake = async () => {
-    const times = [await reminders.nextWake(clock())];
-    if (calendar.connected) times.push(syncedAt() + calendarInterval);
-    if (await conversations.pending()) times.push(clock().getTime() + assistantRecovery);
-    return Math.max(clock().getTime() + 1000, Math.min(...times));
+    const now = clock();
+    const times = [now.getTime() + fallbackWake, (await notices.nextWake(now)) ?? Infinity];
+    for (const plugin of plugins) times.push((await plugin.nextWake?.(now)) ?? Infinity);
+    if (await conversations.pending()) times.push(now.getTime() + assistantRecovery);
+    return Math.max(now.getTime() + 1000, Math.min(...times));
   };
   return {
     db,
     auth,
     household,
     conversations,
-    reminders,
-    calendar,
+    notices,
+    plugins,
     nextWake,
     async tick() {
-      if (calendar.connected && clock().getTime() - syncedAt() >= calendarInterval)
-        await calendar.sync();
+      for (const plugin of plugins)
+        try {
+          await plugin.tick?.(clock());
+        } catch {
+          console.error(`Background work for ${plugin.id} failed; it will be retried.`);
+        }
       try {
-        await reminders.plan();
-        await reminders.deliver();
+        await notices.deliver();
       } catch {
-        console.error('Reminder work failed; it will be retried.');
+        console.error('Notice delivery failed; it will be retried.');
       }
       return nextWake();
     },
-    async refreshIfStale() {
-      if (calendar.connected && clock().getTime() - syncedAt() >= activeCalendarAge)
-        await calendar.sync();
-    },
+    refreshIfStale: () => calendar.refreshIfStale(clock()),
   };
 }

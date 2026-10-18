@@ -1,15 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Household } from '../server/domain.js';
-import { Reminders, type PushSender } from '../server/reminders.js';
+import type { PushSender } from '../server/notices.js';
 import type { CalendarEvent, CalendarSnapshot, HouseholdMutation } from '../src/types.js';
-import { householdStore, push, type Row } from './support.js';
+import { fakeCalendar, householdParts, householdStore, push, type Row } from './support.js';
 
 const hour = 3_600_000;
 async function fixture(start: string) {
   const db = await householdStore();
   let now = new Date(start);
-  const household = new Household(db, () => now);
   const calendar: CalendarSnapshot = {
     status: 'connected',
     name: 'Household',
@@ -24,14 +22,12 @@ async function fixture(start: string) {
     sent.push(JSON.parse(payload).tag);
     return 201;
   };
-  const reminders = new Reminders(
-    db,
-    household,
+  const parts = householdParts(db, {
+    clock: () => now,
     push,
-    () => calendar,
-    () => now,
     send,
-  );
+    calendar: fakeCalendar(() => calendar),
+  });
   for (const id of ['owner', 'partner']) {
     const endpoint = `https://push.apple.com/${id}`;
     await db.run(
@@ -42,13 +38,11 @@ async function fixture(start: string) {
     );
   }
   return {
-    db,
-    household,
-    reminders,
+    ...parts,
     calendar,
     sent,
     async apply(mutation: HouseholdMutation, user = 'owner') {
-      return household.confirm(user, (await household.preview(user, mutation)).id);
+      return parts.changes.confirm(user, (await parts.changes.preview(user, mutation)).id);
     },
     async task(dueAt: string) {
       return (
@@ -66,8 +60,8 @@ async function fixture(start: string) {
       ).targetId;
     },
     async tick() {
-      await reminders.plan();
-      await reminders.deliver();
+      await parts.plan();
+      await parts.notices.deliver();
     },
     async delivery(id: string) {
       return (await db.get<Row>('SELECT delivery FROM notices WHERE id=?', id))?.delivery;
@@ -124,7 +118,7 @@ test('a task push retried past two hours after its deadline is dropped, not sent
     assert.equal(await f.delivery(notice), 'pending');
     f.failing(false);
     f.time(Date.parse('2026-10-14T08:00:00.000Z') + 1);
-    await f.reminders.deliver();
+    await f.notices.deliver();
     assert.equal(f.sent.includes(notice), false);
     assert.equal(await f.delivery(notice), 'inbox');
   } finally {
@@ -138,15 +132,15 @@ test('appointment pushes stop at two hours after the trigger or when the event e
     const short = event('a'.repeat(64), '2026-10-14T08:00:00.000Z', '2026-10-14T08:30:00.000Z', 30);
     const long = event('b'.repeat(64), '2026-10-14T08:30:00.000Z', '2026-10-14T12:00:00.000Z', 60);
     f.calendar.events = [short, long];
-    await f.reminders.plan();
+    await f.plan();
     const shortNotice = `appointment:${short.id}:${short.start}:30:owner`;
     const longNotice = `appointment:${long.id}:${long.start}:60:owner`;
     // The calendar becomes unavailable before delivery and returns later.
     f.calendar.status = 'error';
-    await f.reminders.deliver();
+    await f.notices.deliver();
     f.calendar.status = 'connected';
     f.time(Date.parse(short.end) + 1);
-    await f.reminders.deliver();
+    await f.notices.deliver();
     assert.equal(f.sent.includes(shortNotice), false);
     assert.equal(await f.delivery(shortNotice), 'inbox');
     // Still before the long event's cutoff: trigger 07:30 + two hours.
@@ -154,12 +148,12 @@ test('appointment pushes stop at two hours after the trigger or when the event e
     const later = event('c'.repeat(64), '2026-10-14T10:00:00.000Z', '2026-10-14T14:00:00.000Z', 60);
     f.calendar.events = [later];
     f.time('2026-10-14T09:00:00Z');
-    await f.reminders.plan();
+    await f.plan();
     f.calendar.status = 'error';
-    await f.reminders.deliver();
+    await f.notices.deliver();
     f.calendar.status = 'connected';
     f.time(Date.parse('2026-10-14T11:00:00Z') + 1);
-    await f.reminders.deliver();
+    await f.notices.deliver();
     assert.equal(f.sent.includes(`appointment:${later.id}:${later.start}:60:owner`), false);
   } finally {
     await f.close();
@@ -229,7 +223,7 @@ test('a partner-change push expires two hours after the change', async () => {
   const f = await fixture('2026-10-14T07:00:00Z');
   try {
     f.failing(true);
-    const preview = await f.household.preview('owner', {
+    const preview = await f.changes.preview('owner', {
       kind: 'task.create',
       task: {
         title: 'Book the plumber',
@@ -240,15 +234,15 @@ test('a partner-change push expires two hours after the change', async () => {
         schedule: null,
       },
     });
-    await f.household.confirm('owner', preview.id);
+    await f.changes.confirm('owner', preview.id);
     const notice = `change:${preview.id}:partner`;
-    await f.reminders.deliver();
+    await f.notices.deliver();
     f.failing(false);
     f.time(Date.parse('2026-10-14T07:00:00Z') + 2 * hour);
-    await f.reminders.deliver();
+    await f.notices.deliver();
     assert.ok(f.sent.includes(notice));
     assert.equal(await f.delivery(notice), 'inbox');
-    const later = await f.household.preview('owner', {
+    const later = await f.changes.preview('owner', {
       kind: 'task.create',
       task: {
         title: 'Call the bank',
@@ -259,12 +253,12 @@ test('a partner-change push expires two hours after the change', async () => {
         schedule: null,
       },
     });
-    await f.household.confirm('owner', later.id);
+    await f.changes.confirm('owner', later.id);
     f.failing(true);
-    await f.reminders.deliver();
+    await f.notices.deliver();
     f.failing(false);
     f.time(Date.parse('2026-10-14T09:00:00Z') + 2 * hour + 1);
-    await f.reminders.deliver();
+    await f.notices.deliver();
     assert.equal(f.sent.includes(`change:${later.id}:partner`), false);
   } finally {
     await f.close();

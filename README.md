@@ -29,8 +29,10 @@ sends `/api/*` to one SQLite-backed Durable Object, `Household`. That object
 holds both accounts, the shared records, and the Pi conversations, which share
 its SQLite storage through one serialized queue. A single alarm runs calendar
 refreshes, reminders, summaries, and recovery of unfinished assistant work.
-`server/` holds the application (domain rules, API router, integrations),
-`cloudflare/worker.ts` is the only host, and `src/` is the client.
+`server/` holds the core (sign-in, people and settings, conversations and
+channels, the change pipeline, notices and push, the API router) and
+`server/plugins/` the features built on it; `cloudflare/worker.ts` is the only
+host, and `src/` is the client.
 
 ### Run on the Mac
 
@@ -255,12 +257,16 @@ Decided with the user on 18 October 2026, delivered as stacked pull requests:
 
 1. **Chat-first shell** (built): the conversation is the whole screen, views open
    from the menu or header, and the chat feels native on phones and laptops.
-2. **Plugins** (next): the server splits into a core (sign-in, conversations and
-   channels, the confirmation pipeline, one scheduler, the shell) and plugins.
-   A plugin is a Pi extension (tools and prompt section for the assistant) plus
-   its own tables, background jobs, read model, and the cards and optional view
-   it renders in the app. Tasks, Calendar and Dashboard are the first plugins.
-   Assistant changes appear in the transcript as one-tap Confirm cards.
+2. **Plugins** (server built; client next): the core keeps sign-in, people and
+   settings, conversations and channels, the change pipeline, notices and push,
+   one scheduler and the API router. A plugin (`server/plugin.ts`) brings its own
+   Pi extension (the assistant's `read_<feature>` and `prepare_<feature>_change`
+   tools and its instructions), the change kinds it owns, its part of the app's
+   data, background work and wake-up times, its routes, and whether its planned
+   notices still apply. Tasks, Calendar (iCloud sync and appointment reminders)
+   and Dashboard (morning and evening summaries) are the first plugins. Next, the
+   client renders each plugin's cards and view, with assistant changes in the
+   transcript as one-tap Confirm cards.
 3. **Proactive messages**: reminders and summaries posted in each person's chat
    with push, with quick taps that work without the assistant.
 4. **Glance views**: views become read-mostly; adding and editing go through the
