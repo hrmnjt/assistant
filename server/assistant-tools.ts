@@ -1,5 +1,10 @@
-import { Type, type Models } from '@earendil-works/pi-ai';
-import { randomUUID } from 'node:crypto';
+import {
+  Type,
+  createAssistantMessageEventStream,
+  type AssistantMessage,
+  type Model,
+  type Models,
+} from '@earendil-works/pi-ai';
 import {
   defineExtension,
   defineTool,
@@ -8,7 +13,7 @@ import {
   GenerationTask,
 } from '@earendil-works/pi-durable';
 import { z } from 'zod';
-import type { Database } from './database.js';
+import type { Row, Store } from './database.js';
 import { DomainError, Household, mutationSchema } from './domain.js';
 import { CalendarService, calendarMutationSchema } from './calendar.js';
 import type { Mutation } from '../src/types.js';
@@ -21,13 +26,39 @@ export const requestModelCalls = 8;
  */
 export const dailyMaintenanceCalls = 6;
 
-export function boundedModels(db: Database, models: Models, now = () => Date.now()): Models {
-  const stream: Models['streamSimple'] = (model, context, options) => {
-    const session = options?.sessionId;
-    if (!session) throw new Error('Assistant request has no durable session.');
-    let thread = db.sql
-      .prepare('SELECT thread_id FROM assistant_sessions WHERE session_id=?')
-      .get(session);
+/** A provider-style failure, so Pi settles the request as an ordinary model error. */
+function refusal(model: Model<string>, message: string): AssistantMessage {
+  return {
+    role: 'assistant',
+    content: [],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: 'error',
+    errorMessage: message,
+    timestamp: Date.now(),
+  };
+}
+
+export function boundedModels(db: Store, models: Models, now = () => Date.now()): Models {
+  /** Bind the provider session to its topic and count one call against the running request. */
+  async function admit(
+    sessionId: string | undefined,
+    context: Parameters<Models['streamSimple']>[1],
+  ) {
+    if (!sessionId) throw new Error('Assistant request has no durable session.');
+    let thread = await db.get<Row>(
+      'SELECT thread_id FROM assistant_sessions WHERE session_id=?',
+      sessionId,
+    );
     if (!thread) {
       const last = context.messages.findLast((message) => message.role === 'user');
       const content = last?.role === 'user' ? last.content : '';
@@ -41,46 +72,79 @@ export function boundedModels(db: Database, models: Models, now = () => Date.now
       const match = /^Household request ([a-f0-9-]{36})\n/.exec(text);
       if (
         !match ||
-        !db.sql
-          .prepare("SELECT 1 FROM assistant_runs WHERE thread_id=? AND status='running'")
-          .get(match[1])
+        !(await db.get(
+          "SELECT 1 AS found FROM assistant_runs WHERE thread_id=? AND status='running'",
+          match[1],
+        ))
       )
         throw new Error('Assistant request cannot be bound to a household topic.');
-      db.sql.prepare('INSERT INTO assistant_sessions VALUES (?,?)').run(session, match[1]);
+      await db.run('INSERT INTO assistant_sessions VALUES (?,?)', sessionId, match[1]);
       thread = { thread_id: match[1] };
     }
-    const run = db.sql
-      .prepare("SELECT request_key FROM assistant_runs WHERE thread_id=? AND status='running'")
-      .get(String(thread.thread_id));
-    if (!run) throw new Error('This assistant request is no longer active.');
-    const count = db.sql
-      .prepare(
+    const threadId = String(thread.thread_id);
+    await db.transaction(async (tx) => {
+      const run = await tx.get<Row>(
+        "SELECT request_key FROM assistant_runs WHERE thread_id=? AND status='running'",
+        threadId,
+      );
+      if (!run) throw new Error('This assistant request is no longer active.');
+      const count = (await tx.get<Row>(
         'SELECT COUNT(*) AS count FROM assistant_model_calls WHERE thread_id=? AND request_key=?',
-      )
-      .get(String(thread.thread_id), String(run.request_key))!;
-    if (Number(count.count) >= requestModelCalls)
-      throw new Error('This assistant request reached its model-turn limit.');
-    db.sql
-      .prepare('INSERT INTO assistant_model_calls VALUES (?,?,?)')
-      .run(randomUUID(), String(thread.thread_id), String(run.request_key));
-    return models.streamSimple(model, context, options);
+        threadId,
+        String(run.request_key),
+      ))!;
+      if (Number(count.count) >= requestModelCalls)
+        throw new Error('This assistant request reached its model-turn limit.');
+      await tx.run(
+        'INSERT INTO assistant_model_calls VALUES (?,?,?)',
+        crypto.randomUUID(),
+        threadId,
+        String(run.request_key),
+      );
+    });
+  }
+  // The stream is returned at once; the budget check runs before the provider is called.
+  const stream: Models['streamSimple'] = (model, context, options) => {
+    const output = createAssistantMessageEventStream();
+    void (async () => {
+      try {
+        await admit(options?.sessionId, context);
+      } catch (error) {
+        const message = refusal(
+          model,
+          error instanceof Error ? error.message : 'The request was not admitted.',
+        );
+        output.push({ type: 'error', reason: 'error', error: message });
+        output.end(message);
+        return;
+      }
+      for await (const event of models.streamSimple(model, context, options)) output.push(event);
+      output.end();
+    })();
+    return output;
   };
   const complete: Models['completeSimple'] = async (model, context, options) => {
     // Bound by the conversation's provider session, never to whichever request is running.
-    const thread = db.sql
-      .prepare('SELECT thread_id FROM assistant_sessions WHERE session_id=?')
-      .get(options?.sessionId ?? '');
+    const thread = await db.get<Row>(
+      'SELECT thread_id FROM assistant_sessions WHERE session_id=?',
+      options?.sessionId ?? '',
+    );
     if (!thread) throw new Error('Assistant maintenance cannot be bound to a household topic.');
-    const recent = db.sql
-      .prepare(
+    await db.transaction(async (tx) => {
+      const recent = (await tx.get<Row>(
         'SELECT COUNT(*) AS count FROM assistant_maintenance_calls WHERE thread_id=? AND created_at>?',
-      )
-      .get(String(thread.thread_id), now() - 86_400_000)!;
-    if (Number(recent.count) >= dailyMaintenanceCalls)
-      throw new Error('This topic reached its daily assistant maintenance limit.');
-    db.sql
-      .prepare('INSERT INTO assistant_maintenance_calls VALUES (?,?,?)')
-      .run(randomUUID(), String(thread.thread_id), now());
+        String(thread.thread_id),
+        now() - 86_400_000,
+      ))!;
+      if (Number(recent.count) >= dailyMaintenanceCalls)
+        throw new Error('This topic reached its daily assistant maintenance limit.');
+      await tx.run(
+        'INSERT INTO assistant_maintenance_calls VALUES (?,?,?)',
+        crypto.randomUUID(),
+        String(thread.thread_id),
+        now(),
+      );
+    });
     return models.completeSimple(model, context, options);
   };
   const unmetered = () => {
@@ -96,14 +160,13 @@ export function boundedModels(db: Database, models: Models, now = () => Date.now
     },
   });
 }
-export function householdExtension(db: Database, household: Household, calendar?: CalendarService) {
-  const actor = (conversationId: number) => {
-    const row = db.sql
-      .prepare(
-        `SELECT r.* FROM assistant_runs r JOIN pi_conversations c ON c.thread_id=r.thread_id
+export function householdExtension(db: Store, household: Household, calendar?: CalendarService) {
+  const actor = async (conversationId: number) => {
+    const row = await db.get<Row>(
+      `SELECT r.* FROM assistant_runs r JOIN pi_conversations c ON c.thread_id=r.thread_id
       WHERE c.conversation_id=? AND r.status='running'`,
-      )
-      .get(conversationId);
+      String(conversationId),
+    );
     if (!row) throw new DomainError('This assistant request is no longer active.', 409);
     return {
       id: String(row.author_id),
@@ -118,13 +181,12 @@ export function householdExtension(db: Database, household: Household, calendar?
     parameters: Type.Object({}),
     replay: 'safe',
     execute: async (_args, api) => {
-      const who = actor(api.conversationId);
-      const proposals = db.sql
-        .prepare(
-          `SELECT a.preview_id AS id, p.applied_at AS appliedAt, p.expires_at AS expiresAt,
+      const who = await actor(api.conversationId);
+      const proposals = await db.all<Row>(
+        `SELECT a.preview_id AS id, p.applied_at AS appliedAt, p.expires_at AS expiresAt,
         p.result FROM assistant_previews a LEFT JOIN previews p ON p.id=a.preview_id WHERE a.thread_id=? ORDER BY a.created_at DESC LIMIT 20`,
-        )
-        .all(who.threadId);
+        who.threadId,
+      );
       return {
         output: [
           {
@@ -132,9 +194,9 @@ export function householdExtension(db: Database, household: Household, calendar?
             text: JSON.stringify({
               now: household.clock().toISOString(),
               actorId: who.id,
-              people: household.people(),
-              tasks: household.tasks(),
-              preferences: household.preferences(who.id),
+              people: await household.people(),
+              tasks: await household.tasks(),
+              preferences: await household.preferences(who.id),
               calendar: calendar?.snapshot() ?? { status: 'not-connected', events: [] },
               proposals,
             }),
@@ -156,13 +218,12 @@ export function householdExtension(db: Database, household: Household, calendar?
     replay: 'unsafe',
     executionMode: 'sequential',
     execute: async ({ change }, api) => {
-      const who = actor(api.conversationId);
+      const who = await actor(api.conversationId);
       const key = `${api.conversationId}:${api.taskId}`;
-      const existing = db.sql
-        .prepare(
-          'SELECT p.view FROM assistant_previews a JOIN previews p ON p.id=a.preview_id WHERE a.call_key=?',
-        )
-        .get(key);
+      const existing = await db.get<Row>(
+        'SELECT p.view FROM assistant_previews a JOIN previews p ON p.id=a.preview_id WHERE a.call_key=?',
+        key,
+      );
       if (existing)
         return {
           output: [
@@ -179,10 +240,15 @@ export function householdExtension(db: Database, household: Household, calendar?
               throw new DomainError('The shared calendar is not connected.', 503);
             })()
           ).preview(who.id, change)
-        : household.preview(who.id, change);
-      db.sql
-        .prepare('INSERT INTO assistant_previews VALUES (?,?,?,?,?)')
-        .run(key, who.threadId, who.id, preview.id, new Date().toISOString());
+        : await household.preview(who.id, change);
+      await db.run(
+        'INSERT INTO assistant_previews VALUES (?,?,?,?,?)',
+        key,
+        who.threadId,
+        who.id,
+        preview.id,
+        new Date().toISOString(),
+      );
       return {
         output: [
           {
@@ -202,10 +268,12 @@ export function householdExtension(db: Database, household: Household, calendar?
     tools: [read, prepare],
     hooks: [
       hook(GenerationTask, {
-        afterResponse: (_message, api) => {
-          db.sql
-            .prepare('INSERT OR IGNORE INTO assistant_reply_times VALUES (?,?)')
-            .run(api.taskId, new Date().toISOString());
+        afterResponse: async (_message, api) => {
+          await db.run(
+            'INSERT OR IGNORE INTO assistant_reply_times VALUES (?,?)',
+            String(api.taskId),
+            new Date().toISOString(),
+          );
         },
       }),
     ],

@@ -1,18 +1,21 @@
-import type { Database } from './database.js';
+import type { Executor, Row } from './database.js';
 import type { ConfirmationResult, Preview } from '../src/types.js';
 
 // A read model only: expiry revokes authorization for new writes, not the need
 // to resolve an attempted write. Never expose mutation payloads or remote URLs.
-export function recoverablePreviews(db: Database, actorId: string, now = new Date()): Preview[] {
-  const rows = db.sql
-    .prepare(
-      `
+export async function recoverablePreviews(
+  db: Executor,
+  actorId: string,
+  now = new Date(),
+): Promise<Preview[]> {
+  const rows = await db.all<Row>(
+    `
     SELECT p.view,p.expires_at,p.result,COALESCE(c.attempted,0) AS attempted
     FROM previews p LEFT JOIN calendar_operations c ON c.preview_id=p.id
     WHERE p.user_id=? AND p.applied_at IS NULL ORDER BY p.expires_at,p.id
   `,
-    )
-    .all(actorId);
+    actorId,
+  );
   return rows.flatMap((row) => {
     const result: ConfirmationResult | null = row.result ? JSON.parse(String(row.result)) : null;
     if (result?.dismissedAt) return [];

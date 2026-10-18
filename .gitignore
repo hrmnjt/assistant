@@ -14,4 +14,5 @@ test-results/
 
 .dev.vars*
 !.dev.vars.example
+.prod.vars
 .wrangler

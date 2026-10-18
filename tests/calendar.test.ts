@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { Database } from '../server/database.js';
+import { migrate } from '../server/database.js';
+import { openStore, type Row } from './support.js';
 import { Household, DomainError } from '../server/domain.js';
 import { CalendarOutcomeError, CalendarService } from '../server/calendar.js';
 import type { CalendarResource, CalendarTransport } from '../server/caldav.js';
@@ -79,17 +80,18 @@ class MemoryCalendar implements CalendarTransport {
     });
   }
 }
-function fixture(path = ':memory:') {
-  const db = new Database(path);
+async function fixture(path = ':memory:') {
+  const db = openStore(path);
+  await migrate(db);
   for (const id of ['owner', 'partner'])
-    db.sql.prepare('INSERT INTO users VALUES (?,?,?,?)').run(id, id, id, 'unused-test-password');
+    await db.run('INSERT INTO users VALUES (?,?,?)', id, id, id);
   const transport = new MemoryCalendar();
   const service = new CalendarService(db, transport, () => new Date('2026-10-14T07:00:00Z'));
   return { db, transport, service };
 }
 
 test('calendar sync reflects external edits and deletion without changing the event identity', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const url = f.transport.seed();
     await f.service.sync();
@@ -99,7 +101,7 @@ test('calendar sync reflects external edits and deletion without changing the ev
     assert.equal(f.service.snapshot().events[0].id, first.id);
     assert.equal(f.service.snapshot().events[0].title, 'Dinner at eight');
     assert.equal(
-      f.db.sql.prepare('SELECT id FROM notices').all().length,
+      (await f.db.all<Row>('SELECT id FROM notices')).length,
       0,
       'external calendar edits sync silently',
     );
@@ -107,11 +109,11 @@ test('calendar sync reflects external edits and deletion without changing the ev
     await f.service.sync();
     assert.equal(f.service.snapshot().events.length, 0);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 test('calendar creation writes only after actor-bound confirmation and retries do not create copies', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
     assert.equal(f.transport.writes, 0);
@@ -123,22 +125,22 @@ test('calendar creation writes only after actor-bound confirmation and retries d
     assert.equal(f.transport.writes, 1);
     assert.equal(f.transport.resources.size, 1);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 test('calendar cancellation makes the pending operation impossible', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
-    f.service.cancel('owner', preview.id);
+    await f.service.cancel('owner', preview.id);
     await assert.rejects(f.service.confirm('owner', preview.id), DomainError);
     assert.equal(f.transport.writes, 0);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 test('an app update preserves the iCloud UID and resource URL', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const url = f.transport.seed();
     await f.service.sync();
@@ -162,11 +164,11 @@ test('an app update preserves the iCloud UID and resource URL', async () => {
     assert(f.transport.resources.has(url));
     assert.equal(f.transport.resources.size, 1);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 test('human edits made before preview or before confirmation reject stale app updates', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const url = f.transport.seed();
     await f.service.sync();
@@ -193,13 +195,13 @@ test('human edits made before preview or before confirmation reject stale app up
     );
     assert.equal(parseEvents(f.transport.resources.get(url)!)[0].title, 'A human changed this');
     assert.equal(f.transport.writes, 0);
-    f.service.cancel('owner', preview.id);
+    await f.service.cancel('owner', preview.id);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 test('the remote ETag precondition also catches edits between the last read and PUT', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const url = f.transport.seed();
     await f.service.sync();
@@ -214,13 +216,13 @@ test('the remote ETag precondition also catches edits between the last read and 
     await assert.rejects(f.service.confirm('owner', preview.id), DomainError);
     assert.equal(f.transport.writes, 0);
     assert.equal(parseEvents(f.transport.resources.get(url)!)[0].title, 'Last-moment human edit');
-    f.service.cancel('owner', preview.id);
+    await f.service.cancel('owner', preview.id);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 test('a lost create response is reconciled through the same preview without another PUT', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
     f.transport.losePutResponse = true;
@@ -228,18 +230,18 @@ test('a lost create response is reconciled through the same preview without anot
       f.service.confirm('owner', preview.id),
       (error: unknown) => error instanceof DomainError && error.status === 503,
     );
-    assert.throws(() => f.service.cancel('owner', preview.id), DomainError);
+    await assert.rejects(async () => await f.service.cancel('owner', preview.id), DomainError);
     // Simulate reopening the service after a process restart.
     const reopened = new CalendarService(f.db, f.transport, () => new Date('2026-10-14T07:01:00Z'));
     await reopened.confirm('owner', preview.id);
     assert.equal(f.transport.writes, 1);
     assert.equal(f.transport.resources.size, 1);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 test('a lost delete response can be retried without deleting any other appointment', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     f.transport.seed();
     f.transport.seed({ ...fields, title: 'Keep this appointment' });
@@ -256,11 +258,11 @@ test('a lost delete response can be retried without deleting any other appointme
     assert.equal(f.transport.removals, 1);
     assert.equal(f.service.snapshot().events[0].title, 'Keep this appointment');
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 test('a preview is blocked from cancellation while its confirmation is in progress', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
     let release!: () => void;
@@ -279,16 +281,16 @@ test('a preview is blocked from cancellation while its confirmation is in progre
     };
     const confirmation = f.service.confirm('owner', preview.id);
     await reached;
-    assert.throws(() => f.service.cancel('owner', preview.id), DomainError);
-    assert.throws(() => f.service.dismiss('owner', preview.id), DomainError);
+    await assert.rejects(async () => await f.service.cancel('owner', preview.id), DomainError);
+    await assert.rejects(async () => await f.service.dismiss('owner', preview.id), DomainError);
     release();
     await confirmation;
     assert.equal(f.transport.writes, 1);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
-test('iCalendar serialization escapes content and preserves unrelated properties and alarms', () => {
+test('iCalendar serialization escapes content and preserves unrelated properties and alarms', async () => {
   const uid = randomUUID();
   let data = createEventData(uid, fields, 'seed').replace(
     'END:VEVENT',
@@ -307,7 +309,7 @@ test('iCalendar serialization escapes content and preserves unrelated properties
   assert(updated.includes('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR:AUTOMATIC'));
   assert(updated.includes('BEGIN:VALARM'));
 });
-test('all-day appointments round-trip as dates with an exclusive end', () => {
+test('all-day appointments round-trip as dates with an exclusive end', async () => {
   const event = { ...fields, allDay: true, start: '2026-10-15', end: '2026-10-17' };
   const parsed = parseEvents({
     url: `${base}all-day.ics`,
@@ -319,7 +321,7 @@ test('all-day appointments round-trip as dates with an exclusive end', () => {
   assert.equal(parsed.end, '2026-10-17');
 });
 test('recurring appointments and invitations are readable but protected from unsafe updates', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     for (const extra of ['RRULE:FREQ=DAILY', 'ATTENDEE:mailto:guest@example.com']) {
       const url = f.transport.seed();
@@ -342,11 +344,11 @@ test('recurring appointments and invitations are readable but protected from uns
     }
     assert.equal(f.transport.writes, 0);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 test('calendar sync failure preserves cached events and exposes a stale status', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     f.transport.seed();
     await f.service.sync();
@@ -358,11 +360,11 @@ test('calendar sync failure preserves cached events and exposes a stale status',
     assert.equal(f.service.snapshot().events.length, 1);
     assert(f.service.snapshot().error);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 test('missing configuration and invalid date ranges cannot create appointments', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const disconnected = new CalendarService(f.db);
     await assert.rejects(
@@ -385,12 +387,12 @@ test('missing configuration and invalid date ranges cannot create appointments',
     );
     assert.equal(f.transport.writes, 0);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 
 test('appointment reminders are planned once for each person, without removing native iCloud alarms', async () => {
-  const f = fixture();
+  const f = await fixture();
   mkdirSync(resolve('.cache/tests'), { recursive: true });
   const path = mkdtempSync(resolve('.cache/tests/calendar-reminders-'));
   try {
@@ -400,23 +402,20 @@ test('appointment reminders are planned once for each person, without removing n
       evening: { enabled: false, time: '18:00' },
     };
     for (const id of ['owner', 'partner'])
-      f.db.sql
-        .prepare('INSERT INTO preferences VALUES (?,?,1)')
-        .run(id, JSON.stringify(preferences));
+      await f.db.run('INSERT INTO preferences VALUES (?,?,1)', id, JSON.stringify(preferences));
     const url = f.transport.seed();
     await f.service.sync();
     const reminders = new Reminders(
       f.db,
       new Household(f.db),
-      path,
-      'mailto:test@example.com',
+      { contact: 'mailto:test@example.com' },
       () => f.service.snapshot(),
     );
-    reminders.plan(new Date('2026-10-15T14:30:00Z'));
-    reminders.plan(new Date('2026-10-15T14:30:30Z'));
-    const rows = f.db.sql
-      .prepare("SELECT user_id FROM notices WHERE id LIKE 'appointment:%' ORDER BY user_id")
-      .all();
+    await reminders.plan(new Date('2026-10-15T14:30:00Z'));
+    await reminders.plan(new Date('2026-10-15T14:30:30Z'));
+    const rows = await f.db.all<Row>(
+      "SELECT user_id FROM notices WHERE id LIKE 'appointment:%' ORDER BY user_id",
+    );
     assert.deepEqual(
       rows.map((row) => row.user_id),
       ['owner', 'partner'],
@@ -426,11 +425,11 @@ test('appointment reminders are planned once for each person, without removing n
     await f.service.sync();
     await reminders.deliver();
     assert.equal(
-      f.db.sql.prepare("SELECT id FROM notices WHERE delivery='pending'").all().length,
+      (await f.db.all<Row>("SELECT id FROM notices WHERE delivery='pending'")).length,
       0,
     );
   } finally {
-    f.db.close();
+    await f.db.close();
     rmSync(path, { recursive: true, force: true });
   }
 });
@@ -438,7 +437,7 @@ test('appointment reminders are planned once for each person, without removing n
 for (const kind of ['calendar.create', 'calendar.update', 'calendar.delete'] as const) {
   for (const external of ['edit', 'delete'] as const) {
     test(`lost ${kind} response after external ${external} and expiry never sends another write`, async () => {
-      const f = fixture();
+      const f = await fixture();
       try {
         const originalUrl = kind === 'calendar.create' ? undefined : f.transport.seed();
         await f.service.sync();
@@ -491,20 +490,21 @@ for (const kind of ['calendar.create', 'calendar.update', 'calendar.delete'] as 
         assert.equal(f.transport.removals, removals);
         assert.equal(JSON.stringify([...f.transport.resources]), before);
         if (expected === 'unknown') {
-          assert.equal(f.db.sql.prepare('SELECT id FROM notices').all().length, 0);
-          assert.throws(() => reopened.dismiss('partner', preview.id), DomainError);
-          reopened.dismiss('owner', preview.id);
-          reopened.dismiss('owner', preview.id);
+          assert.equal((await f.db.all<Row>('SELECT id FROM notices')).length, 0);
+          await assert.rejects(reopened.dismiss('partner', preview.id), DomainError);
+          await reopened.dismiss('owner', preview.id);
+          await reopened.dismiss('owner', preview.id);
           await assert.rejects(reopened.confirm('owner', preview.id), /dismissed/);
-          const saved = f.db.sql
-            .prepare('SELECT result,applied_at FROM previews WHERE id=?')
-            .get(preview.id)!;
+          const saved = (await f.db.get<Row>(
+            'SELECT result,applied_at FROM previews WHERE id=?',
+            preview.id,
+          ))!;
           assert.equal(saved.applied_at, null);
           assert.equal(JSON.parse(String(saved.result)).calendarOutcome.status, 'unknown');
           assert.ok(JSON.parse(String(saved.result)).dismissedAt);
         }
       } finally {
-        f.db.close();
+        await f.db.close();
       }
     });
   }
@@ -513,21 +513,21 @@ for (const kind of ['calendar.create', 'calendar.update', 'calendar.delete'] as 
 test('a disk reopen preserves unknown outcomes, actor binding and dismissal without another write', async () => {
   mkdirSync(resolve('.cache/tests'), { recursive: true });
   const path = mkdtempSync(resolve('.cache/tests/calendar-recovery-'));
-  const f = fixture(resolve(path, 'app.sqlite'));
+  const f = await fixture(resolve(path, 'app.sqlite'));
   let db = f.db;
   try {
     const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
     f.transport.losePutResponse = true;
     await assert.rejects(f.service.confirm('owner', preview.id));
     f.transport.humanEdit([...f.transport.resources.keys()][0], 'Human edit across restart');
-    db.close();
-    db = new Database(resolve(path, 'app.sqlite'));
+    await db.close();
+    db = openStore(resolve(path, 'app.sqlite'));
     const reopened = new CalendarService(db, f.transport, () => new Date('2026-10-14T08:00:00Z'));
     await assert.rejects(reopened.confirm('partner', preview.id));
     assert.equal((await reopened.confirm('owner', preview.id)).calendarOutcome?.status, 'unknown');
-    reopened.dismiss('owner', preview.id);
-    db.close();
-    db = new Database(resolve(path, 'app.sqlite'));
+    await reopened.dismiss('owner', preview.id);
+    await db.close();
+    db = openStore(resolve(path, 'app.sqlite'));
     await assert.rejects(
       new CalendarService(db, f.transport).confirm('owner', preview.id),
       /dismissed/,
@@ -538,13 +538,13 @@ test('a disk reopen preserves unknown outcomes, actor binding and dismissal with
       'Human edit across restart',
     );
   } finally {
-    db.close();
+    await db.close();
     rmSync(path, { recursive: true, force: true });
   }
 });
 
 test('a retained operation receipt proves the original write without overwriting later fields', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
     f.transport.losePutResponse = true;
@@ -560,12 +560,12 @@ test('a retained operation receipt proves the original write without overwriting
     assert.equal(reopened.snapshot().events[0].title, 'Later human edit');
     assert.equal(reopened.snapshot().events[0].uid, parseEvents(resource)[0].uid);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 
 test('an expired unattempted preview records failure without contacting iCloud', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
     f.transport.get = async () => {
@@ -579,18 +579,18 @@ test('an expired unattempted preview records failure without contacting iCloud',
     );
     assert.equal(f.transport.writes, 0);
     const result = JSON.parse(
-      String(f.db.sql.prepare('SELECT result FROM previews WHERE id=?').get(preview.id)!.result),
+      String((await f.db.get<Row>('SELECT result FROM previews WHERE id=?', preview.id))!.result),
     );
     assert.equal(result.calendarOutcome.status, 'failed');
-    reopened.dismiss('owner', preview.id);
+    await reopened.dismiss('owner', preview.id);
     await assert.rejects(reopened.confirm('owner', preview.id));
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 
 test('a failed read before admission does not consume authorization or claim an uncertain write', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
     const get = f.transport.get.bind(f.transport);
@@ -598,16 +598,16 @@ test('a failed read before admission does not consume authorization or claim an 
       throw new Error('Offline');
     };
     await assert.rejects(f.service.confirm('owner', preview.id), /No write was attempted/);
-    assert.equal(f.db.sql.prepare('SELECT attempted FROM calendar_operations').get()?.attempted, 0);
+    assert.equal((await f.db.get<Row>('SELECT attempted FROM calendar_operations'))?.attempted, 0);
     f.transport.get = get;
     assert.equal((await f.service.confirm('owner', preview.id)).ok, true);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 
 test('uncertain writes remain read-only even before expiry when the remote request did not land', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
     f.transport.put = async () => {
@@ -620,12 +620,12 @@ test('uncertain writes remain read-only even before expiry when the remote reque
     assert.equal((await f.service.confirm('owner', preview.id)).calendarOutcome?.status, 'unknown');
     assert.equal(f.transport.resources.size, 0);
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });
 
 test('an expired preflight cannot clear a newer lease or send a competing write', async () => {
-  const f = fixture();
+  const f = await fixture();
   let now = Date.parse('2026-10-14T07:00:00Z');
   const timed = new CalendarService(f.db, f.transport, () => new Date(now));
   let releaseFirst!: () => void, releaseSecond!: () => void;
@@ -667,26 +667,26 @@ test('an expired preflight cannot clear a newer lease or send a competing write'
     releaseFirst();
     await assert.rejects(first, /newer check/);
     assert.equal(
-      f.db.sql.prepare('SELECT lease_until FROM calendar_operations').get()?.lease_until,
+      (await f.db.get<Row>('SELECT lease_until FROM calendar_operations'))?.lease_until,
       now + 45_000,
     );
-    assert.throws(() => timed.cancel('owner', preview.id), /in progress/);
+    await assert.rejects(timed.cancel('owner', preview.id), /in progress/);
     releaseSecond();
     assert.equal((await second).ok, true);
     assert.equal(f.transport.writes, 1);
     assert.equal((await timed.confirm('owner', preview.id)).ok, true);
-    assert.equal(f.db.sql.prepare('SELECT COUNT(*) AS count FROM audit').get()?.count, 1);
+    assert.equal((await f.db.get<Row>('SELECT COUNT(*) AS count FROM audit'))?.count, 1);
   } finally {
     releaseFirst();
     releaseSecond();
     await Promise.allSettled([first, second]);
-    f.db.close();
+    await f.db.close();
   }
 });
 
 for (const acceptedBeforeDelay of [false, true]) {
   test(`a late PUT response preserves ${acceptedBeforeDelay ? 'the newer applied receipt' : 'explicit dismissal'} and commits one audit`, async () => {
-    const f = fixture();
+    const f = await fixture();
     let now = Date.parse('2026-10-14T07:00:00Z');
     const timed = new CalendarService(f.db, f.transport, () => new Date(now));
     let release!: () => void, entered!: () => void;
@@ -711,43 +711,43 @@ for (const acceptedBeforeDelay of [false, true]) {
       now += 46_000;
       const checked = await timed.confirm('owner', preview.id);
       assert.equal(checked.calendarOutcome?.status, acceptedBeforeDelay ? 'applied' : 'unknown');
-      if (!acceptedBeforeDelay) timed.dismiss('owner', preview.id);
+      if (!acceptedBeforeDelay) await timed.dismiss('owner', preview.id);
       release();
       assert.equal((await first).ok, true);
       const stored = JSON.parse(
-        String(f.db.sql.prepare('SELECT result FROM previews WHERE id=?').get(preview.id)!.result),
+        String((await f.db.get<Row>('SELECT result FROM previews WHERE id=?', preview.id))!.result),
       );
       assert.equal(stored.ok, true);
       assert.equal(Boolean(stored.dismissedAt), !acceptedBeforeDelay);
       assert.equal(f.transport.writes, 1);
-      assert.equal(f.db.sql.prepare('SELECT COUNT(*) AS count FROM audit').get()?.count, 1);
-      assert.equal(f.db.sql.prepare('SELECT COUNT(*) AS count FROM notices').get()?.count, 1);
+      assert.equal((await f.db.get<Row>('SELECT COUNT(*) AS count FROM audit'))?.count, 1);
+      assert.equal((await f.db.get<Row>('SELECT COUNT(*) AS count FROM notices'))?.count, 1);
     } finally {
       release();
       await Promise.allSettled([first]);
-      f.db.close();
+      await f.db.close();
     }
   });
 }
 
 test('calendar confirmation notifies the other spouse once, including reconciliation after a lost response', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const preview = await f.service.preview('owner', { kind: 'calendar.create', event: fields });
-    assert.equal(f.db.sql.prepare('SELECT id FROM notices').all().length, 0);
+    assert.equal((await f.db.all<Row>('SELECT id FROM notices')).length, 0);
     f.transport.losePutResponse = true;
     await assert.rejects(f.service.confirm('owner', preview.id));
-    assert.equal(f.db.sql.prepare('SELECT id FROM notices').all().length, 0);
+    assert.equal((await f.db.all<Row>('SELECT id FROM notices')).length, 0);
     const result = await f.service.confirm('owner', preview.id);
     await f.service.confirm('owner', preview.id);
-    const rows = f.db.sql.prepare('SELECT * FROM notices').all();
+    const rows = await f.db.all<Row>('SELECT * FROM notices');
     assert.equal(rows.length, 1);
     assert.equal(rows[0].user_id, 'partner');
     assert.equal(
-      f.db.sql.prepare('SELECT target_id FROM notice_targets').get()?.target_id,
+      (await f.db.get<Row>('SELECT target_id FROM notice_targets'))?.target_id,
       result.targetId,
     );
   } finally {
-    f.db.close();
+    await f.db.close();
   }
 });

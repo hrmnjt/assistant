@@ -1,17 +1,24 @@
+# Local development values for `npm run dev`, created by `npm run configure`. Deployed
+# values live in cloudflare/.prod.vars and are uploaded as Worker secrets by
+# `npm run deploy`. Keep both files private; Git ignores them.
 APP_ORIGIN=http://localhost:8787
-OWNER_PASSWORD=replace-with-long-owner-password
-PARTNER_PASSWORD=replace-with-long-partner-password
-# Optional: iCloud app-specific credentials, never the primary Apple password.
+OWNER_USERNAME=owner
+OWNER_NAME=You
+OWNER_PASSWORD=replace-with-a-long-random-password
+PARTNER_USERNAME=partner
+PARTNER_NAME=Partner
+PARTNER_PASSWORD=replace-with-a-different-long-password
+# Phone push: a stable VAPID keypair (changing it breaks existing subscriptions)
+# and a contact. Without PUSH_CONTACT, an https APP_ORIGIN is used.
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=
+# PUSH_CONTACT=mailto:you@example.com
+# Optional shared iCloud calendar: an Apple app-specific password, never the account password.
 # ICLOUD_USERNAME=
 # ICLOUD_APP_PASSWORD=
 # ICLOUD_CALENDAR_NAME=Household
 # ICLOUD_CALENDAR_URL=
-# Optional: stable VAPID keypair, generated with npm run cloudflare:configure.
-# PUSH_CONTACT=mailto:you@example.com
-# VAPID_PUBLIC_KEY=
-# VAPID_PRIVATE_KEY=
-# Hosted ChatGPT eligibility must be established before enabling these:
-# MODEL_MODE=chatgpt
-# ALLOW_HOSTED_CHATGPT=true
+# Optional ChatGPT connection, written by `npm run ai:connect`.
+# CHATGPT_HOST_ID=
 # CHATGPT_MODEL_ID=
 # CHATGPT_CREDENTIAL_JSON=

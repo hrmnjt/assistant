@@ -1,18 +1,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { Database } from '../server/database.js';
-import { provision } from '../server/auth.js';
+import { Auth } from '../server/auth.js';
 import { Household } from '../server/domain.js';
 import { CalendarService } from '../server/calendar.js';
 import { Conversations } from '../server/conversations.js';
 import { Reminders } from '../server/reminders.js';
-import { createApp } from '../server/app.js';
 import { recoverablePreviews } from '../server/preview-recovery.js';
 import { updateEventData } from '../server/icalendar.js';
 import type { CalendarResource, CalendarTransport } from '../server/caldav.js';
 import type { Preview, Snapshot } from '../src/types.js';
+import {
+  accounts,
+  client,
+  directory,
+  householdStore,
+  openStore,
+  origin,
+  type Row,
+} from './support.js';
 
 const start = new Date('2026-10-14T07:00:00Z');
 const task = {
@@ -33,14 +40,9 @@ const event = {
   end: '2026-10-15T11:00:00Z',
 };
 
-function fixture() {
-  mkdirSync('.cache/tests', { recursive: true });
-  const path = mkdtempSync(resolve('.cache/tests/previews-'));
-  const db = new Database(resolve(path, 'household.sqlite'));
-  provision(db, [
-    { username: 'owner', name: 'Alex', password: 'Preview-test-owner-password' },
-    { username: 'partner', name: 'Sam', password: 'Preview-test-partner-password' },
-  ]);
+async function fixture() {
+  const path = directory('previews');
+  const db = await householdStore(resolve(path, 'household.sqlite'));
   let resource: CalendarResource | null = null,
     writes = 0;
   const transport: CalendarTransport = {
@@ -81,46 +83,49 @@ function fixture() {
   };
 }
 
-test('recovery lists actor-owned unexpired previews without calendar tables and omits settled/cancelled/expired previews', () => {
-  const f = fixture();
+test('recovery lists actor-owned unexpired previews without calendar tables and omits settled/cancelled/expired previews', async () => {
+  const f = await fixture();
   try {
-    const own = f.household.preview('owner', { kind: 'task.create', task });
-    f.household.preview('partner', { kind: 'task.create', task });
-    const cancelled = f.household.preview('owner', { kind: 'task.create', task });
-    f.household.cancel('owner', cancelled.id);
+    const own = await f.household.preview('owner', { kind: 'task.create', task });
+    await f.household.preview('partner', { kind: 'task.create', task });
+    const cancelled = await f.household.preview('owner', { kind: 'task.create', task });
+    await f.household.cancel('owner', cancelled.id);
     assert.deepEqual(
-      recoverablePreviews(f.db, 'owner', start).map((p) => p.id),
+      (await recoverablePreviews(f.db, 'owner', start)).map((p) => p.id),
       [own.id],
     );
-    assert.equal(recoverablePreviews(f.db, 'partner', start).length, 1);
-    assert.deepEqual(recoverablePreviews(f.db, 'owner', new Date(start.getTime() + 600_000)), []);
-    f.household.confirm('owner', own.id);
-    assert.deepEqual(recoverablePreviews(f.db, 'owner', start), []);
+    assert.equal((await recoverablePreviews(f.db, 'partner', start)).length, 1);
+    assert.deepEqual(
+      await recoverablePreviews(f.db, 'owner', new Date(start.getTime() + 600_000)),
+      [],
+    );
+    await f.household.confirm('owner', own.id);
+    assert.deepEqual(await recoverablePreviews(f.db, 'owner', start), []);
   } finally {
-    f.db.close();
+    await f.db.close();
     rmSync(f.path, { recursive: true, force: true });
   }
 });
 
 test('a real attempted write survives disk reopen and expiry even without configured integration; dismissal stays dismissed', async () => {
-  const f = fixture();
+  const f = await fixture();
   let db = f.db;
   try {
     const calendar = new CalendarService(db, f.transport, () => start);
     const preview = await calendar.preview('owner', { kind: 'calendar.create', event });
     await assert.rejects(calendar.confirm('owner', preview.id));
     // Baseline versions/crashes can retain attempted=1 without an outcome receipt.
-    db.sql.prepare('UPDATE previews SET result=NULL WHERE id=?').run(preview.id);
+    await db.run('UPDATE previews SET result=NULL WHERE id=?', preview.id);
     f.humanEdit();
-    db.close();
-    db = new Database(resolve(f.path, 'household.sqlite'));
+    await db.close();
+    db = openStore(resolve(f.path, 'household.sqlite'));
     const expired = new Date(start.getTime() + 3_600_000);
     const disconnected = new CalendarService(db, undefined, () => expired);
-    const recovered = recoverablePreviews(db, 'owner', expired);
+    const recovered = await recoverablePreviews(db, 'owner', expired);
     assert.equal(recovered[0].id, preview.id);
     assert.equal(recovered[0].calendarOutcome?.status, 'unknown');
     assert(Date.parse(recovered[0].expiresAt) < expired.getTime());
-    assert.equal(recoverablePreviews(db, 'partner', expired).length, 0);
+    assert.equal((await recoverablePreviews(db, 'partner', expired)).length, 0);
     await assert.rejects(disconnected.confirm('owner', preview.id), /not connected/);
     const reconnected = new CalendarService(db, f.transport, () => expired);
     assert.equal(
@@ -128,62 +133,56 @@ test('a real attempted write survives disk reopen and expiry even without config
       'unknown',
     );
     assert.equal(f.writes, 1);
-    reconnected.dismiss('owner', preview.id);
-    db.close();
-    db = new Database(resolve(f.path, 'household.sqlite'));
-    assert.deepEqual(recoverablePreviews(db, 'owner', expired), []);
-    assert(db.sql.prepare('SELECT result FROM previews WHERE id=?').get(preview.id));
+    await reconnected.dismiss('owner', preview.id);
+    await db.close();
+    db = openStore(resolve(f.path, 'household.sqlite'));
+    assert.deepEqual(await recoverablePreviews(db, 'owner', expired), []);
+    assert(await db.get<Row>('SELECT result FROM previews WHERE id=?', preview.id));
   } finally {
-    db.close();
+    await db.close();
     rmSync(f.path, { recursive: true, force: true });
   }
 });
 
 test('authenticated state/list endpoints restore only the actor previews and never expose executable operations', async () => {
-  const f = fixture();
+  const f = await fixture();
   const calendar = new CalendarService(f.db, f.transport, () => start);
-  const direct = f.household.preview('owner', { kind: 'task.create', task });
+  const direct = await f.household.preview('owner', { kind: 'task.create', task });
   const uncertain = await calendar.preview('owner', { kind: 'calendar.create', event });
   await assert.rejects(calendar.confirm('owner', uncertain.id));
-  const conversations = await Conversations.open(f.db, resolve(f.path, 'pi.sqlite'));
-  const app = createApp(
-    f.db,
-    f.household,
+  const conversations = await Conversations.open(f.db);
+  const app = {
+    db: f.db,
+    auth: new Auth(f.db, accounts, origin),
+    household: f.household,
     conversations,
-    new Reminders(f.db, f.household, f.path),
-    'http://localhost:5173',
+    reminders: new Reminders(f.db, f.household),
     calendar,
-  );
+  };
+  await f.household.ensureSpaces();
   // Exercise status indexing separately from the real prepare_change tool test.
-  const thread = f.household.threads().find((item) => item.assistantFor === 'owner')!;
-  f.db.sql
-    .prepare('INSERT INTO assistant_previews VALUES (?,?,?,?,?)')
-    .run('recovery-index-test', thread.id, 'owner', uncertain.id, start.toISOString());
+  const thread = (await f.household.threads()).find((item) => item.assistantFor === 'owner')!;
+  await f.db.run(
+    'INSERT INTO assistant_previews VALUES (?,?,?,?,?)',
+    'recovery-index-test',
+    thread.id,
+    'owner',
+    uncertain.id,
+    start.toISOString(),
+  );
   assert.equal(
-    conversations.status(thread.id).previews[0].preview.calendarOutcome?.status,
+    (await conversations.status(thread.id)).previews[0].preview.calendarOutcome?.status,
     'unknown',
   );
-  const server = app.listen(0, '127.0.0.1');
-  await new Promise<void>((done, reject) => {
-    server.once('listening', done);
-    server.once('error', reject);
-  });
-  const address = server.address();
-  assert(address && typeof address !== 'string');
-  let cookie = '';
-  const call = (path: string, body?: unknown) =>
-    fetch(`http://127.0.0.1:${address.port}${path}`, {
-      method: body === undefined ? 'GET' : 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Household-Client': '1', Cookie: cookie },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+  let session = client(app);
+  const call = (path: string, body?: unknown) => session.call(path, body);
   const login = async (username: string) => {
-    const response = await call('/api/login', {
+    session = client(app);
+    const response = await session.login(
       username,
-      password: `Preview-test-${username}-password`,
-    });
+      accounts.find((account) => account.username === username)!.password,
+    );
     assert.equal(response.status, 200);
-    cookie = response.headers.get('set-cookie')!.split(';')[0];
   };
   try {
     assert.equal((await call('/api/previews')).status, 401);
@@ -213,11 +212,9 @@ test('authenticated state/list endpoints restore only the actor previews and nev
       [direct.id],
     );
     assert.equal(f.writes, 1);
-    assert.deepEqual(conversations.status(thread.id).previews, []);
+    assert.deepEqual((await conversations.status(thread.id)).previews, []);
   } finally {
-    await new Promise<void>((done) => server.close(() => done()));
     await conversations.close();
-    f.db.close();
     rmSync(f.path, { recursive: true, force: true });
   }
 });
