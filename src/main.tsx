@@ -1351,6 +1351,7 @@ function App() {
                     notifications are enabled. Appointment alerts also come from Apple Calendar.
                   </p>
                 </Card>
+                <CalendarConnection state={state} setUpBy={setUpBy?.name} onChanged={refresh} />
                 <AppearanceSettings />
                 <Card className="settings-card">
                   <h2>
@@ -1359,8 +1360,15 @@ function App() {
                   <p className="muted">
                     {state.integrations.ai === 'configured'
                       ? 'Eligible AI requests use the household’s connected ChatGPT plan. Messages in this topic and the household tasks, settings, and appointments the assistant reads are sent to OpenAI. Every proposed change still needs your confirmation.'
-                      : `${state.me.id === 'owner' ? 'You can' : `${setUpBy?.name ?? 'The person who set up the household'} can`} connect ChatGPT from the setup scripts. You can keep using shared messages, tasks, and the calendar meanwhile.`}
+                      : state.integrations.ai === 'needs-model'
+                        ? `ChatGPT is connected. ${state.me.id === 'owner' ? 'Choose' : `${setUpBy?.name ?? 'Whoever set up the household'} still chooses`} the model the assistant uses.`
+                        : state.me.id === 'owner'
+                          ? 'Connect ChatGPT from your Mac: run npm run ai:connect -- --production, then npm run secrets. You can keep using shared messages, tasks, and the calendar meanwhile.'
+                          : `${setUpBy?.name ?? 'Whoever set up the household'} can connect ChatGPT. You can keep using shared messages, tasks, and the calendar meanwhile.`}
                   </p>
+                  {state.me.id === 'owner' && state.integrations.ai !== 'not-connected' && (
+                    <ModelChooser onSaved={refresh} />
+                  )}
                   <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">
                     Manage ChatGPT usage
                   </a>
@@ -1912,6 +1920,213 @@ function HouseholdSetup({ setup, onDone }: { setup: SetupNeeded; onDone: () => v
         </Button>
       </form>
     </Welcome>
+  );
+}
+
+/**
+ * The shared iCloud calendar's connection: whoever set up the household signs
+ * in with an Apple ID and an app-specific password, then picks the calendar.
+ * The password is sent once and never shown again.
+ */
+function CalendarConnection({
+  state,
+  setUpBy,
+  onChanged,
+}: {
+  state: Snapshot;
+  setUpBy?: string;
+  onChanged: () => void;
+}) {
+  const [account, setAccount] = useState({ username: '', password: '' });
+  const [calendars, setCalendars] = useState<{ name: string; url: string }[] | null>(null);
+  const [chosen, setChosen] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const run = (work: () => Promise<void>) => {
+    setBusy(true);
+    setError('');
+    void work()
+      .catch((problem) => setError((problem as Error).message))
+      .finally(() => setBusy(false));
+  };
+  const manages = state.me.id === 'owner';
+  return (
+    <Card className="settings-card">
+      <h2>
+        <CalendarDays size={19} /> Shared calendar
+      </h2>
+      {!manages ? (
+        <p className="muted">
+          {state.integrations.calendar === 'not-connected'
+            ? `${setUpBy ?? 'Whoever set up the household'} can connect the shared iCloud calendar.`
+            : `Connected to ${state.calendar.name}. ${setUpBy ?? 'Whoever set up the household'} manages the connection.`}
+        </p>
+      ) : state.calendarAccount ? (
+        <>
+          <p className="muted">
+            Connected to {state.calendar.name} as {state.calendarAccount}.
+          </p>
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() =>
+              run(async () => {
+                await api('/calendar/connection', undefined, 'DELETE');
+                onChanged();
+              })
+            }
+          >
+            Disconnect
+          </Button>
+        </>
+      ) : (
+        <form
+          className="form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            run(async () => {
+              if (!calendars) {
+                const found = await api<{ calendars: { name: string; url: string }[] }>(
+                  '/calendar/connection',
+                  account,
+                );
+                setCalendars(found.calendars);
+                setChosen(
+                  (found.calendars.find((item) => item.name === 'Household') ?? found.calendars[0])
+                    ?.url ?? '',
+                );
+                return;
+              }
+              await api('/calendar/connection', { ...account, calendarUrl: chosen });
+              setAccount({ username: '', password: '' });
+              setCalendars(null);
+              onChanged();
+            });
+          }}
+        >
+          <p className="muted">
+            Sign in with the Apple ID that shares the household calendar and an{' '}
+            <a href="https://account.apple.com/account/manage" target="_blank" rel="noreferrer">
+              app-specific password
+            </a>
+            , never the Apple ID password.
+          </p>
+          <Label>
+            Apple ID
+            <Input
+              type="email"
+              autoComplete="off"
+              required
+              value={account.username}
+              disabled={Boolean(calendars)}
+              onChange={(event) => setAccount({ ...account, username: event.target.value })}
+            />
+          </Label>
+          <Label>
+            App-specific password
+            <Input
+              type="password"
+              autoComplete="off"
+              required
+              value={account.password}
+              disabled={Boolean(calendars)}
+              onChange={(event) => setAccount({ ...account, password: event.target.value })}
+            />
+          </Label>
+          {calendars && (
+            <Label>
+              Calendar
+              <NativeSelect value={chosen} onChange={(event) => setChosen(event.target.value)}>
+                {calendars.map((item) => (
+                  <option key={item.url} value={item.url}>
+                    {item.name}
+                  </option>
+                ))}
+              </NativeSelect>
+            </Label>
+          )}
+          {error && (
+            <p className="field-error" role="alert">
+              {error}
+            </p>
+          )}
+          <Button type="submit" disabled={busy || (calendars !== null && !chosen)}>
+            {calendars ? 'Connect calendar' : 'Find calendars'}
+          </Button>
+        </form>
+      )}
+    </Card>
+  );
+}
+
+/** Whoever set up the household picks the assistant's model from the account's catalog. */
+function ModelChooser({ onSaved }: { onSaved: () => void }) {
+  const [catalog, setCatalog] = useState<{
+    current: string | null;
+    models: { id: string; name: string }[];
+  } | null>(null);
+  const [chosen, setChosen] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const run = (work: () => Promise<void>) => {
+    setBusy(true);
+    setError('');
+    void work()
+      .catch((problem) => setError((problem as Error).message))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <div className="form">
+      {catalog ? (
+        <form
+          className="form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            run(async () => {
+              await api('/assistant/model', { id: chosen });
+              setCatalog({ ...catalog, current: chosen });
+              onSaved();
+            });
+          }}
+        >
+          <Label>
+            Model
+            <NativeSelect value={chosen} onChange={(event) => setChosen(event.target.value)}>
+              {catalog.models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.name}
+                </option>
+              ))}
+            </NativeSelect>
+          </Label>
+          <Button type="submit" variant="outline" disabled={busy || chosen === catalog.current}>
+            Use this model
+          </Button>
+        </form>
+      ) : (
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() =>
+            run(async () => {
+              const value = await api<{
+                current: string | null;
+                models: { id: string; name: string }[];
+              }>('/assistant/models');
+              setCatalog(value);
+              setChosen(value.current ?? value.models[0]?.id ?? '');
+            })
+          }
+        >
+          Choose the model
+        </Button>
+      )}
+      {error && (
+        <p className="field-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

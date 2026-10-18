@@ -148,6 +148,12 @@ export type Snapshot = {
   threads: Thread[];
   presence: Presence[];
   notices: Notice[];
-  integrations: { calendar: CalendarSnapshot['status']; ai: 'not-connected' | 'configured' };
+  integrations: {
+    calendar: CalendarSnapshot['status'];
+    /** `needs-model`: ChatGPT is connected and whoever set up still chooses a model. */
+    ai: 'not-connected' | 'needs-model' | 'configured';
+  };
   calendar: CalendarSnapshot;
+  /** For whoever set up the household: the Apple ID the calendar connection uses. */
+  calendarAccount?: string;
 };

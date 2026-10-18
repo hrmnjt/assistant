@@ -153,6 +153,7 @@ test('authenticated state/list endpoints restore only the actor previews and nev
     auth: new Auth(parts.household, true),
     household: parts.household,
     conversations,
+    assistantModel: parts.assistantModel,
     notices: parts.notices,
     plugins: parts.plugins,
   };

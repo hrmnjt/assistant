@@ -410,7 +410,7 @@ test('appointment reminders are planned once for each person, without removing n
     const url = f.transport.seed();
     await f.service.sync();
     const parts = householdParts(f.db, {
-      push: { contact: 'mailto:test@example.com' },
+      push: { publicKey: 'test-public-key', privateKey: 'test-private-key' },
       calendar: f.service,
     });
     await parts.plan(new Date('2026-10-15T14:30:00Z'));

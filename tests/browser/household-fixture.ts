@@ -77,6 +77,7 @@ export function snapshot(): Snapshot {
       },
     ],
     integrations: { ai: 'not-connected', calendar: 'connected' },
+    calendarAccount: 'family@icloud.example',
     calendar: {
       status: 'connected',
       name: 'Household',
@@ -110,6 +111,7 @@ export class HouseholdFixture {
   state = snapshot();
   signedIn = true;
   offline = false;
+  model: string | null = null;
   /** Before the household's first sign-in sets it up. */
   setup: { email: string | null; development: boolean } | null = null;
   confirmationError = '';
@@ -288,6 +290,45 @@ export class HouseholdFixture {
         return json({ ok: true, targetId: id });
       }
       if (path === '/calendar/refresh') return json(this.state.calendar);
+      if (path === '/calendar/connection' && request.method() === 'DELETE') {
+        this.state.calendarAccount = undefined;
+        this.state.integrations.calendar = 'not-connected';
+        this.state.calendar = { ...this.state.calendar, status: 'not-connected', events: [] };
+        return json({ ok: true });
+      }
+      if (path === '/calendar/connection') {
+        if (body.password !== 'abcd-efgh-ijkl-mnop')
+          return json(
+            {
+              error:
+                'iCloud did not accept that Apple ID and app-specific password, or could not be reached. Check them and try again.',
+            },
+            400,
+          );
+        const calendars = [
+          { name: 'Personal', url: 'https://caldav.icloud.com/1/calendars/mine/' },
+          { name: 'Household', url: 'https://caldav.icloud.com/1/calendars/home/' },
+        ];
+        if (!body.calendarUrl) return json({ calendars });
+        const chosen = calendars.find((calendar) => calendar.url === body.calendarUrl)!;
+        this.state.calendarAccount = body.username;
+        this.state.integrations.calendar = 'connected';
+        this.state.calendar = { ...this.state.calendar, status: 'connected', name: chosen.name };
+        return json(this.state.calendar);
+      }
+      if (path === '/assistant/models')
+        return json({
+          current: this.model,
+          models: [
+            { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
+            { id: 'gpt-6.1-mini', name: 'GPT-6.1 Mini' },
+          ],
+        });
+      if (path === '/assistant/model') {
+        this.model = body.id;
+        this.state.integrations.ai = 'configured';
+        return json({ ok: true });
+      }
       return json({ error: 'Unhandled fixture request: ' + path }, 500);
     });
   }

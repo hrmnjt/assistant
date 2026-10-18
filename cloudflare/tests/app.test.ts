@@ -8,7 +8,7 @@ import {
 } from 'cloudflare:test';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createECDH, randomBytes } from 'node:crypto';
-import { ICloudTransport } from '../../server/plugins/calendar/caldav.js';
+import { iCloud, ICloudTransport } from '../../server/plugins/calendar/caldav.js';
 import type { Runtime } from '../../server/runtime.js';
 import { identityHeader } from '../../server/auth.js';
 import worker, { type Env, type Household } from '../worker.js';
@@ -141,9 +141,18 @@ it('delivers encrypted Web Push from the alarm and removes expired devices', asy
     const headers = new Headers(init?.headers);
     expect(headers.get('content-encoding')).toBe('aes128gcm');
     expect(headers.get('authorization')).toMatch(/^vapid /);
+    // The push services' contact is the app's own address, never a person's email.
+    const token = /t=([^,\s]+)/.exec(headers.get('authorization')!)![1];
+    const claims = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) as {
+      sub: string;
+    };
+    expect(claims.sub).toBe(origin);
     return new Response(null, { status: pathname === '/phone' ? 201 : 410 });
   };
   await setUp();
+  // The household makes its own push keys; there is no push configuration.
+  const key = (await (await call('/api/push/key', undefined, sam)).json()) as { publicKey: string };
+  expect(key.publicKey).toMatch(/^[A-Za-z0-9_-]{80,}$/);
   for (const name of ['phone', 'old-phone'])
     expect((await call('/api/push/subscription', device(name), sam)).status).toBe(200);
   const preview = (await (
@@ -211,6 +220,10 @@ it('runs CalDAV discovery, REPORT and iCalendar parsing in workerd', async () =>
     password: 'test-app-password',
     calendarName: 'Household',
   });
+  // Settings lists the account's calendars to choose from.
+  expect(await iCloud.calendars({ username: 'test-user', password: 'test-app-password' })).toEqual([
+    { name: 'Household', url: 'https://caldav.icloud.com/calendars/home/' },
+  ]);
   const collection = await transport.collection();
   expect(collection.name).toBe('Household');
   const events = await transport.list('2026-10-01T00:00:00Z', '2026-11-01T00:00:00Z');

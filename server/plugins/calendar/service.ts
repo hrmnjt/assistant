@@ -116,6 +116,26 @@ export class CalendarService {
   get connected() {
     return Boolean(this.transport);
   }
+  /**
+   * Switch to another calendar connection, or to none. The previous
+   * calendar's cached appointments are cleared; a new one is read right away.
+   */
+  async connect(transport?: CalendarTransport) {
+    await this.idle();
+    this.transport = transport;
+    await this.db.transaction(async (tx) => {
+      await tx.run('DELETE FROM calendar_cache');
+      await tx.run('DELETE FROM calendar_state');
+    });
+    this.state = {
+      status: 'not-connected',
+      name: 'Household',
+      syncedAt: null,
+      error: null,
+      events: [],
+    };
+    await this.sync();
+  }
   snapshot(): CalendarSnapshot {
     const base = DateTime.fromISO(this.state.syncedAt ?? this.clock().toISOString(), {
       zone: 'UTC',

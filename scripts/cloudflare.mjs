@@ -78,7 +78,9 @@ const selected = commands[process.argv[2]];
 if (!selected) throw new Error('Unknown Cloudflare command');
 if (process.argv[2] === 'secrets') {
   if (!existsSync('cloudflare/.prod.vars')) {
-    console.error('Create cloudflare/.prod.vars first: npm run configure -- --production');
+    console.error(
+      'Nothing to upload: npm run ai:connect -- --production creates cloudflare/.prod.vars.',
+    );
     process.exit(1);
   }
 }

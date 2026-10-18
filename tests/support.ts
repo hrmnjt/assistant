@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { createModels } from '@earendil-works/pi-ai';
 import { mkdirSync, mkdtempSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { NodeSqliteDatabase } from '@earendil-works/pi-durable/storage/sqlite/node';
@@ -9,6 +10,8 @@ import { AssistantKit, coreExtension } from '../server/assistant-tools.js';
 import { previewOwner } from '../server/changes.js';
 import { DomainError } from '../server/errors.js';
 import { Household } from '../server/household.js';
+import { Settings } from '../server/settings.js';
+import { AssistantModel } from '../server/ai.js';
 import { Notices, type PushConfig, type PushSender } from '../server/notices.js';
 import type { Plugin, PluginHost } from '../server/plugin.js';
 import type { CalendarSnapshot } from '../src/types.js';
@@ -32,7 +35,6 @@ export const setUp = (household: Household) => household.setUp(people.owner, peo
 
 /** Push settings for tests that inject a fake sender; no push service is called. */
 export const push = {
-  contact: 'mailto:test@example.com',
   publicKey: 'test-public-key',
   privateKey: 'test-private-key',
 };
@@ -104,7 +106,8 @@ export function householdParts(
   const household = new Household(db, clock);
   const notices = new Notices(db, options.push ?? {}, clock, options.send);
   const assistant = new AssistantKit(db);
-  const host: PluginHost = { db, clock, household, notices, assistant };
+  const settings = new Settings(db);
+  const host: PluginHost = { db, clock, household, notices, assistant, settings };
   const tasks = new TasksPlugin(host);
   const calendar = options.calendar ? new CalendarPlugin(host, options.calendar) : undefined;
   const dashboard = new DashboardPlugin(host, tasks, calendar);
@@ -121,6 +124,9 @@ export function householdParts(
     household,
     notices,
     assistant,
+    settings,
+    /** An assistant model chooser with no ChatGPT connection. */
+    assistantModel: new AssistantModel(db, settings, createModels(), () => undefined),
     host,
     tasks,
     calendar,
@@ -160,6 +166,7 @@ export function fakeCalendar(snapshot: () => CalendarSnapshot): CalendarSource {
     connected: true,
     snapshot,
     sync: async () => undefined,
+    connect: unused,
     preview: unused,
     confirm: unused,
     cancel: unused,

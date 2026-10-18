@@ -125,6 +125,69 @@ test('settings: your own name, and the other person’s email for whoever set up
   await expect(page.getByLabel(/’s email$/)).toHaveCount(0);
 });
 
+test('settings: whoever set up connects iCloud and chooses the model; the other person sees status', async ({
+  page,
+  household,
+}, info) => {
+  household.state.calendarAccount = undefined;
+  household.state.integrations.calendar = 'not-connected';
+  household.state.calendar = { ...household.state.calendar, status: 'not-connected' };
+  household.state.integrations.ai = 'needs-model';
+  await page.goto('/');
+  await navigate(page, 'Settings');
+  await page.getByLabel('Apple ID').fill('family@icloud.example');
+  await page.getByLabel('App-specific password').fill('wrong-password');
+  await page.getByRole('button', { name: 'Find calendars' }).click();
+  await expect(page.getByRole('alert')).toContainText('did not accept');
+  await page.getByLabel('App-specific password').fill('abcd-efgh-ijkl-mnop');
+  await page.getByRole('button', { name: 'Find calendars' }).click();
+  // The household calendar is preselected among the account's calendars.
+  await expect(page.getByRole('combobox', { name: 'Calendar', exact: true })).toHaveValue(
+    'https://caldav.icloud.com/1/calendars/home/',
+  );
+  await page.getByRole('button', { name: 'Connect calendar' }).click();
+  await expect(page.getByText('Connected to Household as family@icloud.example.')).toBeVisible();
+  const connect = household.calls.findLast((call) => call.path === '/calendar/connection');
+  expect(connect?.body).toEqual({
+    username: 'family@icloud.example',
+    password: 'abcd-efgh-ijkl-mnop',
+    calendarUrl: 'https://caldav.icloud.com/1/calendars/home/',
+  });
+  await expect(page.getByText('ChatGPT is connected. Choose the model')).toBeVisible();
+  await page.getByRole('button', { name: 'Choose the model' }).click();
+  await page.getByRole('combobox', { name: 'Model', exact: true }).selectOption('gpt-6.1-mini');
+  await page.getByRole('button', { name: 'Use this model' }).click();
+  // The first time the assistant is ready, each person sees how the plan is used.
+  await page
+    .getByRole('dialog', { name: 'Using the connected ChatGPT plan' })
+    .getByRole('button', { name: 'Got it' })
+    .click();
+  await expect(page.getByText('Eligible AI requests use the household’s')).toBeVisible();
+  expect(household.model).toBe('gpt-6.1-mini');
+  await noHorizontalOverflow(page);
+  await shot(page, info, 'settings-connections');
+  await page.getByRole('button', { name: 'Disconnect' }).click();
+  await expect(page.getByRole('button', { name: 'Find calendars' })).toBeVisible();
+
+  // The other person sees the connections without their controls.
+  household.state.calendarAccount = undefined;
+  household.state.integrations.calendar = 'connected';
+  household.state.me = household.state.people[1];
+  household.state.threads.push({
+    id: 'assistant-partner',
+    title: 'Sam’s assistant',
+    category: 'personal',
+    createdAt: new Date().toISOString(),
+    assistantFor: 'partner',
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Got it' }).click();
+  await navigate(page, 'Settings');
+  await expect(page.getByText('Alex manages the connection.')).toBeVisible();
+  await expect(page.getByLabel('Apple ID')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Choose the model' })).toHaveCount(0);
+});
+
 test('settings: sign out through Access, or act as the other person in development', async ({
   page,
   household,

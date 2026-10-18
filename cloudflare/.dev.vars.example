@@ -1,22 +1,10 @@
-# Settings, all optional for `npm run dev` (cloudflare/.dev.vars, created by
-# `npm run configure`). A deployment's values live in cloudflare/.prod.vars and
-# are uploaded as Worker secrets by `npm run secrets`. Keep both files private;
-# Git ignores them.
+# The only settings outside the app, all optional: a ChatGPT connection written by
+# `npm run ai:connect` (cloudflare/.dev.vars for `npm run dev`; with `-- --production`,
+# cloudflare/.prod.vars, uploaded as Worker secrets by `npm run secrets`). Keep both
+# files private; Git ignores them.
 #
-# There are no sign-in or people settings: Cloudflare Access signs people in to
-# a deployment, `npm run dev` has no sign-in, and the two names and emails are
-# entered in the app at its first sign-in.
-# Phone push: a stable VAPID keypair (changing it breaks existing subscriptions)
-# and a contact. Without PUSH_CONTACT, the app's own address is used.
-VAPID_PUBLIC_KEY=
-VAPID_PRIVATE_KEY=
-# PUSH_CONTACT=mailto:you@example.com
-# Optional shared iCloud calendar: an Apple app-specific password, never the account password.
-# ICLOUD_USERNAME=
-# ICLOUD_APP_PASSWORD=
-# ICLOUD_CALENDAR_NAME=Household
-# ICLOUD_CALENDAR_URL=
-# Optional ChatGPT connection, written by `npm run ai:connect`.
+# Everything else is kept by the app itself: Cloudflare Access signs people in, the
+# two names and emails are entered at the first sign-in, push keys are generated,
+# and the iCloud calendar and the assistant's model are chosen in Settings.
 # CHATGPT_HOST_ID=
-# CHATGPT_MODEL_ID=
 # CHATGPT_CREDENTIAL_JSON=
