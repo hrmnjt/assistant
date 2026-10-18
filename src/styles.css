@@ -667,10 +667,6 @@
 
 @media (max-width: 767px) {
   .app-dialog {
-    top: auto;
-    bottom: 0;
-    translate: -50% 0;
-    transform: none;
     max-width: 100%;
     border-bottom-right-radius: 0;
     border-bottom-left-radius: 0;

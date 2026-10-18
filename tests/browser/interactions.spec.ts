@@ -56,10 +56,6 @@ test('long chats scroll independently and a simulated keyboard viewport keeps th
   page,
   household,
 }, info) => {
-  test.skip(
-    info.project.name === 'desktop',
-    'Viewport-keyboard simulation is a phone-only check, not a physical iPhone test.',
-  );
   household.messages['assistant-owner'] = Array.from({ length: 40 }, (_, index) => ({
     id: String(index),
     threadId: 'assistant-owner',
@@ -80,18 +76,58 @@ test('long chats scroll independently and a simulated keyboard viewport keeps th
   expect(
     await input.evaluate((el) => parseFloat(getComputedStyle(el).fontSize)),
   ).toBeGreaterThanOrEqual(16);
-  await page.evaluate(() => {
-    Object.defineProperty(window.visualViewport, 'height', { configurable: true, get: () => 420 });
-    window.visualViewport!.dispatchEvent(new Event('resize'));
-  });
-  await expect(page.getByRole('navigation')).toBeHidden();
-  const bounds = await input.boundingBox();
-  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(420);
+  if (info.project.name !== 'desktop') {
+    // A layout simulation only: browser engines cannot verify an iOS keyboard.
+    await page.evaluate(() => {
+      Object.defineProperty(window.visualViewport, 'height', {
+        configurable: true,
+        get: () => 420,
+      });
+      window.visualViewport!.dispatchEvent(new Event('resize'));
+    });
+    await expect(page.getByRole('navigation')).toBeHidden();
+    const bounds = await input.boundingBox();
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(420);
+  }
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(messages).toContainText('First line');
   expect(
     household.calls.findLast((c) => c.path.endsWith('/messages') && c.method === 'POST')?.body.text,
   ).toBe('First line\nSecond line');
+});
+
+test('calendar uses one roving focus target with arrow-key navigation and Enter selection', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.getByRole('navigation').getByRole('button', { name: 'Calendar', exact: true }).click();
+  const day = page.locator('[data-slot="calendar"] button[tabindex="0"]');
+  await expect(day).toHaveCount(1);
+  await day.focus();
+  const before = await day.getAttribute('aria-label');
+  await page.keyboard.press('ArrowRight');
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.getAttribute('aria-label')))
+    .not.toBe(before);
+  await page.keyboard.press('Enter');
+  await expect(page.locator('[data-selected-single="true"]')).toBeFocused();
+});
+
+test('recurring read-only appointments retain their Apple Calendar editing guidance', async ({
+  page,
+  household,
+}) => {
+  household.state.calendar.events[0].recurring = true;
+  household.state.calendar.events[0].readOnlyReason =
+    'Recurring appointments are edited in Apple Calendar.';
+  await page.goto('/');
+  await page.getByRole('navigation').getByRole('button', { name: 'Calendar', exact: true }).click();
+  await page.getByRole('button', { name: /19:00.*Dinner together/ }).click();
+  await expect(page.getByLabel('Appointment', { exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Review appointment' })).toHaveCount(0);
+  await expect(page.getByRole('alert')).toContainText(
+    'Recurring appointments are edited in Apple Calendar.',
+  );
 });
 
 test('calendar sync failure preserves cached appointments and disables writes', async ({

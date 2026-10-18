@@ -1,6 +1,6 @@
 # Household assistant
 
-Updated: 2026-10-17. Status: initial POC scope agreed; implementation and
+Updated: 2026-10-18. Status: initial POC scope agreed; implementation and
 remaining interaction decisions will evolve through pull requests.
 
 ## Purpose
@@ -49,8 +49,11 @@ New appointments default to a configurable 30-minute reminder in the preview;
 existing alarms are preserved unless explicitly changed. Both native calendar
 alerts and the app's matching relative reminders are retained.
 
-Validation commands: `npm test` and `npm run build`. Test data and temporary
-files are kept in `.cache/`; household data and push keys are kept in `data/`.
+Validation commands: `npm test` and `npm run build`. For browser checks, run
+`npm run test:ui:install` once, then `npm run test:ui`. Browser binaries, reports,
+screenshots, and temporary test data stay in `.cache/`; household data and push
+keys stay in `data/`. The browser suite exercises the production build with
+fixture API responses, not real household credentials or live integrations.
 
 ## Cloudflare compatibility prototype
 
@@ -118,8 +121,8 @@ account deployment or real-device delivery is implied by local test results.
 
 Prioritize the iPhone SPA. The opening screen is a continuous assistant chat,
 with a compact activity header, a bottom composer, suggestions for an empty
-chat, and inline change previews. The laptop opens the same compact app surface;
-mobile drives the design. The interaction pattern takes inspiration from
+chat, and inline change previews. The laptop keeps the same experience with
+wider content and a visible channel rail; mobile drives the design. The interaction pattern takes inspiration from
 [Muse’s design](https://introducing.muse.ai/).
 
 - Today: appointments, due tasks, and overdue work relevant to the signed-in user.
@@ -144,6 +147,36 @@ mobile drives the design. The interaction pattern takes inspiration from
 - Proposed presence indicator: show which person is viewing or typing in a
   thread; expire stale presence after disconnection. Distinguish this from an
   assistant response in progress.
+
+### Design system
+
+Adopt shadcn/ui's **New York** style with Radix primitives and Tailwind v4.
+`components.json` records the preset; `src/components/ui/` holds the standard
+component source. Shared tokens in `src/styles.css` retain the sage primary,
+warm light surfaces, serif headings, and system body font. Use Tailwind's shared
+spacing scale, theme radii, and 44px default controls rather than one-off designs.
+
+Tasks, events, notices, and confirmation previews compose standard components.
+Reusable tabs, disclosures, and overlays live in `src/components/app-patterns.tsx`.
+Forms use native selectors and date/time fields for the phone's own pickers.
+Channels use Sheet; informational panels use Drawer on phones. Write forms and
+confirmations use Dialog, bottom-aligned on phones with scrollable content, so
+reviewing a preview does not discard the draft. Calendar uses shadcn Calendar
+with household-timezone dates and event markers, loaded on demand.
+
+Chat follows the message-list, suggestions, composer, and inline-card pattern,
+without replacing the existing persistence, presence, queue, or AI integration.
+No assistant-ui dependency is needed for the current text-only experience.
+Custom styling is limited to domain composition, the leaf identity, responsive
+layout, and PWA safe-area/visual-viewport behavior; there is no custom focus trap
+or independently drawn switch.
+
+Browser coverage includes Chromium at 320px/390px phone and 1440px laptop widths,
+plus WebKit at 390px. It checks loading, empty, error, disabled, and confirmation
+states, keyboard/focus behavior, and a simulated reduced keyboard viewport.
+Physical iPhone installation, safe areas, keyboard/dictation, and push delivery
+still need device verification. Native iOS remains deferred. The isolated
+Cloudflare probe client is unchanged; it is not the React product frontend.
 
 ## Calendar integration
 
