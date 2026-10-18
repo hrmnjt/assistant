@@ -90,6 +90,11 @@ async function setUp(app: App, request: Request, signedIn: string | null) {
       .strict()
       .parse(await body(request));
     await app.household.setUp({ name: input.name, email: signedIn ?? undefined }, input.partner);
+    // The app's own address, as Web Push's contact.
+    await app.db.run(
+      "INSERT INTO settings VALUES ('origin', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      JSON.stringify(url.origin),
+    );
     return json({ ok: true });
   }
   return json(
