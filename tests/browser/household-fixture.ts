@@ -1,6 +1,13 @@
 import { test as base, expect, type Page } from '@playwright/test';
 import { DateTime } from 'luxon';
-import type { Snapshot, Message, ChatStatus, Mutation, Preview } from '../../src/types';
+import type {
+  Snapshot,
+  Message,
+  ChatStatus,
+  Mutation,
+  Preview,
+  CalendarOutcome,
+} from '../../src/types';
 
 export function snapshot(): Snapshot {
   const date = DateTime.now().setZone('Asia/Dubai');
@@ -103,6 +110,7 @@ export class HouseholdFixture {
   offline = false;
   confirmationError = '';
   confirmationStatus = 409;
+  calendarOutcome?: CalendarOutcome;
   loginError = '';
   status: ChatStatus = { running: false, error: null, previews: [] };
   messages: Record<string, Message[]> = {
@@ -200,8 +208,15 @@ export class HouseholdFixture {
           this.proposals.delete(id);
           return json({ ok: true });
         }
+        if (path.endsWith('/dismiss')) {
+          this.proposals.delete(id);
+          return json({ ok: true });
+        }
         if (this.confirmationError)
-          return json({ error: this.confirmationError }, this.confirmationStatus);
+          return json(
+            { error: this.confirmationError, calendarOutcome: this.calendarOutcome },
+            this.confirmationStatus,
+          );
         if (mutation.kind === 'task.create')
           this.state.tasks.push({
             ...mutation.task,
