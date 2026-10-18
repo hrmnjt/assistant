@@ -20,6 +20,7 @@
     "start": "node scripts/run.mjs server",
     "ai:connect": "node scripts/run.mjs ai-connect",
     "ai:disconnect": "node scripts/run.mjs ai-disconnect",
+    "accounts": "node scripts/run.mjs accounts",
     "cloudflare:configure": "node scripts/cloudflare-configure.mjs",
     "cloudflare:dev": "node scripts/cloudflare.mjs dev",
     "cloudflare:check": "node scripts/cloudflare.mjs check",

@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url';
 
 process.chdir(fileURLToPath(new URL('..', import.meta.url)));
 if (existsSync('.env')) {
-  console.log('.env already exists. Edit it locally; existing accounts are preserved in data/.');
+  console.log(
+    '.env already exists. Its passwords only create the first accounts; to change an existing password, run npm run accounts -- password <owner|partner>.',
+  );
 } else {
   const password = () => randomBytes(24).toString('base64url');
   writeFileSync(
