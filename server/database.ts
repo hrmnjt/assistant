@@ -74,6 +74,8 @@ export const migrations: readonly string[] = [
   // Cloudflare Access signs people in; the app keeps no sessions or sign-in attempts.
   `DROP TABLE sessions;
   DROP TABLE sign_in_attempts;`,
+  // Household settings kept by the app itself, starting with when the household was set up.
+  `CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`,
 ];
 
 export async function schemaVersion(db: Executor) {

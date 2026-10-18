@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { DurableObjectSqliteDatabase } from '@earendil-works/pi-durable/storage/sqlite/cloudflare';
 import { handle } from '../server/api.js';
+import { withAccessIdentity } from '../server/auth.js';
 import { drain, json } from '../server/http.js';
 import { openHousehold, type Config, type Runtime } from '../server/runtime.js';
 
@@ -11,14 +12,17 @@ export interface Env extends Config {
 
 /**
  * The Worker serves the built React app as static assets and sends `/api/*` to
- * the one household Durable Object. There are no caller-chosen object IDs and
- * no public registration.
+ * the one household Durable Object, with the email Cloudflare Access verified
+ * (Access does not pass its identity on to the object itself). There are no
+ * caller-chosen object IDs and no public registration.
  */
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const { pathname } = new URL(request.url);
     if (pathname === '/api' || pathname.startsWith('/api/'))
-      return env.HOUSEHOLD.getByName('household').fetch(request);
+      return env.HOUSEHOLD.getByName('household').fetch(
+        await withAccessIdentity(request, ctx.access),
+      );
     return env.ASSETS.fetch(request);
   },
 } satisfies ExportedHandler<Env>;

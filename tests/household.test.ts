@@ -18,6 +18,7 @@ import {
   householdStore,
   openStore,
   type Row,
+  setUp,
 } from './support.js';
 
 const task = (overrides = {}) => ({
@@ -253,6 +254,7 @@ test('topic messages persist in Pi Durable after reopening, and request retries 
 
 test('HTTP origin checks and task preview/confirm work together', async () => {
   const app = await openHousehold(openStore(), config);
+  await setUp(app.household);
   const owner = client(app);
   try {
     assert.equal((await owner.call('/api/health')).status, 200);
