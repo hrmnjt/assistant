@@ -44,7 +44,14 @@ test('reload/login restores direct previews and expired uncertain results withou
     2,
   );
 
-  await page.screenshot({ path: testInfo.outputPath('saved-changes.png') });
+  await expect(saved).toHaveCSS('opacity', '1');
+  const bounds = await saved.boundingBox();
+  const viewport = page.viewportSize()!;
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.y).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width + 1);
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height + 1);
+  await page.screenshot({ path: testInfo.outputPath('saved-changes.png'), animations: 'disabled' });
 
   // Another login/device must not receive or act on either owner-owned preview.
   const other = await browser.newContext({
