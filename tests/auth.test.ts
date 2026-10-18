@@ -1,152 +1,114 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Auth, accountsFrom, SignInError } from '../server/auth.js';
-import { accounts, config, householdStore, origin, type Row } from './support.js';
+import { Auth, accountsFrom } from '../server/auth.js';
+import { openHousehold } from '../server/runtime.js';
+import { accounts, client, config, openStore, testAccess } from './support.js';
 
-const request = (cookie?: string) =>
-  new Request(`${origin}/api/state`, { headers: cookie ? { Cookie: cookie } : {} });
-const session = (cookie: string) => cookie.split(';')[0];
-const rejected = (status: number) => (error: unknown) =>
-  error instanceof SignInError && error.status === status;
+const get = (url: string, headers: Record<string, string> = {}) => new Request(url, { headers });
 
-test('configuration requires two distinct accounts with long passwords', () => {
-  assert.throws(() => accountsFrom({ ...config, PARTNER_PASSWORD: 'short' }), /12 characters/);
+test('a deployment needs both Access settings and two distinct emails; development needs neither', async () => {
+  assert.throws(() => accountsFrom({ ...config, PARTNER_EMAIL: '' }, true), /OWNER_EMAIL/);
   assert.throws(
-    () => accountsFrom({ ...config, PARTNER_PASSWORD: config.OWNER_PASSWORD }),
-    /distinct/,
+    () => accountsFrom({ ...config, PARTNER_EMAIL: config.OWNER_EMAIL.toUpperCase() }, true),
+    /OWNER_EMAIL/,
   );
-  assert.throws(() => accountsFrom({ ...config, PARTNER_USERNAME: 'owner' }), /distinct/);
   assert.deepEqual(
-    accountsFrom(config).map((account) => account.name),
-    ['Alex', 'Sam'],
-  );
-});
-
-test('sign-in throttling is per client and expires after its window', async () => {
-  let now = Date.parse('2026-10-14T07:00:00Z');
-  const auth = new Auth(await householdStore(), accounts, origin, () => now);
-  for (let attempt = 0; attempt < 10; attempt++)
-    await assert.rejects(
-      auth.login({ username: 'owner', password: 'wrong' }, '203.0.113.1'),
-      rejected(401),
-    );
-  // The limit applies to the correct password and to unknown accounts alike.
-  await assert.rejects(
-    auth.login({ username: 'owner', password: accounts[0].password }, '203.0.113.1'),
-    rejected(429),
+    accountsFrom({}, false).map((account) => account.id),
+    ['owner', 'partner'],
   );
   await assert.rejects(
-    auth.login({ username: 'nobody', password: 'x' }, '203.0.113.1'),
-    rejected(429),
+    openHousehold(openStore(), { ...config, ACCESS_TEAM_DOMAIN: 'household.cloudflareaccess.com' }),
+    /ACCESS_AUD/,
   );
-  // Another client, such as the other spouse's phone, is unaffected.
-  await auth.login({ username: 'partner', password: accounts[1].password }, '203.0.113.2');
-  now += 900_000;
-  await auth.login({ username: 'owner', password: accounts[0].password }, '203.0.113.1');
 });
 
-test('a successful sign-in clears that client, and unknown accounts get the same answer', async () => {
-  const auth = new Auth(await householdStore(), accounts, origin);
-  for (let attempt = 0; attempt < 9; attempt++)
-    await auth.login({ username: 'owner', password: 'wrong' }, 'client').catch(() => undefined);
-  await auth.login({ username: 'owner', password: accounts[0].password }, 'client');
-  for (let attempt = 0; attempt < 9; attempt++)
-    await assert.rejects(
-      auth.login({ username: 'owner', password: 'wrong' }, 'client'),
-      rejected(401),
-    );
-  const answer = (username: string) =>
-    auth.login({ username, password: 'wrong' }, 'other').catch((error) => error.message);
-  assert.equal(await answer('nobody'), await answer('owner'));
-});
-
-test('parallel guesses from one client share its ten-attempt limit, and memory stays bounded', async () => {
-  const db = await householdStore();
-  const auth = new Auth(db, accounts, origin);
-  const results = await Promise.allSettled(
-    Array.from({ length: 12 }, () => auth.login({ username: 'owner', password: 'x' }, 'busy')),
-  );
-  const statuses = results.map((result) =>
-    result.status === 'rejected' ? (result.reason as SignInError).status : 200,
-  );
-  assert.equal(statuses.filter((status) => status === 401).length, 10);
-  assert.equal(statuses.filter((status) => status === 429).length, 2);
-  for (let client = 0; client < 1005; client++)
-    await auth
-      .login({ username: 'owner', password: 'x' }, `client-${client}`)
-      .catch(() => undefined);
-  assert.ok(Number((await db.get<Row>('SELECT COUNT(*) AS n FROM sign_in_attempts'))!.n) <= 1000);
-});
-
-test('changing an account password signs that account out everywhere', async () => {
-  const db = await householdStore();
-  const auth = new Auth(db, accounts, origin);
-  const owner = session(
-    (await auth.login({ username: 'owner', password: accounts[0].password }, 'a')).cookie,
-  );
-  const partner = session(
-    (await auth.login({ username: 'partner', password: accounts[1].password }, 'b')).cookie,
-  );
-  assert.equal((await auth.current(request(owner)))?.id, 'owner');
-  // The same store after the owner's password secret changes.
-  const rotated = new Auth(
-    db,
-    [{ ...accounts[0], password: 'A-new-owner-password' }, accounts[1]],
-    origin,
-  );
-  assert.equal(await rotated.current(request(owner)), null);
-  assert.equal((await rotated.current(request(partner)))?.id, 'partner');
-  await assert.rejects(
-    rotated.login({ username: 'owner', password: accounts[0].password }, 'a'),
-    rejected(401),
-  );
-  await rotated.login({ username: 'owner', password: 'A-new-owner-password' }, 'a');
-});
-
-test('signing out ends only that session, and cookies are secure over HTTPS', async () => {
-  const db = await householdStore();
-  const auth = new Auth(db, accounts, 'https://household.example');
-  const { cookie } = await auth.login({ username: 'owner', password: accounts[0].password }, 'a');
-  assert.match(
-    cookie,
-    /^__Host-household=.+; Path=\/; HttpOnly; SameSite=Strict; Max-Age=\d+; Secure$/,
-  );
-  const req = new Request('https://household.example/api/logout', {
-    method: 'POST',
-    headers: { Cookie: session(cookie) },
+test('a development server has no sign-in and answers only on this computer', async () => {
+  const auth = new Auth(accounts);
+  assert.equal(auth.mode, 'development');
+  assert.equal((await auth.current(get('http://localhost:8787/api/state')))?.id, 'owner');
+  const asPartner = get('http://localhost:8787/api/state', {
+    Cookie: 'other=1; household-dev-person=partner',
   });
-  assert.match(await auth.logout(req), /Max-Age=0/);
-  assert.equal(await auth.current(req), null);
+  assert.equal((await auth.current(asPartner))?.id, 'partner');
+  for (const url of ['http://localhost:8787/', 'http://127.0.0.1:9000/', 'http://[::1]:8787/'])
+    assert.equal(auth.served(get(url)), new URL(url).origin);
+  // Another site's hostname (DNS rebinding) or a public tunnel is refused.
+  for (const url of ['http://evil.example/', 'https://abc.trycloudflare.com/'])
+    assert.equal(auth.served(get(url)), null);
+
+  const app = await openHousehold(openStore(), config);
+  try {
+    const refused = await client(app, 'owner', 'https://abc.trycloudflare.com').call('/api/state');
+    assert.equal(refused.status, 403);
+    assert.match(((await refused.json()) as { error: string }).error, /Cloudflare Access/);
+    const state = (await (await client(app).call('/api/state')).json()) as {
+      me: { id: string };
+      signIn: string;
+    };
+    assert.deepEqual([state.me.id, state.signIn], ['owner', 'development']);
+  } finally {
+    await app.conversations.close();
+  }
 });
 
-test('a deployment answers only at its origin; local development also at loopback names and tunnels', async () => {
-  const db = await householdStore();
-  const write = (url: string, origin?: string) =>
-    new Request(url, {
-      method: 'POST',
-      headers: { 'X-Household-Client': '1', ...(origin ? { Origin: origin } : {}) },
-    });
-  const deployed = new Auth(db, accounts, 'https://household.example');
+test('behind Cloudflare Access, only a valid token for a household email signs a person in', async () => {
+  const access = await testAccess();
+  const auth = new Auth(accounts, {
+    teamDomain: 'household.cloudflareaccess.com',
+    audience: 'test-audience',
+    keys: access.keys,
+  });
+  const as = async (token: string) =>
+    (await auth.current(get('https://app.example/api/state', { 'Cf-Access-Jwt-Assertion': token })))
+      ?.id ?? null;
+  assert.equal(auth.mode, 'cloudflare-access');
+  assert.equal(await as(await access.token('alex@example.com')), 'owner');
+  assert.equal(await as(await access.token('SAM@example.com')), 'partner');
+  assert.equal(await as(await access.token('someone@example.com')), null);
+  assert.equal(await as(await access.token('alex@example.com', { audience: 'other-app' })), null);
   assert.equal(
-    deployed.served(write('https://household.example/api/state')),
-    'https://household.example',
+    await as(
+      await access.token('alex@example.com', { issuer: 'https://other.cloudflareaccess.com' }),
+    ),
+    null,
   );
-  for (const url of ['http://localhost:8787/api/state', 'https://abc.trycloudflare.com/api/state'])
-    assert.equal(deployed.served(write(url)), null);
+  assert.equal(await as(await access.token('alex@example.com', { expires: '-1m' })), null);
+  assert.equal(await as('not-a-token'), null);
+  assert.equal(await auth.current(get('https://app.example/api/state')), null);
+  // Cloudflare routes only the Worker's own addresses to it, so each is served as itself.
+  assert.equal(auth.served(get('https://app.example/')), 'https://app.example');
+});
 
-  const local = new Auth(db, accounts, 'http://localhost:8787');
-  for (const url of ['http://127.0.0.1:8787/api/login', 'http://[::1]:8787/api/login']) {
-    assert.equal(local.served(write(url)), new URL(url).origin);
-    assert.equal(local.writeAllowed(write(url, new URL(url).origin)), true);
+test('Access-protected API: a missing token is refused, and writes need the app header and own origin', async () => {
+  const access = await testAccess();
+  const app = await openHousehold(openStore(), access.config, { accessKeys: access.keys });
+  const base = 'https://household-assistant.example.workers.dev';
+  try {
+    const anonymous = client(app, 'owner', base);
+    assert.equal((await anonymous.call('/api/state')).status, 401);
+    const headers = { 'Cf-Access-Jwt-Assertion': await access.token('sam@example.com') };
+    const state = (await (
+      await anonymous.call('/api/state', undefined, 'GET', headers)
+    ).json()) as {
+      me: { id: string; name: string };
+      signIn: string;
+    };
+    assert.deepEqual(
+      [state.me.id, state.me.name, state.signIn],
+      ['partner', 'Sam', 'cloudflare-access'],
+    );
+    const presence = { threadId: null, clientId: crypto.randomUUID(), typing: false };
+    assert.equal((await anonymous.call('/api/presence', presence, 'POST', headers)).status, 200);
+    const refusals: Record<string, string>[] = [
+      { 'X-Household-Client': '0' },
+      { Origin: 'https://evil.example' },
+    ];
+    for (const extra of refusals)
+      assert.equal(
+        (await anonymous.call('/api/presence', presence, 'POST', { ...headers, ...extra })).status,
+        403,
+      );
+  } finally {
+    await app.conversations.close();
   }
-  for (const url of ['http://127.0.0.1:9999/api/login', 'http://evil.example/api/login'])
-    assert.equal(local.served(write(url)), null);
-  // Wrangler forwards a tunnel as plain HTTP; the browser's origin is HTTPS.
-  const tunnel = 'http://abc-def.trycloudflare.com/api/login';
-  assert.equal(local.served(write(tunnel)), 'http://abc-def.trycloudflare.com');
-  assert.equal(local.writeAllowed(write(tunnel, 'https://abc-def.trycloudflare.com')), true);
-  assert.equal(local.writeAllowed(write(tunnel, 'http://abc-def.trycloudflare.com')), true);
-  for (const origin of ['https://other.trycloudflare.com', 'http://localhost:8787'])
-    assert.equal(local.writeAllowed(write(tunnel, origin)), false);
-  assert.equal(local.served(write('http://a.b.trycloudflare.com/api/login')), null);
 });

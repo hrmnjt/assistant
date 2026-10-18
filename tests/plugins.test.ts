@@ -28,7 +28,6 @@ test('the conversation is the core and each feature is a plugin with its own cha
     assert.equal(new Set(tools).size, tools.length);
 
     const owner = client(app);
-    await owner.login('owner', config.OWNER_PASSWORD);
     const refused = await owner.call('/api/previews', { kind: 'garden.water' });
     assert.equal(refused.status, 400);
     assert.match(((await refused.json()) as { error: string }).error, /supported change/);

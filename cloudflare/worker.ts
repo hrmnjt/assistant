@@ -53,11 +53,7 @@ export class Household extends DurableObject<Env> {
   }
   async fetch(request: Request): Promise<Response> {
     if (!this.runtime) return json({ error: this.failure }, 503);
-    const response = await handle(
-      this.runtime,
-      request,
-      request.headers.get('cf-connecting-ip') ?? '',
-    );
+    const response = await handle(this.runtime, request);
     await drain(request);
     // A change can bring the next reminder, retry, or assistant step closer.
     if (request.method !== 'GET') this.ctx.waitUntil(this.schedule());

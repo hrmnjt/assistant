@@ -16,6 +16,7 @@
     "test:ui:install": "node scripts/browser.mjs install chromium webkit",
     "test:browser": "npm run build && node scripts/browser.mjs test --config tests/browser/playwright.config.ts",
     "deploy": "npm run build && node scripts/cloudflare.mjs deploy",
+    "secrets": "node scripts/cloudflare.mjs secrets",
     "ai:connect": "node scripts/run.mjs ai-connect",
     "ai:disconnect": "node scripts/run.mjs ai-disconnect",
     "wrangler": "node scripts/cloudflare.mjs wrangler"
@@ -28,6 +29,7 @@
     "clsx": "2.1.1",
     "date-fns": "4.4.0",
     "ical.js": "2.2.1",
+    "jose": "6.2.12",
     "lucide-react": "1.56.0",
     "luxon": "3.7.2",
     "radix-ui": "1.8.1",

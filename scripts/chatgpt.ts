@@ -7,7 +7,7 @@ import { chatgptModels } from '../server/chatgpt-models.js';
 // npm run ai:connect [-- --production]     sign in with ChatGPT and save the connection
 // npm run ai:disconnect [-- --production]  remove it
 // Local values go to cloudflare/.dev.vars; production values to cloudflare/.prod.vars,
-// uploaded by `npm run deploy`. Tokens are never printed.
+// uploaded by `npm run secrets`. Tokens are never printed.
 process.umask(0o077);
 process.env.PI_OAUTH_CALLBACK_HOST = '127.0.0.1';
 const path = process.argv.includes('--production')
@@ -100,7 +100,7 @@ if (process.argv.includes('--remove')) {
       CHATGPT_CREDENTIAL_JSON: JSON.stringify(credential),
     });
     console.log(
-      `Saved the ChatGPT connection in ${path}. ${path.includes('prod') ? 'Run npm run deploy to upload it.' : 'Restart npm run dev.'} Send a message to validate completed inference; shared use by both spouses still needs account eligibility validation.`,
+      `Saved the ChatGPT connection in ${path}. ${path.includes('prod') ? 'Run npm run secrets to upload it.' : 'Restart npm run dev.'} Send a message to validate completed inference; shared use by both spouses still needs account eligibility validation.`,
     );
   } catch {
     console.error(

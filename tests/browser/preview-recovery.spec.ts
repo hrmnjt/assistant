@@ -1,11 +1,15 @@
 import { test, expect, type Page } from '@playwright/test';
 import type { Snapshot } from '../../src/types.js';
 
-async function login(page: Page, username: 'owner' | 'partner') {
+/** The test server runs as a development server: no sign-in, and a cookie picks the person. */
+async function open(page: Page, person: 'owner' | 'partner') {
+  if (person === 'partner')
+    await page
+      .context()
+      .addCookies([
+        { name: 'household-dev-person', value: 'partner', url: 'http://127.0.0.1:4173' },
+      ]);
   await page.goto('/');
-  await page.getByLabel('Username').fill(username);
-  await page.getByLabel('Password', { exact: true }).fill(`Browser-test-${username}-password`);
-  await page.getByRole('button', { name: 'Come on in', exact: true }).click();
   await expect(page.locator('.app-shell')).toBeVisible();
 }
 
@@ -16,11 +20,11 @@ test.beforeEach(async ({ request }) => {
   expect(response.status()).toBe(204);
 });
 
-test('reload/login restores direct previews and expired uncertain results without another write', async ({
+test('reload restores direct previews and expired uncertain results without another write', async ({
   page,
   browser,
 }, testInfo) => {
-  await login(page, 'owner');
+  await open(page, 'owner');
   await expect(page.getByRole('dialog', { name: 'Saved changes' })).toBeVisible();
   const response = await page.request.post('/api/previews', {
     headers: { 'X-Household-Client': '1' },
@@ -53,14 +57,14 @@ test('reload/login restores direct previews and expired uncertain results withou
   expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height + 1);
   await page.screenshot({ path: testInfo.outputPath('saved-changes.png'), animations: 'disabled' });
 
-  // Another login/device must not receive or act on either owner-owned preview.
+  // The other person, on another device, must not receive or act on either owner-owned preview.
   const other = await browser.newContext({
     baseURL: 'http://127.0.0.1:4173',
     serviceWorkers: 'block',
   });
   try {
     const partnerPage = await other.newPage();
-    await login(partnerPage, 'partner');
+    await open(partnerPage, 'partner');
     await expect(partnerPage.getByRole('dialog', { name: 'Saved changes' })).toHaveCount(0);
     expect(await (await partnerPage.request.get('/api/previews')).json()).toEqual([]);
     const forbidden = await partnerPage.request.post(`/api/previews/${direct.id}/confirm`, {

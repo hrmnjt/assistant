@@ -1,15 +1,21 @@
-# Local development values for `npm run dev`, created by `npm run configure`. Deployed
-# values live in cloudflare/.prod.vars and are uploaded as Worker secrets by
-# `npm run deploy`. Keep both files private; Git ignores them.
-APP_ORIGIN=http://localhost:8787
-OWNER_USERNAME=owner
+# Settings, all optional for `npm run dev` (cloudflare/.dev.vars, created by
+# `npm run configure`). A deployment's values live in cloudflare/.prod.vars and
+# are uploaded as Worker secrets by `npm run secrets`. Keep both files private;
+# Git ignores them.
+#
+# Deployments only: Cloudflare Access signs people in. Its team domain and the
+# application's audience (AUD) tag; with these set the app trusts only Access's
+# signed token. Leave them out of .dev.vars: development has no sign-in and
+# answers only on this computer.
+# ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
+# ACCESS_AUD=
+# The two people. Deployments need both emails: the addresses Access allows.
 OWNER_NAME=You
-OWNER_PASSWORD=replace-with-a-long-random-password
-PARTNER_USERNAME=partner
+# OWNER_EMAIL=you@example.com
 PARTNER_NAME=Partner
-PARTNER_PASSWORD=replace-with-a-different-long-password
+# PARTNER_EMAIL=partner@example.com
 # Phone push: a stable VAPID keypair (changing it breaks existing subscriptions)
-# and a contact. Without PUSH_CONTACT, an https APP_ORIGIN is used.
+# and a contact. Without PUSH_CONTACT, mailto:OWNER_EMAIL is used.
 VAPID_PUBLIC_KEY=
 VAPID_PRIVATE_KEY=
 # PUSH_CONTACT=mailto:you@example.com

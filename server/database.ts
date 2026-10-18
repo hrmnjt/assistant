@@ -71,6 +71,9 @@ export const migrations: readonly string[] = [
   CREATE TABLE assistant_sessions (session_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL);
   CREATE TABLE assistant_reply_times (task_id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
   CREATE TABLE ai_credentials (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL, seed TEXT NOT NULL);`,
+  // Cloudflare Access signs people in; the app keeps no sessions or sign-in attempts.
+  `DROP TABLE sessions;
+  DROP TABLE sign_in_attempts;`,
 ];
 
 export async function schemaVersion(db: Executor) {

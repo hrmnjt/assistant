@@ -1,8 +1,10 @@
 import type { Credential, CredentialStore } from '@earendil-works/pi-ai';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { digest } from './auth.js';
 import type { Row, Store } from './database.js';
 import { chatgptModels } from './chatgpt-models.js';
+
+const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export { chatgptModels } from './chatgpt-models.js';
 
 /**

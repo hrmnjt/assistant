@@ -251,24 +251,19 @@ test('topic messages persist in Pi Durable after reopening, and request retries 
   }
 });
 
-test('HTTP authentication, origin checks, and task preview/confirm work together', async () => {
+test('HTTP origin checks and task preview/confirm work together', async () => {
   const app = await openHousehold(openStore(), config);
   const owner = client(app);
   try {
-    assert.equal((await owner.call('/api/state')).status, 401);
     assert.equal((await owner.call('/api/health')).status, 200);
     assert.equal(
       (
-        await owner.call(
-          '/api/login',
-          { username: 'owner', password: config.OWNER_PASSWORD },
-          'POST',
-          { Origin: 'https://untrusted.example' },
-        )
+        await owner.call('/api/previews', { kind: 'task.create', task: task() }, 'POST', {
+          Origin: 'https://untrusted.example',
+        })
       ).status,
       403,
     );
-    assert.equal((await owner.login('owner', config.OWNER_PASSWORD)).status, 200);
     const response = await owner.call('/api/previews', { kind: 'task.create', task: task() });
     assert.equal(response.status, 201);
     const preview = (await response.json()) as { id: string };
@@ -281,8 +276,7 @@ test('HTTP authentication, origin checks, and task preview/confirm work together
     const noticeId = `change:${preview.id}:partner`;
     assert.equal((await owner.call('/api/notices/read', { ids: [noticeId] })).status, 200);
     assert.equal((await app.db.all<Row>('SELECT notice_id FROM notice_reads')).length, 0);
-    const partner = client(app);
-    await partner.login('partner', config.PARTNER_PASSWORD);
+    const partner = client(app, 'partner');
     const partnerState = (await (await partner.call('/api/state')).json()) as {
       tasks: Task[];
       notices: { id: string; readAt: string | null; targetId: string }[];
@@ -298,12 +292,14 @@ test('HTTP authentication, origin checks, and task preview/confirm work together
     assert.ok(readState.notices[0].readAt);
     // Writes need the app header, and a request for another host name is refused.
     assert.equal(
-      (await partner.call('/api/logout', {}, 'POST', { 'X-Household-Client': '0' })).status,
+      (
+        await partner.call('/api/notices/read', { ids: [noticeId] }, 'POST', {
+          'X-Household-Client': '0',
+        })
+      ).status,
       403,
     );
     assert.equal((await handle(app, new Request('http://rebound.example/api/state'))).status, 403);
-    await partner.call('/api/logout', {});
-    assert.equal((await partner.call('/api/state')).status, 401);
   } finally {
     await app.conversations.close();
   }
