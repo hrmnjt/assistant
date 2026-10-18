@@ -65,6 +65,10 @@ export const migrations: readonly string[] = [
   // Occurrence completion time. Earlier completed rows keep NULL: the separate
   // audit log has no occurrence link, so their actual completion time is unknown.
   `ALTER TABLE task_history ADD COLUMN completed_at TEXT;`,
+  // Pi compaction calls, metered per topic separately from request generation.
+  `CREATE TABLE assistant_maintenance_calls (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL);
+  CREATE INDEX assistant_maintenance_recent ON assistant_maintenance_calls(thread_id, created_at);`,
 ];
 
 export class Database {

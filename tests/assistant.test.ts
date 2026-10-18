@@ -14,6 +14,9 @@ import { Database } from '../server/database.js';
 import { provision } from '../server/auth.js';
 import { Household, DomainError } from '../server/domain.js';
 import { Conversations } from '../server/conversations.js';
+import { boundedModels, dailyMaintenanceCalls } from '../server/assistant-tools.js';
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
+import type { Conversation } from '@earendil-works/pi-durable';
 import { LocalCredentials, chatgptModels } from '../server/ai.js';
 import { recoverablePreviews } from '../server/preview-recovery.js';
 
@@ -530,6 +533,80 @@ test('human messages are saved while an admitted request is paused mid-run', asy
     assert.equal(messages.filter((message) => message.text === 'Plan the week').length, 1);
     assert.equal(messages.filter((message) => message.text === 'Remember the dentist').length, 1);
     assert.equal(messages.filter((message) => message.authorId === 'assistant').length, 1);
+  } finally {
+    await conversations.close();
+    f.close();
+  }
+});
+
+test('maintenance inference is metered per topic with its own daily budget', async () => {
+  const f = fixture();
+  let now = Date.parse('2026-10-14T07:00:00Z');
+  const models = boundedModels(f.db, f.options.models, () => now);
+  const model = f.faux.getModel();
+  const context = { messages: [{ role: 'user' as const, content: 'Summarize', timestamp: now }] };
+  f.faux.setResponses(
+    Array.from({ length: dailyMaintenanceCalls + 1 }, () => fauxAssistantMessage('Summary')),
+  );
+  try {
+    await assert.rejects(
+      models.completeSimple(model, context, { sessionId: 'unbound' }),
+      /cannot be bound/,
+    );
+    f.db.sql.prepare('INSERT INTO assistant_sessions VALUES (?,?)').run('session-1', f.thread);
+    for (let call = 0; call < dailyMaintenanceCalls; call++)
+      await models.completeSimple(model, context, { sessionId: 'session-1' });
+    await assert.rejects(
+      models.completeSimple(model, context, { sessionId: 'session-1' }),
+      /daily assistant maintenance limit/,
+    );
+    assert.equal(f.faux.state.callCount, dailyMaintenanceCalls);
+    // Maintenance never consumes a person's request budget.
+    assert.equal(f.db.sql.prepare('SELECT COUNT(*) AS n FROM assistant_model_calls').get()!.n, 0);
+    now += 86_400_001;
+    await models.completeSimple(model, context, { sessionId: 'session-1' });
+    assert.throws(() => models.complete(model, context), /Unmetered/);
+    assert.throws(() => models.stream(model, context), /Unmetered/);
+  } finally {
+    f.close();
+  }
+});
+
+test('a Pi compaction of a topic counts as maintenance rather than request generation', async () => {
+  const f = fixture();
+  const conversations = await Conversations.open(f.db, resolve(f.path, 'pi.sqlite'), f.options);
+  f.faux.setResponses([fauxAssistantMessage('Noted.'), fauxAssistantMessage('Noted again.')]);
+  try {
+    // Enough model-visible history for Pi to keep recent context and summarize the rest.
+    for (const text of ['a'.repeat(90_000), 'b'.repeat(90_000)]) {
+      await conversations.send(f.thread, 'owner', text, randomUUID());
+      await finished(conversations, f.thread);
+    }
+    const generation = f.db.sql.prepare('SELECT COUNT(*) AS n FROM assistant_model_calls').get()!.n;
+    assert.equal(generation, 2);
+    f.faux.setResponses([fauxAssistantMessage('The owner shared two long notes.')]);
+    const conversation = await (
+      conversations as unknown as { conversation(id: string): Promise<Conversation> }
+    ).conversation(f.thread);
+    await conversation.compact(undefined, BACKGROUND_CONTEXT);
+    await within(
+      (async () => {
+        while (!f.db.sql.prepare('SELECT 1 FROM assistant_maintenance_calls').get())
+          await pause(10);
+      })(),
+      'Compaction',
+    );
+    assert.deepEqual(
+      f.db.sql
+        .prepare('SELECT thread_id FROM assistant_maintenance_calls')
+        .all()
+        .map((row) => row.thread_id),
+      [f.thread],
+    );
+    assert.equal(
+      f.db.sql.prepare('SELECT COUNT(*) AS n FROM assistant_model_calls').get()!.n,
+      generation,
+    );
   } finally {
     await conversations.close();
     f.close();
