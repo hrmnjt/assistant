@@ -6,6 +6,9 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
+  // Settings live as Worker secrets (`npm run secrets`); keep any added in the
+  // dashboard too, so a deploy ships code without clearing them.
+  "keep_vars": true,
   // The built React client (`npm run build`). Only /api/* reaches the Worker;
   // other paths are static files, with the app shell for client-side routes.
   "assets": {

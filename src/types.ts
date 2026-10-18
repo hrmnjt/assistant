@@ -136,6 +136,8 @@ export type ChatStatus = {
 };
 export type Snapshot = {
   me: Person;
+  /** Cloudflare Access signs people in to a deployment; a development server has no sign-in. */
+  signIn: 'cloudflare-access' | 'development';
   people: Person[];
   tasks: Task[];
   previews: Preview[];

@@ -13,12 +13,11 @@ async function noHorizontalOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
 
-test('sign-in: loading, invalid login, disabled submission, and success', async ({
+test('signed out: loading, then the reason and a way back through Cloudflare Access', async ({
   page,
   household,
 }, info) => {
   household.signedIn = false;
-  household.loginError = 'Those details did not match.';
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -34,29 +33,57 @@ test('sign-in: loading, invalid login, disabled submission, and success', async 
   await page.goto('/');
   await expect(page.getByRole('status')).toHaveText('Finding our place…');
   release();
-  await page.getByLabel('Username').fill('owner');
-  await page.getByLabel('Password', { exact: true }).fill('browser-fixture-only');
-  await page.getByRole('button', { name: 'Come on in' }).click();
-  await expect(page.getByRole('alert')).toHaveText('Those details did not match.');
-  await noHorizontalOverflow(page);
-  await shot(page, info, 'login');
-  household.loginError = '';
-  let finishLogin!: () => void;
-  const loginGate = new Promise<void>((resolve) => {
-    finishLogin = resolve;
-  });
-  await page.route(
-    '**/api/login',
-    async (route) => {
-      await loginGate;
-      await route.fallback();
-    },
-    { times: 1 },
+  await expect(page.getByRole('alert')).toHaveText(
+    'Sign in through Cloudflare Access with one of the household’s two email addresses.',
   );
-  await page.getByRole('button', { name: 'Come on in' }).click();
-  await expect(page.getByRole('button', { name: 'Signing in…' })).toBeDisabled();
-  finishLogin();
+  await expect(page.getByRole('link', { name: 'Use a different email' })).toHaveAttribute(
+    'href',
+    '/cdn-cgi/access/logout',
+  );
+  await noHorizontalOverflow(page);
+  await shot(page, info, 'signed-out');
+  // Signing in happens on Access's own page; back in the app, a reload finds the session.
+  household.signedIn = true;
+  await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.getByLabel('Message', { exact: true })).toBeVisible();
+
+  // An Access sign-in that has ended redirects API calls; that reads as signed out, not offline.
+  await page.route('**/api/state', (route) =>
+    route.fulfill({
+      status: 302,
+      headers: { Location: 'https://household.cloudflareaccess.com/' },
+    }),
+  );
+  await page.reload();
+  await expect(page.getByRole('alert')).toHaveText(
+    'Your sign-in has ended. Sign in again to continue.',
+  );
+});
+
+test('settings: sign out through Access, or act as the other person in development', async ({
+  page,
+  household,
+}) => {
+  await page.route('**/cdn-cgi/access/logout', (route) =>
+    route.fulfill({ contentType: 'text/html', body: '<p>Signed out of Access</p>' }),
+  );
+  await page.goto('/');
+  await navigate(page, 'Settings');
+  await expect(page.getByRole('button', { name: /^Act as/ })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page.getByText('Signed out of Access')).toBeVisible();
+
+  household.state.signIn = 'development';
+  await page.goto('/');
+  await navigate(page, 'Settings');
+  await expect(page.getByRole('button', { name: 'Sign out' })).toHaveCount(0);
+  await Promise.all([
+    page.waitForEvent('load'),
+    page.getByRole('button', { name: 'Act as Sam' }).click(),
+  ]);
+  await expect(page.getByLabel('Message', { exact: true })).toBeVisible();
+  const cookies = await page.context().cookies();
+  expect(cookies.find((cookie) => cookie.name === 'household-dev-person')?.value).toBe('partner');
 });
 
 test('chat: suggestions, saved messages, shared history, presence, and channel switch', async ({

@@ -29,7 +29,7 @@ sends `/api/*` to one SQLite-backed Durable Object, `Household`. That object
 holds both accounts, the shared records, and the Pi conversations, which share
 its SQLite storage through one serialized queue. A single alarm runs calendar
 refreshes, reminders, summaries, and recovery of unfinished assistant work.
-`server/` holds the core (sign-in, people and settings, conversations and
+`server/` holds the core (who is signed in, people and settings, conversations and
 channels, the change pipeline, notices and push, the API router) and
 `server/plugins/` the features built on it; `cloudflare/worker.ts` is the only
 host, and `src/` is the client.
@@ -40,60 +40,63 @@ Use Node.js 24 or newer. All project data, caches, and scripts stay in this repo
 
 ```sh
 npm ci --cache ./.cache/npm --ignore-scripts
-npm run configure
 npm run dev
 ```
 
-Open `http://localhost:8787` (or `http://127.0.0.1:8787`) and sign in as `owner`
-or `partner` with the `OWNER_PASSWORD` or `PARTNER_PASSWORD` from
-`cloudflare/.dev.vars`. `npm run configure` creates that private file with
-generated passwords and a push keypair; it never overwrites it. Edit names there
-and restart `npm run dev`. `npm run dev` runs `wrangler dev` with the client
+Open `http://localhost:8787` (or `http://127.0.0.1:8787`). Development has no
+sign-in: it answers only on this computer and acts as the owner; Settings has
+an "Act as" button to try shared features as the partner. `npm run configure`
+optionally creates the private `cloudflare/.dev.vars` with names and a push
+keypair (it never overwrites it); add iCloud or ChatGPT settings there and
+restart `npm run dev`. `npm run dev` runs `wrangler dev` with the client
 rebuilt on each change (reload the page to see it). Local state lives in
 `data/cloudflare/` and survives restarts; delete that folder to start over. The
-local app stops with its process.
-
-To try it on a phone during development, press `t` in the `npm run dev` terminal
-for a temporary `https://….trycloudflare.com` tunnel and open that address.
-Anyone with the link reaches the sign-in page, and it changes on every restart,
-so close it (`t` again) when done. Installing the app and phone push need the
-stable address of a deployment.
+local app stops with its process. Phones use the deployment.
 
 ### Deploy to Cloudflare
 
-```sh
-npm run wrangler -- login
-npm run configure -- --production https://household-assistant.<subdomain>.workers.dev
-npm run deploy
-```
+Cloudflare Access signs the two people in; the app has no passwords of its own.
+A deployment trusts only the token Access adds to each request
+(`Cf-Access-Jwt-Assertion`), verified against the team's published keys, the
+issuer and the application's audience tag, and maps its email to one of the two
+people. Until its Access settings are in place, a deployment refuses every
+request.
 
-Use the Worker's real HTTPS address (find the workers.dev subdomain in the
-Cloudflare dashboard, or use a custom domain). The second command writes the
-private `cloudflare/.prod.vars` with new passwords and a stable push keypair.
-`npm run deploy` builds the client, uploads the Worker, and uploads that file's
-values as Worker secrets. Secrets left out of the file keep their deployed value.
-Run `npm run check` first to typecheck and build the bundle without uploading.
-Keep the Durable Object class, binding, and migration history on later deploys so
-they keep addressing the same storage. There is no export or backup command yet.
+1. Deploy the Worker: `npm run wrangler -- login`, then `npm run deploy`. It
+   appears as `household-assistant.<subdomain>.workers.dev`.
+2. In the Cloudflare dashboard, open the Worker's Settings → Domains & Routes
+   and enable Cloudflare Access for workers.dev. Note the team domain and the
+   audience (AUD) tag the dialog shows. In Zero Trust → Access, edit the
+   Worker's policy so it allows exactly the two email addresses.
+3. `npm run configure -- --production` writes the private
+   `cloudflare/.prod.vars` with a stable push keypair. Fill in
+   `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, the names, and `OWNER_EMAIL` and
+   `PARTNER_EMAIL`, then run `npm run secrets` to upload them as Worker secrets.
+   They apply without a redeploy; secrets left out of the file keep their value.
+
+`npm run deploy` uploads code only and keeps the Worker's secrets and any
+variables added in the dashboard. Run `npm run check` first to typecheck and
+build the bundle without uploading. Keep the Durable Object class, binding, and
+migration history on later deploys so they keep addressing the same storage.
+There is no export or backup command yet.
 
 ### Accounts and settings
 
-Accounts come from `OWNER_*` and `PARTNER_*` settings, with distinct passwords
-of at least 12 characters. Changing a password and restarting (`npm run dev`) or
-redeploying signs that account out everywhere; changing a name or username
-keeps the account's records. Sessions last 30 days. Sign-in allows ten attempts
-per client address per 15 minutes. A deployment only answers at `APP_ORIGIN`;
-local development also answers at the other localhost names on its port and at
-Wrangler's tunnels. Use a stable HTTPS origin for phones, which the service
-worker and push require.
+The two people are the owner and the partner, named by `OWNER_NAME` and
+`PARTNER_NAME`. A deployment knows them by `OWNER_EMAIL` and `PARTNER_EMAIL`,
+which must be distinct and match the addresses Access allows; an Access
+sign-in with any other email is refused. Changing a name or email keeps the
+person's records. Sign out (Settings) ends the Access session; Access decides
+how long a sign-in lasts. Use the deployment's stable HTTPS address on phones,
+which the service worker and push require.
 
-Set `PUSH_CONTACT` to a real `mailto:` address, or the HTTPS app origin is used.
+Set `PUSH_CONTACT` to a real `mailto:` address, or `mailto:` the owner's email is used.
 Keep the generated VAPID keys: changing them breaks existing phone subscriptions.
 Without push setup, reminders stay available in the app's Updates.
 
 To connect the calendar, create/share the iCloud `Household` calendar and set
 `ICLOUD_USERNAME`, `ICLOUD_APP_PASSWORD` (an Apple app-specific password), and
-`ICLOUD_CALENDAR_NAME` in the vars file, then restart or redeploy. If names are
+`ICLOUD_CALENDAR_NAME` in the vars file, then restart or run `npm run secrets`. If names are
 ambiguous, set `ICLOUD_CALENDAR_URL` to the exact calendar URL instead.
 Credentials stay in the Worker's secrets; neither spouse enters them in the app.
 The app refreshes complete months (previous month through two months ahead,
@@ -108,13 +111,13 @@ relative reminders are retained.
 ### Validation
 
 `npm test` runs the Node suite (the application on Node's SQLite through the
-same storage interface) and the Workers suite in workerd: the real Worker,
-assets, Durable Object restart, alarm-driven Web Push, and CalDAV parsing with
-mocked HTTP. `npm run check` typechecks and builds the deployment bundle.
+same storage interface) and the Workers suite in workerd: the real Worker behind
+Cloudflare Access tokens signed with a test key, assets, Durable Object restart,
+alarm-driven Web Push, and CalDAV parsing with mocked HTTP. `npm run check` typechecks and builds the deployment bundle.
 Install the repository-local browsers once with `npm run test:ui:install`, then
 run `npm run test:ui` for the design-system/browser checks against fixture API
 responses, and `npm run test:browser` for preview recovery against the built UI
-and the real API handler with a synthetic calendar. No suite loads
+and the real API handler, as a development server, with a synthetic calendar. No suite loads
 `cloudflare/.dev.vars` values or calls live providers. Browser binaries, reports,
 and test data stay in `.cache/`. GitHub Actions runs these checks on pull
 requests, without secrets.
@@ -135,6 +138,9 @@ Durable Object restarts and resumes pending assistant work from committed state.
 - Support iPhones for both spouses and a laptop web interface.
 - Start with an iPhone-focused SPA, installable as a web app. Native iOS comes later.
 - Permit access away from home through the deployed Cloudflare HTTPS app.
+- Sign in through Cloudflare Access in front of the deployment, with no
+  passwords or sessions in the app; development needs no sign-in (decided 18
+  October 2026).
 - Use text chat, with the iPhone keyboard's dictation for speech input.
 - Every change needs explicit confirmation. Decided: a one-tap Confirm card in
   the conversation, replacing the separate review dialog (planned; today's app
@@ -257,7 +263,7 @@ Decided with the user on 18 October 2026, delivered as stacked pull requests:
 
 1. **Chat-first shell** (built): the conversation is the whole screen, views open
    from the menu or header, and the chat feels native on phones and laptops.
-2. **Plugins** (server built; client next): the core keeps sign-in, people and
+2. **Plugins** (server built; client next): the core keeps identity, people and
    settings, conversations and channels, the change pipeline, notices and push,
    one scheduler and the API router. A plugin (`server/plugin.ts`) brings its own
    Pi extension (the assistant's `read_<feature>` and `prepare_<feature>_change`
@@ -391,8 +397,8 @@ Mac, which is for development and testing, not long-term hosting: the local app
 stops with its process. Storage goes through Pi's `SqliteDatabase` interface,
 so the Node test suite runs the same code on Node's SQLite.
 
-Restrict access to the two users. A public hostname does not imply public
-registration or access to household data. Use a stable HTTPS origin for the
+Restrict access to the two users through Cloudflare Access. A public hostname
+does not imply public registration or access to household data. Use a stable HTTPS origin for the
 installable app's service worker and push features. Enable notifications after
 installing on each iPhone Home Screen and obtaining permission. Keep VAPID keys
 stable. Configure integrations once for the selected deployment; local tests use
@@ -430,7 +436,7 @@ Run `npm run ai:connect` in a terminal on the Mac to authorize the local app
 with Sign in with ChatGPT and choose a model from the account's catalog; it saves
 the connection in `cloudflare/.dev.vars`, so restart `npm run dev` afterward.
 `npm run ai:connect -- --production` saves a separate connection in
-`cloudflare/.prod.vars` for `npm run deploy`. Tokens are never printed, and the
+`cloudflare/.prod.vars` for `npm run secrets`. Tokens are never printed, and the
 app never reads Codex's tokens or falls back to an API key. The Durable Object
 adopts a newly connected credential once and keeps refreshed tokens in its own
 storage. `npm run ai:disconnect` (with `-- --production` for the deployment)

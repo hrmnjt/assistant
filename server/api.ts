@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Row, Store } from './database.js';
-import { Auth, SignInError } from './auth.js';
+import type { Auth } from './auth.js';
 import { previewOwner } from './changes.js';
 import { DomainError } from './errors.js';
 import type { Household } from './household.js';
@@ -23,21 +23,25 @@ export type App = {
   plugins: readonly Plugin[];
 };
 
-/** Handle one `/api` request. `client` is the caller's network address, used for sign-in limits. */
-export async function handle(app: App, request: Request, client = ''): Promise<Response> {
+/** Handle one `/api` request. */
+export async function handle(app: App, request: Request): Promise<Response> {
   const { auth } = app;
   try {
     const url = new URL(request.url);
-    if (!auth.served(request)) throw new RequestError(`Open the app at ${auth.origin}.`, 403);
+    if (!auth.served(request))
+      throw new RequestError(
+        'Sign-in is not set up for this address. Deployments need Cloudflare Access (ACCESS_TEAM_DOMAIN and ACCESS_AUD); a development server answers only on this computer.',
+        403,
+      );
     if (url.pathname === '/api/health' && request.method === 'GET')
       return json({ ok: app.conversations.healthy });
     if (!auth.writeAllowed(request)) throw new RequestError('Request origin is not allowed.', 403);
-    if (url.pathname === '/api/login' && request.method === 'POST') {
-      const { person, cookie } = await auth.login(await body(request), client);
-      return json({ person }, 200, { 'Set-Cookie': cookie });
-    }
     const me = await auth.current(request);
-    if (!me) throw new RequestError('Please sign in.', 401);
+    if (!me)
+      throw new RequestError(
+        'Sign in through Cloudflare Access with one of the household’s two email addresses.',
+        401,
+      );
     for (const route of routes(app)) {
       const match = route.path.exec(url.pathname);
       if (match && route.method === request.method)
@@ -55,8 +59,7 @@ export async function handle(app: App, request: Request, client = ''): Promise<R
         },
         error.status,
       );
-    if (error instanceof RequestError || error instanceof SignInError)
-      return json({ error: error.message }, error.status);
+    if (error instanceof RequestError) return json({ error: error.message }, error.status);
     if (error instanceof z.ZodError)
       return json({ error: error.issues.map((issue) => issue.message).join(' ') }, 400);
     // Never expose provider errors, calendar URLs, credentials, or stack traces.
@@ -80,12 +83,10 @@ function routes(app: App): ApiRoute[] {
     handle,
   });
   return [
-    route('POST', /^\/api\/logout$/, async (request) =>
-      json({ ok: true }, 200, { 'Set-Cookie': await auth.logout(request) }),
-    ),
     route('GET', /^\/api\/state$/, async (_request, me) => {
       const base: Omit<Snapshot, 'tasks' | 'calendar'> = {
         me,
+        signIn: auth.mode,
         people: await household.people(),
         previews: await recoverablePreviews(db, me.id, household.clock()),
         preferences: await household.preferences(me.id),

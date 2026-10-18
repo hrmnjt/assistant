@@ -80,15 +80,30 @@ async function api<T>(
     ...init,
     method,
     credentials: 'same-origin',
+    // Cloudflare Access redirects requests to its sign-in page once a sign-in ends.
+    redirect: 'manual',
     headers: { 'Content-Type': 'application/json', 'X-Household-Client': '1' },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
-  const value = await response.json();
-  if (!response.ok)
-    throw Object.assign(new Error(value.error || 'Unable to reach the household app.'), {
-      status: response.status,
-      calendarOutcome: value.calendarOutcome,
+  if (response.type === 'opaqueredirect')
+    throw Object.assign(new Error('Your sign-in has ended. Sign in again to continue.'), {
+      status: 401,
     });
+  // An error can come from Cloudflare rather than the app, without a JSON body.
+  const value = response.ok ? await response.json() : await response.json().catch(() => ({}));
+  if (!response.ok)
+    throw Object.assign(
+      new Error(
+        value.error ||
+          (response.status === 401
+            ? 'Your sign-in has ended. Sign in again to continue.'
+            : 'Unable to reach the household app.'),
+      ),
+      {
+        status: response.status,
+        calendarOutcome: value.calendarOutcome,
+      },
+    );
   return value;
 }
 
@@ -97,6 +112,10 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(true);
+  const [signedOut, setSignedOut] = useState({
+    status: 0,
+    message: 'The household app can’t be reached right now. Try again in a moment.',
+  });
   const [busy, setBusy] = useState(false);
   const [page, setPage] = useState<'today' | 'tasks' | 'calendar' | 'chat' | 'settings'>('chat');
   const [filter, setFilter] = useState<'mine' | 'household' | 'all'>('mine');
@@ -162,8 +181,11 @@ function App() {
       setState(value);
       setConnected(true);
     } catch (problem) {
-      if ((problem as { status?: number }).status === 401) setState(null);
-      else setConnected(false);
+      const status = (problem as { status?: number }).status;
+      if (status === 401 || status === 403) {
+        setState(null);
+        setSignedOut({ status, message: (problem as Error).message });
+      } else setConnected(false);
     } finally {
       setLoading(false);
     }
@@ -469,7 +491,7 @@ function App() {
         <p>Finding our place…</p>
       </div>
     );
-  if (!state) return <Login onLogin={refresh} />;
+  if (!state) return <SignedOut {...signedOut} />;
   const zone = state.preferences.timezone;
   const now = DateTime.now().setZone(zone);
   const person = (id: string) =>
@@ -1328,30 +1350,48 @@ function App() {
                     Manage ChatGPT usage
                   </a>
                 </Card>
-                <Button
-                  variant="ghost"
-                  className="logout"
-                  onClick={async () => {
-                    try {
-                      const registration = await navigator.serviceWorker?.getRegistration();
-                      const subscription = await registration?.pushManager.getSubscription();
-                      if (subscription) {
-                        await api(
-                          '/push/subscription',
-                          { endpoint: subscription.endpoint },
-                          'DELETE',
-                        );
-                        await subscription.unsubscribe();
+                {state.signIn === 'development' ? (
+                  <Card className="settings-card">
+                    <h2>Development</h2>
+                    <p className="muted">
+                      This local server has no sign-in. You’re acting as {state.me.name}.
+                    </p>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        // Development only: try the household as the other person.
+                        document.cookie = `household-dev-person=${state.me.id === 'owner' ? 'partner' : 'owner'}; path=/; SameSite=Strict`;
+                        location.reload();
+                      }}
+                    >
+                      Act as {state.people.find((person) => person.id !== state.me.id)?.name}
+                    </Button>
+                  </Card>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    className="logout"
+                    onClick={async () => {
+                      try {
+                        const registration = await navigator.serviceWorker?.getRegistration();
+                        const subscription = await registration?.pushManager.getSubscription();
+                        if (subscription) {
+                          await api(
+                            '/push/subscription',
+                            { endpoint: subscription.endpoint },
+                            'DELETE',
+                          );
+                          await subscription.unsubscribe();
+                        }
+                      } catch {
+                        // Signing out still ends the Cloudflare Access session.
                       }
-                      await api('/logout', {});
-                      setState(null);
-                    } catch (problem) {
-                      setError((problem as Error).message);
-                    }
-                  }}
-                >
-                  <LogOut size={17} /> Sign out
-                </Button>
+                      location.href = '/cdn-cgi/access/logout';
+                    }}
+                  >
+                    <LogOut size={17} /> Sign out
+                  </Button>
+                )}
               </>
             )}
           </div>
@@ -1716,9 +1756,12 @@ function Empty({ icon, title, text }: { icon: React.ReactNode; title: string; te
   );
 }
 
-function Login({ onLogin }: { onLogin: () => Promise<void> }) {
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+/**
+ * Cloudflare Access signs people in, so the app shows this only when that
+ * sign-in has ended, names an email outside the household, or the app is not
+ * set up at this address.
+ */
+function SignedOut({ status, message }: { status: number; message: string }) {
   return (
     <div className="login-page">
       <div className="login-story">
@@ -1762,45 +1805,16 @@ function Login({ onLogin }: { onLogin: () => Promise<void> }) {
         </div>
         <div className="eyebrow">WELCOME HOME</div>
         <h2>Your day starts here.</h2>
-        <p className="muted">Sign in to your household.</p>
-        <form
-          className="form"
-          onSubmit={async (event) => {
-            event.preventDefault();
-            setBusy(true);
-            setError('');
-            const data = new FormData(event.currentTarget);
-            try {
-              await api('/login', {
-                username: data.get('username'),
-                password: data.get('password'),
-              });
-              await onLogin();
-            } catch (problem) {
-              setError((problem as Error).message);
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          <Label>
-            Username
-            <Input name="username" autoComplete="username" required />
-          </Label>
-          <Label>
-            Password
-            <Input name="password" type="password" autoComplete="current-password" required />
-          </Label>
-          {error && (
-            <p className="field-error" role="alert">
-              {error}
-            </p>
-          )}
-          <Button variant="default" disabled={busy}>
-            {busy ? 'Signing in…' : 'Come on in'}
+        <p className="muted" role="alert">
+          {message}
+        </p>
+        <div className="form signed-out-actions">
+          <Button variant="default" onClick={() => location.reload()}>
+            {status ? 'Sign in' : 'Try again'}
             <ArrowRight size={17} />
           </Button>
-        </form>
+          {status === 401 && <a href="/cdn-cgi/access/logout">Use a different email</a>}
+        </div>
         <p className="small muted login-footnote">Your own view. Your shared household.</p>
       </section>
     </div>

@@ -4,11 +4,12 @@ import { fileURLToPath } from 'node:url';
 
 // One local app on http://localhost:8787: Wrangler runs the same Worker and
 // Durable Object as deployment and serves the client, rebuilt on each change.
+// There is no sign-in; it answers only on this computer.
 process.chdir(fileURLToPath(new URL('..', import.meta.url)));
-if (!existsSync('cloudflare/.dev.vars')) {
-  console.error('Run npm run configure first to create cloudflare/.dev.vars.');
-  process.exit(1);
-}
+if (!existsSync('cloudflare/.dev.vars'))
+  console.log(
+    'No cloudflare/.dev.vars: running without phone push, iCloud or ChatGPT. npm run configure creates one.',
+  );
 const vite = 'node_modules/vite/bin/vite.js';
 if (spawnSync(process.execPath, [vite, 'build'], { stdio: 'inherit' }).status !== 0)
   process.exit(1);

@@ -12,11 +12,12 @@ import type {
 export function snapshot(): Snapshot {
   const date = DateTime.now().setZone('Asia/Dubai');
   return {
-    me: { id: 'owner', name: 'Alex', username: 'owner' },
+    me: { id: 'owner', name: 'Alex', username: 'alex@example.com' },
     people: [
-      { id: 'owner', name: 'Alex', username: 'owner' },
-      { id: 'partner', name: 'Sam', username: 'partner' },
+      { id: 'owner', name: 'Alex', username: 'alex@example.com' },
+      { id: 'partner', name: 'Sam', username: 'sam@example.com' },
     ],
+    signIn: 'cloudflare-access',
     preferences: {
       revision: 1,
       timezone: 'Asia/Dubai',
@@ -112,7 +113,6 @@ export class HouseholdFixture {
   confirmationError = '';
   confirmationStatus = 409;
   calendarOutcome?: CalendarOutcome;
-  loginError = '';
   status: ChatStatus = { running: false, error: null, previews: [] };
   messages: Record<string, Message[]> = {
     'assistant-owner': [],
@@ -141,16 +141,13 @@ export class HouseholdFixture {
           ? json({ error: 'Offline' }, 503)
           : this.signedIn
             ? json(this.state)
-            : json({ error: 'Sign in' }, 401);
-      if (path === '/login') {
-        if (this.loginError) return json({ error: this.loginError }, 401);
-        this.signedIn = true;
-        return json({ ok: true });
-      }
-      if (path === '/logout') {
-        this.signedIn = false;
-        return json({ ok: true });
-      }
+            : json(
+                {
+                  error:
+                    'Sign in through Cloudflare Access with one of the household’s two email addresses.',
+                },
+                401,
+              );
       if (path === '/presence' || path === '/notices/read') return json({ ok: true });
       if (path.endsWith('/assistant')) return json(this.status);
       if (path.endsWith('/messages')) {

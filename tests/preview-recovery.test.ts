@@ -16,7 +16,6 @@ import {
   householdParts,
   householdStore,
   openStore,
-  origin,
   type Row,
 } from './support.js';
 
@@ -152,7 +151,7 @@ test('authenticated state/list endpoints restore only the actor previews and nev
   const parts = householdParts(f.db, { clock: () => start, calendar });
   const app = {
     db: f.db,
-    auth: new Auth(f.db, accounts, origin),
+    auth: new Auth(accounts),
     household: parts.household,
     conversations,
     notices: parts.notices,
@@ -175,24 +174,17 @@ test('authenticated state/list endpoints restore only the actor previews and nev
   );
   let session = client(app);
   const call = (path: string, body?: unknown) => session.call(path, body);
-  const login = async (username: string) => {
-    session = client(app);
-    const response = await session.login(
-      username,
-      accounts.find((account) => account.username === username)!.password,
-    );
-    assert.equal(response.status, 200);
+  const actAs = (person: 'owner' | 'partner') => {
+    session = client(app, person);
   };
   try {
-    assert.equal((await call('/api/previews')).status, 401);
-    await login('owner');
     const previews = (await (await call('/api/previews')).json()) as Preview[];
     assert.deepEqual(new Set(previews.map((p) => p.id)), new Set([direct.id, uncertain.id]));
     assert(!JSON.stringify(previews).includes('calendar.invalid'));
     assert(previews.every((p) => !('mutation' in p) && !('operation' in p)));
     const snapshot = (await (await call('/api/state')).json()) as Snapshot;
     assert.deepEqual(snapshot.previews, previews);
-    await login('partner');
+    actAs('partner');
     assert.deepEqual(await (await call('/api/previews')).json(), []);
     assert.deepEqual(((await (await call('/api/state')).json()) as Snapshot).previews, []);
     assert.equal((await call(`/api/previews/${uncertain.id}/confirm`, {})).status, 404);
@@ -200,7 +192,7 @@ test('authenticated state/list endpoints restore only the actor previews and nev
       (await call(`/api/previews/${uncertain.id}/dismiss`, { acknowledgeUncertain: true })).status,
       404,
     );
-    await login('owner');
+    actAs('owner');
     assert.equal((await call(`/api/previews/${uncertain.id}/dismiss`, {})).status, 400);
     assert.equal(
       (await call(`/api/previews/${uncertain.id}/dismiss`, { acknowledgeUncertain: true })).status,

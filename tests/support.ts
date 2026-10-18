@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { mkdirSync, mkdtempSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { NodeSqliteDatabase } from '@earendil-works/pi-durable/storage/sqlite/node';
@@ -19,18 +20,38 @@ import { TasksPlugin } from '../server/plugins/tasks.js';
 export type Row = Record<string, any>;
 export const origin = 'http://localhost:5173';
 export const accounts: Account[] = [
-  { id: 'owner', username: 'owner', name: 'Alex', password: 'Test-only-owner-password' },
-  { id: 'partner', username: 'partner', name: 'Sam', password: 'Test-only-partner-password' },
+  { id: 'owner', name: 'Alex', email: 'alex@example.com' },
+  { id: 'partner', name: 'Sam', email: 'sam@example.com' },
 ];
+/** A development server: no Cloudflare Access, so requests on this computer need no sign-in. */
 export const config = {
-  APP_ORIGIN: origin,
-  OWNER_USERNAME: 'owner',
   OWNER_NAME: 'Alex',
-  OWNER_PASSWORD: accounts[0].password,
-  PARTNER_USERNAME: 'partner',
+  OWNER_EMAIL: accounts[0].email,
   PARTNER_NAME: 'Sam',
-  PARTNER_PASSWORD: accounts[1].password,
+  PARTNER_EMAIL: accounts[1].email,
 };
+
+/** Cloudflare Access for tests: a local signing key and tokens naming an email. */
+export async function testAccess(teamDomain = 'https://household.cloudflareaccess.com') {
+  const { privateKey, publicKey } = await generateKeyPair('RS256');
+  const jwk = { ...(await exportJWK(publicKey)), kid: 'test', alg: 'RS256' };
+  const audience = 'test-audience';
+  return {
+    config: { ...config, ACCESS_TEAM_DOMAIN: teamDomain, ACCESS_AUD: audience },
+    keys: createLocalJWKSet({ keys: [jwk] }),
+    token: (
+      email: string,
+      overrides: { audience?: string; issuer?: string; expires?: string } = {},
+    ) =>
+      new SignJWT({ email })
+        .setProtectedHeader({ alg: 'RS256', kid: 'test' })
+        .setIssuer(overrides.issuer ?? teamDomain)
+        .setAudience(overrides.audience ?? audience)
+        .setIssuedAt()
+        .setExpirationTime(overrides.expires ?? '10m')
+        .sign(privateKey),
+  };
+}
 
 /** Push settings for tests that inject a fake sender; no push service is called. */
 export const push = {
@@ -57,9 +78,12 @@ export function directory(prefix = 'run') {
   return mkdtempSync(resolve(`.cache/tests/${prefix}-`));
 }
 
-/** A signed-in client for one account, calling the API handler directly. */
-export function client(app: App) {
-  let cookie = '';
+/**
+ * A client calling the API handler directly. On a development server it acts
+ * as the given person; with Access, pass that person's token header instead.
+ */
+export function client(app: App, person: 'owner' | 'partner' = 'owner', base = origin) {
+  const cookie = person === 'partner' ? 'household-dev-person=partner' : '';
   const call = async (
     path: string,
     body?: unknown,
@@ -68,31 +92,19 @@ export function client(app: App) {
   ) =>
     handle(
       app,
-      new Request(origin + path, {
+      new Request(base + path, {
         method,
         headers: {
           'Content-Type': 'application/json',
           'X-Household-Client': '1',
-          Origin: origin,
+          Origin: base,
           ...(cookie ? { Cookie: cookie } : {}),
           ...headers,
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       }),
-      'test-client',
     );
-  return {
-    call,
-    async login(username: string, password: string) {
-      const response = await call('/api/login', { username, password });
-      const set = response.headers.get('set-cookie');
-      if (set) cookie = set.split(';')[0];
-      return response;
-    },
-    get cookie() {
-      return cookie;
-    },
-  };
+  return { call };
 }
 
 /** The household core and its plugins on one store, assembled as the runtime does. */

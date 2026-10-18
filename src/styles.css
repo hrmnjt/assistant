@@ -496,6 +496,9 @@
   .login-form .form > [data-slot='button'] {
     @apply w-full;
   }
+  .signed-out-actions {
+    @apply grid gap-4 text-center text-sm;
+  }
   .login-footnote {
     @apply mt-8 text-center;
   }

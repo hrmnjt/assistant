@@ -11,11 +11,13 @@ settings are in the [README](../README.md#run-on-the-mac).
 - `wrangler.jsonc`: Worker name, assets, the `HOUSEHOLD` binding and its SQLite
   class migration. Keep the class, binding and migration history on later
   deploys so they keep addressing the same storage.
-- `.dev.vars` (local) and `.prod.vars` (deployment): private settings created by
-  `npm run configure`, ignored by Git. See [.dev.vars.example](.dev.vars.example).
-- `tests/`: workerd tests of the real Worker; `vitest.config.ts` gives them
-  test-only accounts and blanks every documented setting, so a developer's
-  `.dev.vars` never reaches them.
+- `.dev.vars` (local, optional) and `.prod.vars` (deployment): private settings
+  created by `npm run configure`, ignored by Git; `npm run secrets` uploads
+  `.prod.vars` as Worker secrets. See [.dev.vars.example](.dev.vars.example).
+- `tests/`: workerd tests of the real Worker; `vitest.config.ts` configures a
+  test Cloudflare Access application and blanks every documented setting, so a
+  developer's `.dev.vars` never reaches them. The tests sign Access tokens with
+  their own key and serve it at the team's certificate URL.
 
 The runner `scripts/cloudflare.mjs` keeps Wrangler's configuration, login,
 logs, temporary bundles and test caches under `.cache/cloudflare/`, and local
@@ -39,7 +41,10 @@ when it creates earlier work, and a read refreshes a calendar older than a
 minute. Pending assistant work resumes on the next wakeup after an eviction.
 
 If configuration is missing or invalid, the API answers 503 with a message
-naming the setting; other startup errors are not exposed. If Pi storage fails,
+naming the setting; other startup errors are not exposed. Without
+`ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` the app runs as a development server,
+which answers only on loopback addresses, so a deployment missing them refuses
+every request instead of running without sign-in. If Pi storage fails,
 the object restarts and reopens from committed state.
 
 ## Delivery semantics

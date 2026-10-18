@@ -7,17 +7,19 @@ import {
 } from 'cloudflare:test';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createECDH, randomBytes } from 'node:crypto';
+import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { ICloudTransport } from '../../server/plugins/calendar/caldav.js';
 import type { Runtime } from '../../server/runtime.js';
 import type { Env, Household } from '../worker.js';
 
 const bindings = env as unknown as Env;
-const origin = 'https://household.test';
+const origin = 'https://household-assistant.example.workers.dev';
+const team = 'https://household.cloudflareaccess.com';
 const stub = () => bindings.HOUSEHOLD.getByName('household');
 const runtime = (instance: Household) => (instance as unknown as { runtime: Runtime }).runtime;
 // The Worker's own entry point, including static assets (no generated `wrangler types`).
 const worker = (exports as unknown as { default: Fetcher }).default;
-const call = (path: string, value?: unknown, cookie = '', headers: Record<string, string> = {}) =>
+const call = (path: string, value?: unknown, headers: Record<string, string> = {}) =>
   worker.fetch(
     new Request(`${origin}${path}`, {
       method: value === undefined ? 'GET' : 'POST',
@@ -25,20 +27,30 @@ const call = (path: string, value?: unknown, cookie = '', headers: Record<string
         'Content-Type': 'application/json',
         'X-Household-Client': '1',
         Origin: origin,
-        Cookie: cookie,
         ...headers,
       },
       ...(value === undefined ? {} : { body: JSON.stringify(value) }),
     }),
   );
-async function login(username: 'owner' | 'partner') {
-  const response = await call('/api/login', {
-    username,
-    password: username === 'owner' ? 'Test-only-owner-password' : 'Test-only-partner-password',
-  });
-  expect(response.status).toBe(200);
-  return response.headers.get('set-cookie')!.split(';')[0];
+
+// Cloudflare Access signs people in and adds a token naming their email; these
+// tests stand in for it with their own key, published at the team's certs URL.
+const signing = await generateKeyPair('RS256', { extractable: true });
+const certs = { keys: [{ ...(await exportJWK(signing.publicKey)), kid: 'test', alg: 'RS256' }] };
+async function signedIn(email: string, audience = 'test-audience') {
+  const token = await new SignJWT({ email })
+    .setProtectedHeader({ alg: 'RS256', kid: 'test' })
+    .setIssuer(team)
+    .setAudience(audience)
+    .setIssuedAt()
+    .setExpirationTime('10m')
+    .sign(signing.privateKey);
+  return { 'Cf-Access-Jwt-Assertion': token };
 }
+const alex = () => signedIn('alex@example.com');
+const sam = () => signedIn('sam@example.com');
+/** Outbound requests other than the Access certificates; each test supplies its own. */
+let network: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 const task = {
   title: 'Water the plants',
   notes: '',
@@ -50,39 +62,54 @@ const task = {
 
 beforeEach(async () => {
   await reset();
+  network = async (input) => {
+    throw new Error(`Unexpected request to ${String(input)}`);
+  };
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) =>
+    String(input instanceof Request ? input.url : input) === `${team}/cdn-cgi/access/certs`
+      ? Response.json(certs)
+      : network(input, init),
+  );
 });
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it('serves the app shell and the API from one Worker, with sign-in and origin guards', async () => {
+it('serves the app shell and the API from one Worker, behind Cloudflare Access with origin guards', async () => {
   const shell = await call('/tasks/anything');
   expect(shell.status).toBe(200);
   expect(await shell.text()).toContain('<div id="root">');
   expect((await call('/api/health')).status).toBe(200);
   expect((await call('/api/state')).status).toBe(401);
-  const cookie = await login('owner');
-  expect((await call('/api/state', undefined, cookie)).status).toBe(200);
-  const foreign = await call('/api/previews', { kind: 'task.create', task }, cookie, {
-    Origin: 'https://attacker.test',
-  });
-  expect(foreign.status).toBe(403);
-  const wrongHost = await worker.fetch(
-    new Request('https://rebound.test/api/health', { headers: { Origin: origin } }),
+  expect(
+    (await call('/api/state', undefined, await signedIn('alex@example.com', 'other'))).status,
+  ).toBe(401);
+  expect((await call('/api/state', undefined, await signedIn('guest@example.com'))).status).toBe(
+    401,
   );
-  expect(wrongHost.status).toBe(403);
+  const owner = await alex();
+  const state = (await (await call('/api/state', undefined, owner)).json()) as any;
+  expect([state.me.id, state.signIn]).toEqual(['owner', 'cloudflare-access']);
+  const foreign = await call(
+    '/api/previews',
+    { kind: 'task.create', task },
+    {
+      ...owner,
+      Origin: 'https://attacker.test',
+    },
+  );
+  expect(foreign.status).toBe(403);
 });
 
 it('confirms a task for both spouses and keeps it across a Durable Object restart', async () => {
-  const owner = await login('owner');
+  const owner = await alex();
   const preview = (await (
     await call('/api/previews', { kind: 'task.create', task }, owner)
   ).json()) as { id: string };
   expect((await call(`/api/previews/${preview.id}/confirm`, {}, owner)).status).toBe(200);
-  // A new instance reads the same SQLite storage; sessions survive too.
+  // A new instance reads the same SQLite storage and fetches the Access certificates again.
   await abortAllDurableObjects();
-  const partner = await login('partner');
-  const state = (await (await call('/api/state', undefined, partner)).json()) as any;
+  const state = (await (await call('/api/state', undefined, await sam())).json()) as any;
   expect(state.tasks.map((item: { title: string }) => item.title)).toEqual(['Water the plants']);
   expect(state.notices[0].title).toBe('Alex added a task');
   expect((await call('/api/state', undefined, owner)).status).toBe(200);
@@ -98,18 +125,18 @@ it('delivers encrypted Web Push from the alarm and removes expired devices', asy
     },
   });
   const calls: string[] = [];
-  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+  network = async (input, init) => {
     const { pathname } = new URL(String(input));
     calls.push(pathname);
     const headers = new Headers(init?.headers);
     expect(headers.get('content-encoding')).toBe('aes128gcm');
     expect(headers.get('authorization')).toMatch(/^vapid /);
     return new Response(null, { status: pathname === '/phone' ? 201 : 410 });
-  });
-  const partner = await login('partner');
+  };
+  const partner = await sam();
   for (const name of ['phone', 'old-phone'])
     expect((await call('/api/push/subscription', device(name), partner)).status).toBe(200);
-  const owner = await login('owner');
+  const owner = await alex();
   const preview = (await (
     await call('/api/previews', { kind: 'task.create', task }, owner)
   ).json()) as { id: string };
@@ -141,7 +168,7 @@ it('runs CalDAV discovery, REPORT and iCalendar parsing in workerd', async () =>
       { status: 207, headers: { 'Content-Type': 'application/xml' } },
     );
   const methods: string[] = [];
-  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+  network = async (input, init) => {
     const path = new URL(String(input)).pathname;
     const method = init?.method || 'GET';
     methods.push(method);
@@ -169,7 +196,7 @@ it('runs CalDAV discovery, REPORT and iCalendar parsing in workerd', async () =>
         '<d:getetag>"version-1"</d:getetag><c:calendar-data><![CDATA[BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:test-event\r\nDTSTART:20261017T120000Z\r\nDTEND:20261017T123000Z\r\nSUMMARY:Test appointment\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n]]></c:calendar-data>',
       );
     throw new Error(`Unexpected request ${method} ${path}`);
-  });
+  };
   const transport = new ICloudTransport({
     username: 'test-user',
     password: 'test-app-password',

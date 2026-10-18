@@ -36,16 +36,14 @@ const transport: CalendarTransport = {
     throw new Error('No delete expected in this fixture');
   },
 };
+// A development server, as `npm run dev` is: no sign-in, acting as Alex unless the browser picks Sam.
 const app = await openHousehold(
   db,
   {
-    APP_ORIGIN: origin,
-    OWNER_USERNAME: 'owner',
     OWNER_NAME: 'Alex',
-    OWNER_PASSWORD: 'Browser-test-owner-password',
-    PARTNER_USERNAME: 'partner',
+    OWNER_EMAIL: 'alex@example.com',
     PARTNER_NAME: 'Sam',
-    PARTNER_PASSWORD: 'Browser-test-partner-password',
+    PARTNER_EMAIL: 'sam@example.com',
   },
   { transport },
 );
@@ -62,7 +60,6 @@ async function reset() {
   // Each test/project starts with isolated fixture state, even on repeated runs.
   await db.transaction(async (tx) => {
     for (const table of [
-      'sessions',
       'presence',
       'notices',
       'task_history',
@@ -138,7 +135,7 @@ const server = createServer(async (req, res) => {
       await reset();
       response = new Response(null, { status: 204 });
     } else response = new Response(null, { status: 403 });
-  } else if (url.pathname.startsWith('/api/')) response = await handle(app, request, 'browser');
+  } else if (url.pathname.startsWith('/api/')) response = await handle(app, request);
   else response = await asset(url.pathname);
   res.writeHead(response.status, Object.fromEntries(response.headers));
   res.end(Buffer.from(await response.arrayBuffer()));
