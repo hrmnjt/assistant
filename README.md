@@ -107,7 +107,8 @@ sent to ChatGPT; the assistant reads names only. Sign out (Settings) ends the
 Access session; Access decides how long a sign-in lasts. Use the deployment's
 stable HTTPS address on phones, which the service worker and push require.
 
-Set `PUSH_CONTACT` to a real `mailto:` address, or the email of whoever set up the household is used.
+Set `PUSH_CONTACT` to a real `mailto:` address, or the app's own address is used,
+so neither person's email goes to Apple or Google.
 Keep the generated VAPID keys: changing them breaks existing phone subscriptions.
 Without push setup, reminders stay available in the app's Updates.
 
@@ -128,8 +129,8 @@ relative reminders are retained.
 ### Validation
 
 `npm test` runs the Node suite (the application on Node's SQLite through the
-same storage interface) and the Workers suite in workerd: the real Worker behind
-Cloudflare Access tokens signed with a test key, assets, Durable Object restart,
+same storage interface) and the Workers suite in workerd: the real Worker with
+and without a Cloudflare Access identity, assets, Durable Object restart,
 alarm-driven Web Push, and CalDAV parsing with mocked HTTP. `npm run check` typechecks and builds the deployment bundle.
 Install the repository-local browsers once with `npm run test:ui:install`, then
 run `npm run test:ui` for the design-system/browser checks against fixture API
