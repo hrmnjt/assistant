@@ -34,6 +34,11 @@ export function createApp(
   app.use(express.json({ limit: '32kb' }));
   const accounts = auth(db, origin);
   app.use('/api', accounts.writeGuard);
+  // Readiness for a tunnel or supervisor; reveals no household information.
+  app.get('/api/health', (_req, res) => {
+    const ok = conversations.healthy && Boolean(db.sql.prepare('SELECT 1 AS ok').get());
+    res.status(ok ? 200 : 503).json({ ok });
+  });
   app.post('/api/login', accounts.login);
   app.use('/api', accounts.requireUser, (_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');

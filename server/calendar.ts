@@ -137,6 +137,10 @@ export class CalendarService {
       });
     await this.syncing;
   }
+  /** Settles when an in-progress refresh has finished. */
+  async idle() {
+    await this.syncing?.catch(() => undefined);
+  }
   private async syncNow() {
     try {
       const collection = await this.transport!.collection();
