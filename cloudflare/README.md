@@ -1,10 +1,15 @@
 # Cloudflare compatibility prototype
 
-This isolated prototype tests the proposed hosting approach: Worker static
+Cloudflare is now the selected deployment target. This isolated prototype tests
+that approach but is not yet the product application: Worker static
 assets and API routing, with a single SQLite-backed `HouseholdPrototype` Durable
 Object containing Pi and the prototype's own tables. It is a shared test space
 for the two spouses, separate from the Mac app's tasks and conversations.
-The household application has not yet been ported or migrated.
+The household application has not yet been ported or migrated. The agreed
+[unification direction](../docs/cloudflare-unification.md) is one shared core,
+React client, API, and Worker/DO runtime, tested locally through Wrangler on the
+Mac and deployed to Cloudflare. Do not maintain this probe client as a second
+feature implementation or treat the Node host as the long-term deployment.
 
 ## Run on the Mac
 

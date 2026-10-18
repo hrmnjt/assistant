@@ -1,7 +1,8 @@
 # Household assistant
 
-Updated: 2026-10-18. Status: initial POC scope agreed; implementation and
-remaining interaction decisions will evolve through pull requests.
+Updated: 2026-10-18. Status: Cloudflare is the selected deployment target;
+unification of the full application and compatibility prototype is planned,
+not completed. The Mac is for development and testing, not long-term hosting.
 
 ## Purpose
 
@@ -61,11 +62,15 @@ and push keys stay in `data/`.
 ## Cloudflare compatibility prototype
 
 A separate Cloudflare prototype now evaluates Workers and one SQLite-backed
-Durable Object as a hosting option. It has two sign-ins, a shared persistent Pi
+Durable Object for the selected hosting approach. It has two sign-ins, a shared persistent Pi
 conversation, durable test reminders, and optional read-only iCloud and phone
 push probes. It uses fixture replies by default, without calling an AI provider.
-The existing Mac application and its data remain separate; a full cloud migration
-is still proposed rather than implemented.
+The existing Node application and its data remain separate. Cloudflare is now
+the selected deployment target: the next step is one shared application core,
+React client, and API, running locally through Wrangler on the Mac and on
+Cloudflare in deployment. The full app has **not** yet been ported or migrated.
+See [the unification plan](docs/cloudflare-unification.md) for ownership, adapters,
+and cutover boundaries; do not run two schedulers against the same household.
 
 ```sh
 npm run cloudflare:configure
@@ -83,11 +88,14 @@ account deployment or real-device delivery is implied by local test results.
 ## Confirmed requirements
 
 - Build on Pi Durable and run the assistant on user-controlled infrastructure.
-- Develop and run the initial POC on the user's Mac.
-- Keep the home Linux PC as a hosting option once the application is stable.
+- Use the user's Mac for local development/testing, not long-term service hosting.
+- Deploy to Cloudflare. Unify the full app and prototype around one application
+  core and the same local/deployed Worker + Durable Object runtime; do not
+  maintain two feature implementations.
 - Support iPhones for both spouses and a laptop web interface.
 - Start with an iPhone-focused SPA, installable as a web app. Native iOS comes later.
-- Permit access away from home through Cloudflare Tunnel.
+- Permit access away from home through the deployed Cloudflare HTTPS app.
+  Tunnel access to the current Node server remains transitional.
 - Use text chat, with the iPhone keyboard's dictation for speech input.
 - Show a preview and require confirmation before changes from either chat or
   direct task/calendar controls.
@@ -139,6 +147,12 @@ wider content and a visible channel rail; mobile drives the design. The interact
 - Shared channels sit in a drawer on mobile. Messages go to the two humans;
   mention `@assistant` or enable “Ask Our day” to involve the assistant.
   Existing topics become channels without losing messages.
+- Ordinary human channel messages get per-person unread badges only, not phone
+  push. Count the other spouse's messages, not one's own or internal model/tool
+  entries. Reading while actively viewing a visible channel advances that
+  person's read position across devices. Assistant mentions and task/calendar
+  change alerts remain separate. Implementation/reconnect coverage is tracked
+  in #37; the current app does not yet have channel unread state.
 - The calendar opens to the current month, with event dots. Selecting a date
   shows its appointments, including multi-day and all-day spans.
 - The bell opens Updates: partner changes, reminders, and summaries. Settings
@@ -240,8 +254,19 @@ unsuitable or self-hosting the calendar becomes preferable.
   settings configurable by person.
 - Keep both Apple Calendar and assistant appointment alerts, as explicitly chosen
   by the user. Same-appointment alerts from those two sources are intentional.
-- Quiet hours, appointment reminder timing, and reminder catch-up after a restart
-  remain to be settled.
+- Start with simple reminder defaults, chosen for the POC rather than a large
+  policy/settings system: no app-level quiet hours initially (phone Focus still
+  applies); a 30-minute default appointment reminder, editable in the preview;
+  one task deadline alert per stored due date, with missed recurring work followed
+  up in summaries rather than a push for every miss. Preserve overdue deadlines
+  and occurrence history.
+- Selected catch-up policy: retain overdue task reminders in Updates, but push
+  only within two hours of the original due time; deliver summaries up to two
+  hours late; deliver appointment reminders up to two hours after their trigger
+  only while the event has not ended. Partner-change push expires two hours
+  after the change. Never emit a backlog of old summary/recurring pushes.
+  These policies are selected requirements; enforcement/boundary tests remain
+  tracked in #15 (task catch-up currently uses notice-creation time).
 - Task time-blocking is deferred. The user wants room for spontaneity before
   deciding whether activities should reserve explicit time.
 
@@ -274,23 +299,32 @@ after retries should still be prevented.
 
 ## Development and hosting
 
-During development, run the app, Pi Durable harness, persistence, and reminder
-scheduling on the Mac, where the user is working with Codex.
-Use Cloudflare Tunnel with a stable HTTPS hostname for phone and laptop access.
-Restrict application access to the two users. A public hostname does not imply
-public registration or access to household data.
+**Chosen target:** Cloudflare Worker routing/assets and one SQLite-backed Durable
+Object per household, owning shared records, independent Pi conversations, and
+alarm-driven jobs. Use the same Worker/DO application locally through Wrangler
+on the Mac and in deployment. Keep domain/confirmation logic, API contracts, and
+the React UI shared; isolate storage, alarms, credentials, and transports behind
+narrow adapters. The migration plan is in [Cloudflare unification](docs/cloudflare-unification.md).
 
-Use HTTPS for the installable app's service worker and push features. Enable
-notifications after installing the app on the iPhone Home Screen and obtaining
-notification permission. The stable origin should survive Mac/app restarts.
+**Current implementation:** `npm run dev` still runs the full Node application;
+`npm run cloudflare:dev` still runs only the compatibility prototype. These are
+not equivalent yet. The Node app remains a transitional test/reference host
+until parity, recovery tests, and a deliberate data cutover are established.
+Its Mac/tunnel must stay awake for timely service; Wrangler's local emulator
+also stops with its process. Do not interpret either as production availability.
 
-The Mac and relevant processes must remain awake, running, and connected to
-serve the app and send reminders on time. Specify restart recovery and how to
-handle missed reminder jobs; do not promise uninterrupted delivery from a
-sleeping Mac. Once the app is stable, the user's home Linux PC is a hosting
-option. A dedicated server or Cloudflare compute services are also future
-options. Keep that decision open during development; using a tunnel does not
-move the server off the Mac.
+Restrict access to the two users. A public hostname does not imply public
+registration or access to household data. Use a stable HTTPS origin for the
+installable app's service worker and push features. Enable notifications after
+installing on each iPhone Home Screen and obtaining permission. Keep VAPID keys
+stable. Configure integrations once for the selected deployment; local tests use
+isolated fixture credentials/data, not implicit copies of production secrets.
+
+Live iCloud, ChatGPT eligibility/inference, and device acceptance remain pending
+user configuration and validation (#24, #36). Hosted ChatGPT eligibility is not
+established by choosing Cloudflare; keep AI optional/disabled when unavailable,
+with no API-key billing fallback. Do not start two household schedulers or import
+Mac/prototype data automatically.
 
 ## AI access
 
@@ -313,6 +347,11 @@ eligible per-user plan usage, but does not establish that one Plus subscription
 can fund both spouses' interactive use. Keep this eligibility question explicit;
 neither library support nor a Pro upgrade alone resolves it. Keep application
 sign-in distinct from the account authorizing model usage.
+
+The following commands configure only the current transitional Node host, not
+the Worker deployment. Unified hosted credential/reconnect setup remains part
+of the migration and OAuth work; do not copy these tokens or Codex tokens into
+cloud secrets as an implicit migration.
 
 Run `npm run ai:connect` in a terminal on the Mac to authorize this installation
 with Sign in with ChatGPT and choose a model from the account's catalog. Restart
@@ -350,8 +389,9 @@ and [model/inference requirements](https://developers.openai.com/siwc/token-shar
 7. Work tasks remain accessible but do not clutter the other spouse's default view.
 8. A task owner receives a deadline notification and enabled morning/evening summaries.
 9. Recurring chores preserve history and follow the agreed missed-occurrence policy.
-10. The installed phone app works away from home through the tunnel.
-11. Restarting the Mac service preserves tasks, conversations, and pending state.
+10. The installed phone app works away from home at the stable Cloudflare HTTPS origin.
+11. Restarting/recreating the household runtime preserves tasks, conversations,
+    pending state, and scheduled wakeups (also tested locally on the Mac).
 12. Summary times and toggles are independent for each person and each summary.
 13. Shared channels display current human interaction and clear stale indicators.
 14. Missed chores remain visible as occurrences or an accurate missed-count history.
@@ -360,9 +400,9 @@ and [model/inference requirements](https://developers.openai.com/siwc/token-shar
 
 - Eligibility of the desired shared Plus-funded AI connection, and account/model
   validation through Pi's supported sign-in flow.
-- Sign-in method for the two users and any existing Cloudflare domain/setup.
+- Stable Cloudflare app hostname and production integration configuration.
 - Undo and handling batch changes; all task/calendar edits require a preview.
-- Appointment alert timing, quiet hours, summary content, and restart catch-up.
+- Revisit reminder defaults only after POC use; keep the selected initial policy simple.
 - Calendar recurrence edits: one occurrence versus an entire series.
 - Detailed missed-occurrence counting and presentation.
 
@@ -382,7 +422,9 @@ into `main`. See [AGENTS.md](AGENTS.md) for repository workflow instructions.
 The [17 October 2026 review](docs/reviews/2026-10-17/README.md) records implementation
 findings, Pi Durable architecture recommendations, and reproduction evidence at
 commit `c85e65a`. Its recommendations remain proposals; this README continues to
-define confirmed requirements, and hosting remains undecided.
+define confirmed requirements. Cloudflare was subsequently selected as the
+deployment target; historical hosting proposals are superseded by the
+unification direction above.
 
 ## References
 
