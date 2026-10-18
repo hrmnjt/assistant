@@ -1,4 +1,4 @@
-import { test, expect } from './household-fixture';
+import { test, expect, navigate } from './household-fixture';
 
 test('shared channel creation still requires a preview and opens the confirmed channel', async ({
   page,
@@ -6,7 +6,7 @@ test('shared channel creation still requires a preview and opens the confirmed c
 }) => {
   await page.goto('/');
   await expect(page.getByLabel('Message', { exact: true })).toBeVisible();
-  const channels = page.getByRole('button', { name: 'Open channels' });
+  const channels = page.getByRole('button', { name: 'Open menu' });
   if (await channels.isVisible()) await channels.click();
   await page.getByRole('button', { name: 'Add shared channel' }).click();
   await page.getByLabel('Channel name').fill('Summer plans');
@@ -26,7 +26,7 @@ test('retryable server failures and pending confirmation keep the write controls
   household.confirmationError = 'Please retry this confirmation.';
   household.confirmationStatus = 503;
   await page.goto('/');
-  await page.getByRole('navigation').getByRole('button', { name: 'Tasks', exact: true }).click();
+  await navigate(page, 'Tasks');
   await page.getByRole('button', { name: 'Review completion of Water the plants' }).click();
   await page.getByRole('button', { name: 'Confirm change' }).click();
   await expect(page.getByRole('alert')).toHaveText('Please retry this confirmation.');
@@ -100,7 +100,7 @@ test('calendar uses one roving focus target with arrow-key navigation and Enter 
   page,
 }) => {
   await page.goto('/');
-  await page.getByRole('navigation').getByRole('button', { name: 'Calendar', exact: true }).click();
+  await navigate(page, 'Calendar');
   const day = page.locator('[data-slot="calendar"] button[tabindex="0"]');
   await expect(day).toHaveCount(1);
   await day.focus();
@@ -121,7 +121,7 @@ test('recurring read-only appointments retain their Apple Calendar editing guida
   household.state.calendar.events[0].readOnlyReason =
     'Recurring appointments are edited in Apple Calendar.';
   await page.goto('/');
-  await page.getByRole('navigation').getByRole('button', { name: 'Calendar', exact: true }).click();
+  await navigate(page, 'Calendar');
   await page.getByRole('button', { name: /19:00.*Dinner together/ }).click();
   await expect(page.getByLabel('Appointment', { exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Review appointment' })).toHaveCount(0);
@@ -137,7 +137,7 @@ test('calendar sync failure preserves cached appointments and disables writes', 
   household.state.calendar.status = 'error';
   household.state.calendar.error = 'iCloud could not be reached.';
   await page.goto('/');
-  await page.getByRole('navigation').getByRole('button', { name: 'Calendar', exact: true }).click();
+  await navigate(page, 'Calendar');
   await expect(
     page.getByRole('status').filter({ hasText: 'iCloud could not be reached.' }),
   ).toBeVisible();

@@ -1,9 +1,9 @@
-import { test, expect } from './household-fixture';
+import { test, expect, navigate } from './household-fixture';
 import type { Page } from '@playwright/test';
 
 async function previewAppointment(page: Page) {
   await page.goto('/');
-  await page.getByRole('navigation').getByRole('button', { name: 'Calendar', exact: true }).click();
+  await navigate(page, 'Calendar');
   await page.getByRole('button', { name: /19:00.*Dinner together/ }).click();
   await page.getByRole('button', { name: 'Review appointment', exact: true }).click();
 }

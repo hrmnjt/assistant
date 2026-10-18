@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { DateTime } from 'luxon';
 import {
+  ArrowLeft,
   ArrowRight,
   Bell,
   CalendarDays,
@@ -144,7 +145,7 @@ function App() {
   // response cannot duplicate it; newer typing never changes that identity.
   const messageRequest = useRef<{ requestId: string; threadId: string; text: string } | null>(null);
   const visibleThread = useRef<string | null>(null);
-  visibleThread.current = page === 'chat' ? threadId : null;
+  visibleThread.current = threadId;
   useEffect(() => {
     const openUpdates = (event: MessageEvent) => {
       if (event.data?.type === 'open-updates') setShowNotices(true);
@@ -429,7 +430,7 @@ function App() {
     messageRequest.current = null;
     setMessages([]);
     setChatStatus({ running: false, error: null, previews: [] });
-    if (page !== 'chat' || !threadId || !state?.me.id) return;
+    if (!threadId || !state?.me.id) return;
     let active = true;
     const read = async () => {
       try {
@@ -451,7 +452,7 @@ function App() {
       active = false;
       clearInterval(timer);
     };
-  }, [page, threadId, state?.me.id]);
+  }, [threadId, state?.me.id]);
 
   if (loading)
     return (
@@ -483,13 +484,16 @@ function App() {
   );
   const today = selected.filter((task) => overdue(task) || due(task)?.hasSame(now, 'day'));
   const thread = state.threads.find((thread) => thread.id === threadId);
-  const navigation = [
-    { id: 'chat', title: 'Chat', icon: MessageCircle },
+  // Views open beside (or, on phones, over) the conversation; the chat is always the app.
+  const views = [
     { id: 'today', title: 'Today', icon: Home },
     { id: 'tasks', title: 'Tasks', icon: ClipboardList },
     { id: 'calendar', title: 'Calendar', icon: CalendarDays },
-    { id: 'settings', title: 'Settings', icon: Settings },
   ] as const;
+  const openView = (id: typeof page) => {
+    setPage(id);
+    setChannelsOpen(false);
+  };
   const isAssistant = Boolean(thread?.assistantFor);
   const chatTitle = isAssistant ? 'Our day' : thread ? `# ${thread.title}` : 'Our day';
   const chatActivity = chatStatus.running
@@ -501,7 +505,18 @@ function App() {
         : 'Assistant setup pending';
   const chooseThread = (id: string) => {
     setThreadId(id);
+    setPage('chat');
     setChannelsOpen(false);
+  };
+  const startsGroup = (index: number) => {
+    const message = messages[index],
+      previous = messages[index - 1];
+    return (
+      !previous ||
+      previous.authorId !== message.authorId ||
+      previous.createdAt.slice(0, 10) !== message.createdAt.slice(0, 10) ||
+      Date.parse(message.createdAt) - Date.parse(previous.createdAt) > 5 * 60_000
+    );
   };
   const savedChangesButton = state.previews.length > 0 && (
     <Button
@@ -518,6 +533,22 @@ function App() {
   );
   const channelNavigation = (
     <>
+      <nav className="view-nav" aria-label="Main navigation">
+        {[...views, { id: 'settings', title: 'Settings', icon: Settings } as const].map((item) => (
+          <Button
+            variant="ghost"
+            key={item.id}
+            className={`thread-item view-item ${page === item.id ? 'active' : ''}`}
+            aria-current={page === item.id ? 'page' : undefined}
+            onClick={() => openView(item.id)}
+          >
+            <item.icon size={19} />
+            <div>
+              <strong>{item.title}</strong>
+            </div>
+          </Button>
+        ))}
+      </nav>
       <p className="channel-section-label">YOUR ASSISTANT</p>
       {state.threads
         .filter((item) => item.assistantFor === state.me.id)
@@ -715,621 +746,609 @@ function App() {
       />
     );
 
-  return (
-    <div
-      className={`app-shell ${page === 'chat' ? 'chat-active' : ''} ${keyboardOpen ? 'keyboard-open' : ''}`}
-      onClickCapture={rememberOverlayOpener}
-    >
-      <main>
-        <header className="topbar">
-          <span>
-            <span className="status-dot" /> Your household
-          </span>
-          <div>
-            <span className="top-date">{now.toFormat('cccc, d LLL')}</span>
-            {savedChangesButton}
+  const banners = (
+    <>
+      {!connected && (
+        <Alert className="connection-banner" role="status">
+          <AlertDescription>
+            Connection lost. Showing the last loaded view; reconnect before making changes.
+          </AlertDescription>
+        </Alert>
+      )}
+      {error && (
+        <Alert className="error-banner" role="alert">
+          <AlertDescription>
+            {error}
             <Button
               variant="ghost"
               size="icon"
-              aria-label="Open updates"
-              onClick={() => setShowNotices(true)}
+              onClick={() => setError('')}
+              aria-label="Dismiss error"
             >
-              <Bell size={19} />
-              {state.notices.some((notice) => !notice.readAt) && <span className="unread-dot" />}
+              <X size={16} />
             </Button>
-            <span className={`avatar ${state.me.id}`}>{state.me.name[0]}</span>
-          </div>
-        </header>
-        {!connected && (
-          <Alert className="connection-banner" role="status">
-            <AlertDescription>
-              Connection lost. Showing the last loaded view; reconnect before making changes.
-            </AlertDescription>
-          </Alert>
-        )}
-        {error && (
-          <Alert className="error-banner" role="alert">
-            <AlertDescription>
-              {error}
+          </AlertDescription>
+        </Alert>
+      )}
+    </>
+  );
+  return (
+    <div
+      className={`app-shell ${page === 'chat' ? '' : 'view-open'} ${keyboardOpen ? 'keyboard-open' : ''}`}
+      onClickCapture={rememberOverlayOpener}
+    >
+      <aside className="sidebar" aria-label="Your spaces">
+        {channelNavigation}
+      </aside>
+      <main className="chat-pane">
+        {banners}
+        {thread ? (
+          <>
+            <div className="thread-heading">
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => setError('')}
-                aria-label="Dismiss error"
+                className="channels-toggle"
+                onClick={() => setChannelsOpen(true)}
+                aria-label="Open menu"
               >
-                <X size={16} />
+                <Menu size={22} />
               </Button>
-            </AlertDescription>
-          </Alert>
-        )}
-        <div className={`page ${page === 'chat' ? 'chat-page' : ''}`}>
-          {page === 'today' && (
-            <>
-              <div className="eyebrow">
-                <Sun size={15} /> {now.toFormat('cccc, d LLLL').toUpperCase()}
-              </div>
-              <div className="page-heading">
-                <div>
-                  <h1>
-                    {now.hour < 12
-                      ? 'Good morning'
-                      : now.hour < 18
-                        ? 'Good afternoon'
-                        : 'Good evening'}
-                    , {state.me.name}.
-                  </h1>
-                  <p>Make a little room for what matters.</p>
-                </div>
-                <Button
-                  variant="default"
-
-                  onClick={() => setTaskForm('new')}
-                  disabled={!connected}
-                >
-                  <Plus size={17} /> Add task
-                </Button>
-              </div>
-              <div className="overview">
-                <div>
-                  <span className="overview-icon green">
-                    <ClipboardList size={20} />
-                  </span>
-                  <strong>
-                    {
-                      open.filter((t) => t.ownerId === state.me.id && due(t)?.hasSame(now, 'day'))
-                        .length
-                    }
-                  </strong>
-                  <span>Due today</span>
-                </div>
-                <div>
-                  <span className="overview-icon peach">
-                    <Repeat2 size={20} />
-                  </span>
-                  <strong>
-                    {open.filter((t) => t.ownerId === state.me.id && overdue(t)).length}
-                  </strong>
-                  <span>Need a follow-up</span>
-                </div>
-                <div>
-                  <span className="overview-icon purple">
-                    <Users size={20} />
-                  </span>
-                  <strong>{open.filter((t) => t.category === 'household').length}</strong>
-                  <span>Household tasks</span>
-                </div>
-              </div>
-              <div className="today-grid">
-                <Card className="focus-card">
-                  <div className="section-heading">
-                    <div>
-                      <span className="eyebrow">ONE THING AT A TIME</span>
-                      <h2>Your focus today</h2>
-                    </div>
-                    <Button variant="ghost" onClick={() => setPage('tasks')}>
-                      All tasks <ArrowRight size={15} />
-                    </Button>
-                  </div>
-                  <TaskCollection value={filter} onValueChange={setFilter}>
-                    {rows(today)}
-                  </TaskCollection>
-                </Card>
-                <aside className="day-aside">
-                  <CalendarCard
-                    calendar={state.calendar}
-                    zone={zone}
-                    open={() => setPage('calendar')}
-                  />
-                  <Card className="summary-card">
-                    <Sunset size={24} />
-                    <h3>A moment to reset.</h3>
-                    <p>
-                      {state.preferences.evening.enabled
-                        ? `Your evening summary is set for ${state.preferences.evening.time}.`
-                        : 'Your evening summary is switched off.'}
-                    </p>
-                    <Button variant="ghost" onClick={() => setPage('settings')}>
-                      Make it yours <ArrowRight size={14} />
-                    </Button>
-                  </Card>
-                </aside>
-              </div>
-              <section className="conversation-strip">
-                <MessageCircle size={23} />
-                <div>
-                  <h3>Keep the conversation going.</h3>
-                  <p>Household plans, work, or something just for you. A topic for each.</p>
-                </div>
-                <Button variant="outline" onClick={() => setPage('chat')}>
-                  Open conversations <ArrowRight size={15} />
-                </Button>
-              </section>
-            </>
-          )}
-          {page === 'tasks' && (
-            <>
-              <div className="eyebrow">A PLACE FOR EVERYTHING</div>
-              <div className="page-heading">
-                <div>
-                  <h1>A little less on your mind.</h1>
-                  <p>One owner for the follow-up. Either of you can lend a hand.</p>
-                </div>
-                <Button
-                  variant="default"
-
-                  onClick={() => setTaskForm('new')}
-                  disabled={!connected}
-                >
-                  <Plus size={17} /> Add task
-                </Button>
-              </div>
-              <Card className="full-card">
-                <div className="section-heading">
-                  <h2>
-                    Open tasks <Badge variant="secondary">{selected.length}</Badge>
-                  </h2>
-                </div>
-                <TaskCollection value={filter} onValueChange={setFilter}>
-                  {rows(selected)}
-                </TaskCollection>
-              </Card>
-              {state.tasks.some((t) => t.status === 'completed') && (
-                <Disclosure
-                  className="completed-section"
-                  title={
-                    <>
-                      Completed tasks · {state.tasks.filter((t) => t.status === 'completed').length}
-                    </>
-                  }
-                >
-                  {relevant(state.tasks.filter((t) => t.status === 'completed')).map((task) => (
-                    <div className="completed-row" key={task.id}>
-                      <Check size={16} />
-                      <span>{task.title}</span>
-                      <small>{person(task.completedBy || '')}</small>
-                    </div>
-                  ))}
-                </Disclosure>
-              )}
-            </>
-          )}
-          {page === 'chat' && (
-            <>
-              <div className="conversation-layout">
-                <Card className="channel-rail">{channelNavigation}</Card>
-                <Card className="conversation-content">
-                  {thread ? (
-                    <>
-                      <div className="thread-heading">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="channels-toggle"
-                          onClick={() => setChannelsOpen(true)}
-                          aria-label="Open channels"
-                        >
-                          <Menu size={22} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          className="assistant-avatar"
-                          onClick={() => setActivityOpen(true)}
-                          aria-label="Assistant activity"
-                        >
-                          <Leaf size={24} />
-                        </Button>
-                        <div className="chat-heading-copy">
-                          <h1>{chatTitle}</h1>
-                          <Button
-                            variant="ghost"
-                            className="chat-activity"
-                            onClick={() => setActivityOpen(true)}
-                          >
-                            {isAssistant ? chatActivity : 'You, your partner & Our day'}
-                            {!isAssistant && <Users size={12} />}
-                          </Button>
-                        </div>
-                        {savedChangesButton}
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="chat-updates"
-                          aria-label="Open updates"
-                          onClick={() => setShowNotices(true)}
-                        >
-                          <Bell size={20} />
-                          {state.notices.some((notice) => !notice.readAt) && (
-                            <span className="unread-dot" />
-                          )}
-                        </Button>
-                      </div>
-                      <div className="ai-status">
-                        <span
-                          className={`status-dot ${state.integrations.ai === 'configured' ? '' : 'pending'}`}
-                        />
-                        {state.integrations.ai === 'configured'
-                          ? 'Using the connected ChatGPT plan'
-                          : 'ChatGPT isn’t connected yet. Your messages will be saved.'}
-                        {state.integrations.ai === 'configured' && (
-                          <a
-                            href="https://chatgpt.com/#settings/Usage"
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Manage usage
-                          </a>
-                        )}
-                      </div>
-                      <div
-                        className="messages"
-                        role="log"
-                        aria-label="Conversation messages"
-                        ref={messagesPanel}
-                        aria-live="polite"
-                        onScroll={() => {
-                          const element = messagesPanel.current;
-                          if (element)
-                            followMessages.current =
-                              element.scrollHeight - element.scrollTop - element.clientHeight < 100;
-                        }}
-                      >
-                        {messages.length ? (
-                          messages.map((message, index) => (
-                            <React.Fragment key={message.id}>
-                              {(index === 0 ||
-                                message.createdAt.slice(0, 10) !==
-                                  messages[index - 1].createdAt.slice(0, 10)) && (
-                                <div className="chat-day">
-                                  {DateTime.fromISO(message.createdAt)
-                                    .setZone(zone)
-                                    .hasSame(now, 'day')
-                                    ? 'Today'
-                                    : DateTime.fromISO(message.createdAt)
-                                        .setZone(zone)
-                                        .toFormat('ccc, d LLL')}
-                                </div>
-                              )}
-                              <article
-                                className={`message ${message.authorId === state.me.id ? 'mine' : ''} ${message.authorId === 'assistant' ? 'from-assistant' : ''}`}
-                              >
-                                <div>
-                                  <strong>{person(message.authorId)}</strong>
-                                  <time>
-                                    {DateTime.fromISO(message.createdAt)
-                                      .setZone(zone)
-                                      .toFormat('HH:mm')}
-                                  </time>
-                                </div>
-                                <p>{message.text}</p>
-                              </article>
-                            </React.Fragment>
-                          ))
-                        ) : (
-                          <div className="chat-welcome">
-                            <span className="welcome-mark">
-                              <Leaf size={36} />
-                            </span>
-                            <h2>{isAssistant ? `Hey, ${state.me.name}.` : `# ${thread.title}`}</h2>
-                            <p>
-                              {isAssistant
-                                ? 'A little less to remember. What’s on your mind?'
-                                : 'A space for the two of you. Mention @assistant when you want a hand.'}
-                            </p>
-                            {isAssistant && (
-                              <div className="chat-starters">
-                                {[
-                                  'What’s on today?',
-                                  'What needs following up?',
-                                  'Help me add a household task',
-                                ].map((prompt) => (
-                                  <Button
-                                    variant="outline"
-                                    key={prompt}
-                                    onClick={() => {
-                                      setDraft(prompt);
-                                      composerInput.current?.focus();
-                                    }}
-                                  >
-                                    {prompt}
-                                    <ArrowRight size={15} />
-                                  </Button>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        {chatStatus.previews.length > 0 && (
-                          <div className="chat-proposals">
-                            {chatStatus.previews.map(({ actorId, preview: proposal }) => (
-                              <Card className="chat-proposal" key={proposal.id}>
-                                <div>
-                                  <strong>{proposal.title}</strong>
-                                  <p className="small muted">
-                                    Prepared for {person(actorId)}. Nothing changes until confirmed.
-                                  </p>
-                                </div>
-                                <Button
-                                  variant="outline"
-
-                                  disabled={busy || !connected || actorId !== state.me.id}
-                                  onClick={() =>
-                                    reviewPreview(
-                                      state.previews.find((item) => item.id === proposal.id) ??
-                                        proposal,
-                                    )
-                                  }
-                                >
-                                  Review change
-                                </Button>
-                              </Card>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      {chatStatus.error && (
-                        <Alert role="status" className="chat-error">
-                          <AlertDescription>
-                            {chatStatus.error}{' '}
-                            <a
-                              href="https://chatgpt.com/#settings/Usage"
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              Manage usage
-                            </a>
-                          </AlertDescription>
-                        </Alert>
-                      )}
-                      <div className="typing-status">
-                        {chatStatus.running && 'Our day assistant is thinking… '}
-                        {state.presence
-                          .filter((p) => p.threadId === thread.id && p.userId !== state.me.id)
-                          .map((p) => `${person(p.userId)} is ${p.typing ? 'typing…' : 'here'}`)
-                          .join(' · ')}
-                      </div>
-                      <form
-                        className="composer"
-                        aria-busy={busy}
-                        onSubmit={async (event) => {
-                          event.preventDefault();
-                          if (!draft.trim() || busy) return;
-                          const submitted = draft;
-                          const text = submitted.trim();
-                          const target = thread.id;
-                          const actorId = activeLogin.current;
-                          const prior = messageRequest.current;
-                          const requestId =
-                            prior?.threadId === target && prior.text === text
-                              ? prior.requestId
-                              : crypto.randomUUID();
-                          messageRequest.current = { requestId, threadId: target, text };
-                          // Results apply only while the same login still shows this thread.
-                          const current = () =>
-                            activeLogin.current === actorId && visibleThread.current === target;
-                          setBusy(true);
-                          setError('');
-                          try {
-                            await api(`/threads/${target}/messages`, {
-                              text,
-                              requestId,
-                              askAssistant:
-                                isAssistant || askChannelAssistant || mentionsAssistant(text),
-                            });
-                            if (messageRequest.current?.requestId === requestId)
-                              messageRequest.current = null;
-                            if (!current()) return;
-                            // Clear only what was sent; keep anything typed while it was sending.
-                            setDraft((latest) =>
-                              latest === submitted
-                                ? ''
-                                : latest.startsWith(submitted)
-                                  ? latest.slice(submitted.length).trimStart()
-                                  : latest,
-                            );
-                            if (draftValue.current === submitted && composerInput.current)
-                              composerInput.current.style.height = 'auto';
-                            followMessages.current = true;
-                            const [value, assistant] = await Promise.all([
-                              api<Message[]>(`/threads/${target}/messages`),
-                              api<ChatStatus>(`/threads/${target}/assistant`),
-                            ]);
-                            if (!current()) return;
-                            setMessages(value);
-                            setChatStatus(assistant);
-                          } catch (problem) {
-                            if (current()) setError((problem as Error).message);
-                          } finally {
-                            if (activeLogin.current === actorId) setBusy(false);
-                          }
-                        }}
-                      >
-                        {!isAssistant && (
-                          <div className="ask-assistant-row">
-                            <Label className="ask-assistant-toggle">
-                              <Switch
-                                checked={askChannelAssistant}
-                                onCheckedChange={setAskChannelAssistant}
-                              />
-                              <span>Ask Our day</span>
-                            </Label>
-                            <span className="small muted" role="status">
-                              {askChannelAssistant || mentionsAssistant(draft)
-                                ? `${askChannelAssistant ? '' : '@assistant mentioned · '}Our day will reply`
-                                : ''}
-                            </span>
-                          </div>
-                        )}
-                        <div className="composer-input-row">
-                          <Textarea
-                            ref={composerInput}
-                            aria-label="Message"
-                            placeholder={
-                              isAssistant ? 'Message Our day…' : `Message #${thread.title}…`
-                            }
-                            value={draft}
-                            onChange={(event) => {
-                              setDraft(event.target.value);
-                              event.target.style.height = 'auto';
-                              event.target.style.height = `${Math.min(140, event.target.scrollHeight)}px`;
-                              lastTyping.current = Date.now();
-                            }}
-                            rows={1}
-                          />
-                          <Button
-                            variant="default"
-                            size="icon"
-                            className="send-button"
-                            type="submit"
-                            aria-label="Send message"
-                            disabled={busy || !connected || !draft.trim()}
-                          >
-                            <Send size={18} />
-                          </Button>
-                        </div>
-                      </form>
-                    </>
-                  ) : (
-                    <Empty
-                      icon={<MessageCircle size={30} />}
-                      title="Opening your assistant…"
-                      text="Your conversation is being prepared."
-                    />
-                  )}
-                </Card>
-              </div>
-            </>
-          )}
-          {page === 'calendar' && (
-            <CalendarView
-              calendar={state.calendar}
-              zone={zone}
-              busy={busy || !connected}
-              onNew={(day) => {
-                setEventDate(day);
-                setEventForm('new');
-              }}
-              onEdit={setEventForm}
-              onRefresh={() => {
-                setBusy(true);
-                void api('/calendar/refresh', {})
-                  .then(() => refresh())
-                  .catch((problem) => setError((problem as Error).message))
-                  .finally(() => setBusy(false));
-              }}
-            />
-          )}
-          {page === 'settings' && (
-            <>
-              <div className="eyebrow">YOUR OWN RHYTHM</div>
-              <div className="page-heading">
-                <div>
-                  <h1>Make yourself at home.</h1>
-                  <p>These settings are just for {state.me.name}. Your partner sets their own.</p>
-                </div>
-              </div>
-              <SummarySettings
-                preferences={state.preferences}
-                busy={busy || !connected}
-                onSave={(preferences) =>
-                  void act({
-                    kind: 'preferences.update',
-                    revision: state.preferences.revision,
-                    preferences,
-                  })
-                }
-              />
-              <Card className="settings-card">
-                <h2>
-                  <Bell size={19} /> Phone notifications
-                </h2>
-                <p className="muted">
-                  Task deadlines and daily summaries, even when the app is closed.
-                </p>
-                <PushSettings onError={setError} />
-                <p className="small muted">
-                  Your partner’s confirmed changes appear in Updates and arrive on this device when
-                  notifications are enabled. Appointment alerts also come from Apple Calendar.
-                </p>
-              </Card>
-              <AppearanceSettings />
-              <Card className="settings-card">
-                <h2>
-                  <MessageCircle size={19} /> Household assistant
-                </h2>
-                <p className="muted">
-                  {state.integrations.ai === 'configured'
-                    ? 'Eligible AI requests use the household’s connected ChatGPT plan. Messages in this topic and the household tasks, settings, and appointments the assistant reads are sent to OpenAI. Every proposed change still needs your confirmation.'
-                    : 'The owner can connect ChatGPT from the setup scripts. You can keep using shared messages, tasks, and the calendar meanwhile.'}
-                </p>
-                <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">
-                  Manage ChatGPT usage
-                </a>
-              </Card>
               <Button
                 variant="ghost"
-                className="logout"
-                onClick={async () => {
-                  try {
-                    const registration = await navigator.serviceWorker?.getRegistration();
-                    const subscription = await registration?.pushManager.getSubscription();
-                    if (subscription) {
-                      await api(
-                        '/push/subscription',
-                        { endpoint: subscription.endpoint },
-                        'DELETE',
-                      );
-                      await subscription.unsubscribe();
-                    }
-                    await api('/logout', {});
-                    setState(null);
-                  } catch (problem) {
-                    setError((problem as Error).message);
-                  }
-                }}
+                className="assistant-avatar"
+                onClick={() => setActivityOpen(true)}
+                aria-label="Assistant activity"
               >
-                <LogOut size={17} /> Sign out
+                <Leaf size={24} />
               </Button>
-            </>
-          )}
-        </div>
-        <footer className={`page-footer ${page === 'chat' ? 'chat-footer' : ''}`}>
-          <Leaf size={13} /> A little less to remember. A little more together.
-        </footer>
+              <div className="chat-heading-copy">
+                <h1>{chatTitle}</h1>
+                <Button
+                  variant="ghost"
+                  className="chat-activity"
+                  onClick={() => setActivityOpen(true)}
+                >
+                  {isAssistant ? chatActivity : 'You, your partner & Our day'}
+                  {!isAssistant && <Users size={12} />}
+                </Button>
+              </div>
+              {savedChangesButton}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="chat-glance"
+                aria-label="Open your day"
+                onClick={() => openView('today')}
+              >
+                <CalendarDays size={20} />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="chat-updates"
+                aria-label="Open updates"
+                onClick={() => setShowNotices(true)}
+              >
+                <Bell size={20} />
+                {state.notices.some((notice) => !notice.readAt) && <span className="unread-dot" />}
+              </Button>
+            </div>
+            <div
+              className="messages"
+              role="log"
+              aria-label="Conversation messages"
+              ref={messagesPanel}
+              aria-live="polite"
+              onScroll={() => {
+                const element = messagesPanel.current;
+                if (element)
+                  followMessages.current =
+                    element.scrollHeight - element.scrollTop - element.clientHeight < 100;
+              }}
+            >
+              {messages.length ? (
+                messages.map((message, index) => (
+                  <React.Fragment key={message.id}>
+                    {(index === 0 ||
+                      message.createdAt.slice(0, 10) !==
+                        messages[index - 1].createdAt.slice(0, 10)) && (
+                      <div className="chat-day">
+                        {DateTime.fromISO(message.createdAt).setZone(zone).hasSame(now, 'day')
+                          ? 'Today'
+                          : DateTime.fromISO(message.createdAt)
+                              .setZone(zone)
+                              .toFormat('ccc, d LLL')}
+                      </div>
+                    )}
+                    {startsGroup(index) &&
+                      message.authorId !== state.me.id &&
+                      !(isAssistant && message.authorId === 'assistant') && (
+                        <div className="message-author">{person(message.authorId)}</div>
+                      )}
+                    <article
+                      className={`message ${message.authorId === state.me.id ? 'mine' : ''} ${message.authorId === 'assistant' ? 'from-assistant' : ''} ${startsGroup(index) ? 'group-start' : ''}`}
+                    >
+                      <p>
+                        <span className="sr-only">{person(message.authorId)}: </span>
+                        {message.text}
+                        <time>
+                          {DateTime.fromISO(message.createdAt).setZone(zone).toFormat('HH:mm')}
+                        </time>
+                      </p>
+                    </article>
+                  </React.Fragment>
+                ))
+              ) : (
+                <div className="chat-welcome">
+                  <span className="welcome-mark">
+                    <Leaf size={36} />
+                  </span>
+                  <h2>{isAssistant ? `Hey, ${state.me.name}.` : `# ${thread.title}`}</h2>
+                  <p>
+                    {isAssistant
+                      ? 'A little less to remember. What’s on your mind?'
+                      : 'A space for the two of you. Mention @assistant when you want a hand.'}
+                  </p>
+                  {state.integrations.ai !== 'configured' && (
+                    <p className="small muted">
+                      ChatGPT isn’t connected yet. Your messages will be saved.
+                    </p>
+                  )}
+                  {isAssistant && (
+                    <div className="chat-starters">
+                      {[
+                        'What’s on today?',
+                        'What needs following up?',
+                        'Help me add a household task',
+                      ].map((prompt) => (
+                        <Button
+                          variant="outline"
+                          key={prompt}
+                          onClick={() => {
+                            setDraft(prompt);
+                            composerInput.current?.focus();
+                          }}
+                        >
+                          {prompt}
+                          <ArrowRight size={15} />
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {chatStatus.previews.length > 0 && (
+                <div className="chat-proposals">
+                  {chatStatus.previews.map(({ actorId, preview: proposal }) => (
+                    <Card className="chat-proposal" key={proposal.id}>
+                      <div>
+                        <strong>{proposal.title}</strong>
+                        <p className="small muted">
+                          Prepared for {person(actorId)}. Nothing changes until confirmed.
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+
+                        disabled={busy || !connected || actorId !== state.me.id}
+                        onClick={() =>
+                          reviewPreview(
+                            state.previews.find((item) => item.id === proposal.id) ?? proposal,
+                          )
+                        }
+                      >
+                        Review change
+                      </Button>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </div>
+            {chatStatus.error && (
+              <Alert role="status" className="chat-error">
+                <AlertDescription>
+                  {chatStatus.error}{' '}
+                  <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">
+                    Manage usage
+                  </a>
+                </AlertDescription>
+              </Alert>
+            )}
+            <div className="typing-status">
+              {chatStatus.running && 'Our day assistant is thinking… '}
+              {state.presence
+                .filter((p) => p.threadId === thread.id && p.userId !== state.me.id)
+                .map((p) => `${person(p.userId)} is ${p.typing ? 'typing…' : 'here'}`)
+                .join(' · ')}
+            </div>
+            <form
+              className="composer"
+              aria-busy={busy}
+              onSubmit={async (event) => {
+                event.preventDefault();
+                if (!draft.trim() || busy) return;
+                const submitted = draft;
+                const text = submitted.trim();
+                const target = thread.id;
+                const actorId = activeLogin.current;
+                const prior = messageRequest.current;
+                const requestId =
+                  prior?.threadId === target && prior.text === text
+                    ? prior.requestId
+                    : crypto.randomUUID();
+                messageRequest.current = { requestId, threadId: target, text };
+                // Results apply only while the same login still shows this thread.
+                const current = () =>
+                  activeLogin.current === actorId && visibleThread.current === target;
+                setBusy(true);
+                setError('');
+                try {
+                  await api(`/threads/${target}/messages`, {
+                    text,
+                    requestId,
+                    askAssistant: isAssistant || askChannelAssistant || mentionsAssistant(text),
+                  });
+                  if (messageRequest.current?.requestId === requestId)
+                    messageRequest.current = null;
+                  if (!current()) return;
+                  // Clear only what was sent; keep anything typed while it was sending.
+                  setDraft((latest) =>
+                    latest === submitted
+                      ? ''
+                      : latest.startsWith(submitted)
+                        ? latest.slice(submitted.length).trimStart()
+                        : latest,
+                  );
+                  if (draftValue.current === submitted && composerInput.current)
+                    composerInput.current.style.height = 'auto';
+                  followMessages.current = true;
+                  const [value, assistant] = await Promise.all([
+                    api<Message[]>(`/threads/${target}/messages`),
+                    api<ChatStatus>(`/threads/${target}/assistant`),
+                  ]);
+                  if (!current()) return;
+                  setMessages(value);
+                  setChatStatus(assistant);
+                } catch (problem) {
+                  if (current()) setError((problem as Error).message);
+                } finally {
+                  if (activeLogin.current === actorId) setBusy(false);
+                }
+              }}
+            >
+              {!isAssistant && (
+                <div className="ask-assistant-row">
+                  <Label className="ask-assistant-toggle">
+                    <Switch
+                      checked={askChannelAssistant}
+                      onCheckedChange={setAskChannelAssistant}
+                    />
+                    <span>Ask Our day</span>
+                  </Label>
+                  <span className="small muted" role="status">
+                    {askChannelAssistant || mentionsAssistant(draft)
+                      ? `${askChannelAssistant ? '' : '@assistant mentioned · '}Our day will reply`
+                      : ''}
+                  </span>
+                </div>
+              )}
+              <div className="composer-input-row">
+                <Textarea
+                  ref={composerInput}
+                  aria-label="Message"
+                  placeholder={isAssistant ? 'Message Our day…' : `Message #${thread.title}…`}
+                  value={draft}
+                  onChange={(event) => {
+                    setDraft(event.target.value);
+                    event.target.style.height = 'auto';
+                    event.target.style.height = `${Math.min(140, event.target.scrollHeight)}px`;
+                    lastTyping.current = Date.now();
+                  }}
+                  rows={1}
+                />
+                <Button
+                  variant="default"
+                  size="icon"
+                  className="send-button"
+                  type="submit"
+                  aria-label="Send message"
+                  disabled={busy || !connected || !draft.trim()}
+                >
+                  <Send size={18} />
+                </Button>
+              </div>
+            </form>
+          </>
+        ) : (
+          <Empty
+            icon={<MessageCircle size={30} />}
+            title="Opening your assistant…"
+            text="Your conversation is being prepared."
+          />
+        )}
       </main>
-      <nav className="mobile-nav" aria-label="Main navigation">
-        {navigation.map((item) => (
-          <Button
-            variant="ghost"
-            className={`${page === item.id ? 'active' : ''} nav-${item.id}`}
-            aria-current={page === item.id ? 'page' : undefined}
-            key={item.id}
-            onClick={() => setPage(item.id)}
-          >
-            <item.icon size={21} />
-            <span>{item.id === 'chat' ? 'Chat' : item.title}</span>
-          </Button>
-        ))}
-      </nav>
+      {page !== 'chat' && (
+        <section className="view-panel" aria-label={page === 'settings' ? 'Settings' : 'Your day'}>
+          <div className="view-header">
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Back to chat"
+              onClick={() => setPage('chat')}
+            >
+              <ArrowLeft size={20} />
+            </Button>
+            <strong className={page === 'settings' ? '' : 'view-title'}>
+              {page === 'settings' ? 'Settings' : views.find((item) => item.id === page)?.title}
+            </strong>
+            {page !== 'settings' && (
+              <div className="view-tabs" role="group" aria-label="Views">
+                {views.map((item) => (
+                  <Button
+                    variant="ghost"
+                    key={item.id}
+                    aria-pressed={page === item.id}
+                    onClick={() => setPage(item.id)}
+                  >
+                    {item.title}
+                  </Button>
+                ))}
+              </div>
+            )}
+            <div className="panel-actions">
+              {savedChangesButton}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="chat-updates"
+                aria-label="Open updates"
+                onClick={() => setShowNotices(true)}
+              >
+                <Bell size={20} />
+                {state.notices.some((notice) => !notice.readAt) && <span className="unread-dot" />}
+              </Button>
+            </div>
+          </div>
+          <div className="panel-banners">{banners}</div>
+          <div className="page">
+            {page === 'today' && (
+              <>
+                <div className="eyebrow">
+                  <Sun size={15} /> {now.toFormat('cccc, d LLLL').toUpperCase()}
+                </div>
+                <div className="page-heading">
+                  <div>
+                    <h1>
+                      {now.hour < 12
+                        ? 'Good morning'
+                        : now.hour < 18
+                          ? 'Good afternoon'
+                          : 'Good evening'}
+                      , {state.me.name}.
+                    </h1>
+                    <p>Make a little room for what matters.</p>
+                  </div>
+                  <Button
+                    variant="default"
+
+                    onClick={() => setTaskForm('new')}
+                    disabled={!connected}
+                  >
+                    <Plus size={17} /> Add task
+                  </Button>
+                </div>
+                <div className="overview">
+                  <div>
+                    <span className="overview-icon green">
+                      <ClipboardList size={20} />
+                    </span>
+                    <strong>
+                      {
+                        open.filter((t) => t.ownerId === state.me.id && due(t)?.hasSame(now, 'day'))
+                          .length
+                      }
+                    </strong>
+                    <span>Due today</span>
+                  </div>
+                  <div>
+                    <span className="overview-icon peach">
+                      <Repeat2 size={20} />
+                    </span>
+                    <strong>
+                      {open.filter((t) => t.ownerId === state.me.id && overdue(t)).length}
+                    </strong>
+                    <span>Need a follow-up</span>
+                  </div>
+                  <div>
+                    <span className="overview-icon purple">
+                      <Users size={20} />
+                    </span>
+                    <strong>{open.filter((t) => t.category === 'household').length}</strong>
+                    <span>Household tasks</span>
+                  </div>
+                </div>
+                <div className="today-grid">
+                  <Card className="focus-card">
+                    <div className="section-heading">
+                      <div>
+                        <span className="eyebrow">ONE THING AT A TIME</span>
+                        <h2>Your focus today</h2>
+                      </div>
+                      <Button variant="ghost" onClick={() => setPage('tasks')}>
+                        All tasks <ArrowRight size={15} />
+                      </Button>
+                    </div>
+                    <TaskCollection value={filter} onValueChange={setFilter}>
+                      {rows(today)}
+                    </TaskCollection>
+                  </Card>
+                  <aside className="day-aside">
+                    <CalendarCard
+                      calendar={state.calendar}
+                      zone={zone}
+                      open={() => setPage('calendar')}
+                    />
+                    <Card className="summary-card">
+                      <Sunset size={24} />
+                      <h3>A moment to reset.</h3>
+                      <p>
+                        {state.preferences.evening.enabled
+                          ? `Your evening summary is set for ${state.preferences.evening.time}.`
+                          : 'Your evening summary is switched off.'}
+                      </p>
+                      <Button variant="ghost" onClick={() => setPage('settings')}>
+                        Make it yours <ArrowRight size={14} />
+                      </Button>
+                    </Card>
+                  </aside>
+                </div>
+              </>
+            )}
+            {page === 'tasks' && (
+              <>
+                <div className="eyebrow">A PLACE FOR EVERYTHING</div>
+                <div className="page-heading">
+                  <div>
+                    <h1>A little less on your mind.</h1>
+                    <p>One owner for the follow-up. Either of you can lend a hand.</p>
+                  </div>
+                  <Button
+                    variant="default"
+
+                    onClick={() => setTaskForm('new')}
+                    disabled={!connected}
+                  >
+                    <Plus size={17} /> Add task
+                  </Button>
+                </div>
+                <Card className="full-card">
+                  <div className="section-heading">
+                    <h2>
+                      Open tasks <Badge variant="secondary">{selected.length}</Badge>
+                    </h2>
+                  </div>
+                  <TaskCollection value={filter} onValueChange={setFilter}>
+                    {rows(selected)}
+                  </TaskCollection>
+                </Card>
+                {state.tasks.some((t) => t.status === 'completed') && (
+                  <Disclosure
+                    className="completed-section"
+                    title={
+                      <>
+                        Completed tasks ·{' '}
+                        {state.tasks.filter((t) => t.status === 'completed').length}
+                      </>
+                    }
+                  >
+                    {relevant(state.tasks.filter((t) => t.status === 'completed')).map((task) => (
+                      <div className="completed-row" key={task.id}>
+                        <Check size={16} />
+                        <span>{task.title}</span>
+                        <small>{person(task.completedBy || '')}</small>
+                      </div>
+                    ))}
+                  </Disclosure>
+                )}
+              </>
+            )}
+            {page === 'calendar' && (
+              <CalendarView
+                calendar={state.calendar}
+                zone={zone}
+                busy={busy || !connected}
+                onNew={(day) => {
+                  setEventDate(day);
+                  setEventForm('new');
+                }}
+                onEdit={setEventForm}
+                onRefresh={() => {
+                  setBusy(true);
+                  void api('/calendar/refresh', {})
+                    .then(() => refresh())
+                    .catch((problem) => setError((problem as Error).message))
+                    .finally(() => setBusy(false));
+                }}
+              />
+            )}
+            {page === 'settings' && (
+              <>
+                <div className="eyebrow">YOUR OWN RHYTHM</div>
+                <div className="page-heading">
+                  <div>
+                    <h1>Make yourself at home.</h1>
+                    <p>These settings are just for {state.me.name}. Your partner sets their own.</p>
+                  </div>
+                </div>
+                <SummarySettings
+                  preferences={state.preferences}
+                  busy={busy || !connected}
+                  onSave={(preferences) =>
+                    void act({
+                      kind: 'preferences.update',
+                      revision: state.preferences.revision,
+                      preferences,
+                    })
+                  }
+                />
+                <Card className="settings-card">
+                  <h2>
+                    <Bell size={19} /> Phone notifications
+                  </h2>
+                  <p className="muted">
+                    Task deadlines and daily summaries, even when the app is closed.
+                  </p>
+                  <PushSettings onError={setError} />
+                  <p className="small muted">
+                    Your partner’s confirmed changes appear in Updates and arrive on this device
+                    when notifications are enabled. Appointment alerts also come from Apple
+                    Calendar.
+                  </p>
+                </Card>
+                <AppearanceSettings />
+                <Card className="settings-card">
+                  <h2>
+                    <MessageCircle size={19} /> Household assistant
+                  </h2>
+                  <p className="muted">
+                    {state.integrations.ai === 'configured'
+                      ? 'Eligible AI requests use the household’s connected ChatGPT plan. Messages in this topic and the household tasks, settings, and appointments the assistant reads are sent to OpenAI. Every proposed change still needs your confirmation.'
+                      : 'The owner can connect ChatGPT from the setup scripts. You can keep using shared messages, tasks, and the calendar meanwhile.'}
+                  </p>
+                  <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">
+                    Manage ChatGPT usage
+                  </a>
+                </Card>
+                <Button
+                  variant="ghost"
+                  className="logout"
+                  onClick={async () => {
+                    try {
+                      const registration = await navigator.serviceWorker?.getRegistration();
+                      const subscription = await registration?.pushManager.getSubscription();
+                      if (subscription) {
+                        await api(
+                          '/push/subscription',
+                          { endpoint: subscription.endpoint },
+                          'DELETE',
+                        );
+                        await subscription.unsubscribe();
+                      }
+                      await api('/logout', {});
+                      setState(null);
+                    } catch (problem) {
+                      setError((problem as Error).message);
+                    }
+                  }}
+                >
+                  <LogOut size={17} /> Sign out
+                </Button>
+              </>
+            )}
+          </div>
+        </section>
+      )}
       {channelsOpen && (
         <Modal title="Your spaces" drawer close={() => setChannelsOpen(false)}>
           {channelNavigation}
@@ -1352,6 +1371,16 @@ function App() {
               : 'Ask about your day, update a task, or plan an appointment.'}
           </p>
           <p>{chatStatus.previews.length} changes waiting for your household to review.</p>
+          <p className="small muted">
+            {state.integrations.ai === 'configured'
+              ? 'Using the connected ChatGPT plan.'
+              : 'ChatGPT isn’t connected yet. Your messages will be saved.'}
+          </p>
+          {state.integrations.ai === 'configured' && (
+            <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">
+              Manage ChatGPT usage
+            </a>
+          )}
           {chatStatus.error && <p className="field-error">{chatStatus.error}</p>}
           <Button
             variant="ghost"

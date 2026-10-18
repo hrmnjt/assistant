@@ -1,10 +1,6 @@
-import { test, expect } from './household-fixture';
+import { test, expect, navigate } from './household-fixture';
 import type { Page } from '@playwright/test';
 
-const nav = (page: Page, name: string) =>
-  page
-    .getByRole('navigation', { name: 'Main navigation' })
-    .getByRole('button', { name, exact: true });
 /** Hold the next message send until released, as a slow phone connection would. */
 async function slowSends(page: Page) {
   let hold: Promise<void> | undefined;
@@ -90,7 +86,7 @@ test('an @assistant mention anywhere in a channel message asks Our day, and says
   await page.goto('/');
   const input = page.getByLabel('Message', { exact: true });
   await expect(input).toBeVisible();
-  const channels = page.getByRole('button', { name: 'Open channels' });
+  const channels = page.getByRole('button', { name: 'Open menu' });
   if (await channels.isVisible()) await channels.click();
   await page.getByRole('button', { name: /Weekend plans/ }).click();
   const lastSend = () =>
@@ -112,7 +108,7 @@ test('a task changed by the other spouse reloads into the editor with the edits 
   household,
 }) => {
   await page.goto('/');
-  await nav(page, 'Tasks').click();
+  await navigate(page, 'Tasks');
   await page.getByRole('button', { name: 'Water the plants', exact: true }).click();
   const title = page.getByLabel('What needs doing?');
   await title.fill('Water the balcony plants');
@@ -139,7 +135,7 @@ test('a task changed by the other spouse reloads into the editor with the edits 
 
 test('a task deleted during editing cannot be submitted again', async ({ page, household }) => {
   await page.goto('/');
-  await nav(page, 'Tasks').click();
+  await navigate(page, 'Tasks');
   await page.getByRole('tab', { name: 'Everything' }).click();
   await page.getByRole('button', { name: 'Book the car service', exact: true }).click();
   household.state.tasks = household.state.tasks.filter((task) => task.id !== 'task-2');
@@ -154,7 +150,7 @@ test('an appointment changed in Apple Calendar reloads with its current ETag', a
   household,
 }) => {
   await page.goto('/');
-  await nav(page, 'Calendar').click();
+  await navigate(page, 'Calendar');
   await page.getByRole('button', { name: /19:00.*Dinner together/ }).click();
   const title = page.getByLabel('Appointment', { exact: true });
   await title.fill('Dinner with friends');
