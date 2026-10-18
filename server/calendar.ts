@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { notifyPartner } from './changes.js';
 import type {
   CalendarEvent,
+  CalendarOutcome,
+  ConfirmationResult,
   CalendarFields,
   CalendarMutation,
   CalendarSnapshot,
@@ -69,6 +71,15 @@ type StoredOperation = {
   fields: CalendarFields | null;
   uid: string;
 };
+
+export class CalendarOutcomeError extends DomainError {
+  constructor(
+    readonly calendarOutcome: CalendarOutcome,
+    status: number,
+  ) {
+    super(calendarOutcome.message, status);
+  }
+}
 
 export class CalendarService {
   private state: CalendarSnapshot = {
@@ -320,24 +331,70 @@ export class CalendarService {
   cancel(actorId: string, previewId: string) {
     const row = this.db.sql
       .prepare(
-        'SELECT p.applied_at,c.attempted,c.lease_until FROM previews p JOIN calendar_operations c ON c.preview_id=p.id WHERE p.id=? AND p.user_id=?',
+        'SELECT p.applied_at,p.result,c.attempted,c.lease_until FROM previews p JOIN calendar_operations c ON c.preview_id=p.id WHERE p.id=? AND p.user_id=?',
       )
       .get(previewId, actorId);
-    if (
-      row &&
-      row.applied_at === null &&
-      (row.attempted || Number(row.lease_until) > this.clock().getTime())
-    ) {
-      throw new DomainError(
-        'This calendar change may already be in progress. Retry confirmation to resolve its result before dismissing it.',
-        409,
-      );
+    if (row && row.applied_at === null) {
+      if (Number(row.lease_until) > this.clock().getTime())
+        throw new DomainError('This calendar confirmation is in progress. Please wait.', 409);
+      if (row.attempted) {
+        const result: ConfirmationResult | null = row.result
+          ? JSON.parse(String(row.result))
+          : null;
+        throw new CalendarOutcomeError(
+          result?.calendarOutcome ?? {
+            status: 'unknown',
+            message:
+              'This write was already attempted. Check its result (read only), or explicitly dismiss the uncertain result; cancellation cannot undo it.',
+          },
+          409,
+        );
+      }
     }
     this.db.sql
       .prepare('DELETE FROM previews WHERE id=? AND user_id=? AND applied_at IS NULL')
       .run(previewId, actorId);
   }
-  async confirm(actorId: string, previewId: string) {
+  // Dismissal acknowledges uncertainty; it never cancels or undoes a remote write.
+  // Keep the operation and its receipt so a reload/retry cannot make it writable again.
+  dismiss(actorId: string, previewId: string) {
+    this.db.transaction(() => {
+      const row = this.db.sql
+        .prepare(
+          'SELECT p.result,c.attempted,c.lease_until FROM previews p JOIN calendar_operations c ON c.preview_id=p.id WHERE p.id=? AND p.user_id=?',
+        )
+        .get(previewId, actorId);
+      if (!row) throw new DomainError('This calendar preview is unavailable.', 404);
+      if (Number(row.lease_until) > this.clock().getTime())
+        throw new DomainError(
+          'Wait for the active confirmation before dismissing its result.',
+          409,
+        );
+      const result = row.result ? JSON.parse(String(row.result)) : {};
+      if (!row.attempted && !result.calendarOutcome)
+        throw new DomainError('Cancel this unconfirmed preview instead.', 409);
+      result.dismissedAt ??= this.clock().toISOString();
+      this.db.sql
+        .prepare('UPDATE previews SET result=? WHERE id=?')
+        .run(JSON.stringify(result), previewId);
+    });
+  }
+  private recordOutcome(
+    previewId: string,
+    operation: StoredOperation,
+    outcome: CalendarOutcome,
+  ): ConfirmationResult {
+    const result: ConfirmationResult = {
+      ok: outcome.status === 'applied',
+      targetId: eventId(operation.url, operation.uid),
+      calendarOutcome: outcome,
+    };
+    this.db.sql
+      .prepare('UPDATE previews SET result=? WHERE id=?')
+      .run(JSON.stringify(result), previewId);
+    return result;
+  }
+  async confirm(actorId: string, previewId: string): Promise<ConfirmationResult> {
     if (!this.transport) throw new DomainError('The shared calendar is not connected yet.', 503);
     const claim = this.db.transaction(() => {
       const row = this.db.sql
@@ -346,10 +403,22 @@ export class CalendarService {
         )
         .get(previewId, actorId);
       if (!row) throw new DomainError('This calendar preview is unavailable.', 404);
-      if (row.applied_at !== null) return { done: JSON.parse(String(row.result)) };
+      if (row.applied_at !== null)
+        return { done: JSON.parse(String(row.result)) as ConfirmationResult };
+      const previous: ConfirmationResult | null = row.result
+        ? JSON.parse(String(row.result))
+        : null;
+      if (previous?.dismissedAt)
+        throw new DomainError(
+          'This result was dismissed. Review the current calendar before preparing a new change.',
+          409,
+        );
+      if (
+        previous?.calendarOutcome &&
+        ['conflicted', 'failed'].includes(previous.calendarOutcome.status)
+      )
+        throw new CalendarOutcomeError(previous.calendarOutcome, 409);
       const expired = Number(row.expires_at) <= this.clock().getTime();
-      if (expired && !row.attempted)
-        throw new DomainError('This preview expired. Review a new preview.', 409);
       if (Number(row.lease_until) > this.clock().getTime())
         throw new DomainError(
           'This confirmation is already in progress. Please wait before retrying.',
@@ -365,45 +434,71 @@ export class CalendarService {
         expired,
       };
     });
-    if ('done' in claim) return claim.done;
+    if (claim.done) return claim.done;
     const operation = claim.operation!;
+    let attempted = claim.previouslyAttempted;
+    const reject = (status: 'failed' | 'conflicted', message: string): never => {
+      const outcome = { status, message };
+      this.recordOutcome(previewId, operation, outcome);
+      throw new CalendarOutcomeError(outcome, 409);
+    };
     try {
+      if (claim.expired && !attempted)
+        reject(
+          'failed',
+          'This preview expired before a write was attempted. Review a new preview.',
+        );
       const current = await this.transport.get(operation.url);
-      const alreadyWritten =
-        operation.fields && current && hasOperation(current, previewId, operation.fields);
-      const alreadyDeleted =
-        operation.kind === 'calendar.delete' && claim.previouslyAttempted && !current;
+      const alreadyWritten = current && hasOperation(current, previewId, operation.uid);
+      const alreadyDeleted = operation.kind === 'calendar.delete' && attempted && !current;
+      if (attempted && !alreadyWritten && !alreadyDeleted) {
+        const result = this.recordOutcome(previewId, operation, {
+          status: 'unknown',
+          message:
+            'The original write may have succeeded, but the calendar no longer proves its result. No further write was sent. Review the current calendar, then dismiss this result or check again.',
+        });
+        await this.sync();
+        return result;
+      }
       if (!alreadyWritten && !alreadyDeleted) {
-        if (claim.expired)
-          throw new DomainError(
-            'The previous attempt was not applied. This preview expired; review a new one.',
-            409,
-          );
         if (operation.kind === 'calendar.create') {
           if (current)
-            throw new DomainError(
-              'This appointment resource already exists. Refresh the calendar.',
-              409,
+            reject(
+              'conflicted',
+              'This appointment resource already exists. Refresh the calendar and review a new preview.',
             );
           this.db.sql
             .prepare('UPDATE calendar_operations SET attempted=1 WHERE preview_id=?')
             .run(previewId);
+          attempted = true;
           await this.transport.put(operation.url, operation.data!, null);
         } else {
           if (!current || current.etag !== operation.etag)
-            throw new DomainError(
+            reject(
+              'conflicted',
               'This appointment changed in iCloud. Refresh and review a new preview.',
-              409,
             );
           this.db.sql
             .prepare('UPDATE calendar_operations SET attempted=1 WHERE preview_id=?')
             .run(previewId);
+          attempted = true;
           if (operation.kind === 'calendar.update')
             await this.transport.put(operation.url, operation.data!, operation.etag);
           else await this.transport.remove(operation.url, operation.etag!);
         }
       }
-      const result = { ok: true, targetId: eventId(operation.url, operation.uid) };
+      const result: ConfirmationResult = {
+        ok: true,
+        targetId: eventId(operation.url, operation.uid),
+        calendarOutcome: {
+          status: 'applied',
+          message: alreadyDeleted
+            ? 'The appointment is absent from iCloud. No further delete was sent.'
+            : alreadyWritten
+              ? 'iCloud retains the receipt for this write. Later calendar edits have been preserved.'
+              : 'iCloud accepted this change.',
+        },
+      };
       this.db.transaction(() => {
         this.db.sql
           .prepare('UPDATE previews SET applied_at=?,result=? WHERE id=?')
@@ -427,16 +522,29 @@ export class CalendarService {
       await this.sync();
       return result;
     } catch (error) {
+      if (error instanceof CalendarOutcomeError) throw error;
+      // A definitive precondition rejection on the first attempt proves no write
+      // occurred. A prior lost response must never be reclassified this way.
       if (!claim.previouslyAttempted && error instanceof DomainError && error.status === 409) {
         this.db.sql
           .prepare('UPDATE calendar_operations SET attempted=0 WHERE preview_id=?')
           .run(previewId);
+        reject('conflicted', error.message);
       }
-      if (error instanceof DomainError) throw error;
-      throw new DomainError(
-        'The calendar result could not be confirmed. Retry this same preview to check its result before making another change.',
-        503,
-      );
+      if (!attempted)
+        throw error instanceof DomainError
+          ? error
+          : new DomainError(
+              'The calendar could not be checked. No write was attempted. Please retry later.',
+              503,
+            );
+      const outcome: CalendarOutcome = {
+        status: 'unknown',
+        message:
+          'The calendar result is unknown. Check this same preview to read its result before making another change. Checking will not send another write.',
+      };
+      this.recordOutcome(previewId, operation, outcome);
+      throw new CalendarOutcomeError(outcome, 503);
     } finally {
       this.db.sql
         .prepare('UPDATE calendar_operations SET lease_until=0 WHERE preview_id=?')

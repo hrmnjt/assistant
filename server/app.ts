@@ -6,7 +6,7 @@ import { DomainError, Household } from './domain.js';
 import type { Conversations } from './conversations.js';
 import { validPushEndpoint, type Reminders } from './reminders.js';
 import type { Person, Snapshot } from '../src/types.js';
-import type { CalendarService } from './calendar.js';
+import { CalendarOutcomeError, type CalendarService } from './calendar.js';
 
 export function createApp(
   db: Database,
@@ -92,6 +92,16 @@ export function createApp(
         ? await calendar.confirm(actorId, id)
         : household.confirm(actorId, id),
     );
+  });
+  app.post('/api/previews/:id/dismiss', (req, res) => {
+    z.object({ acknowledgeUncertain: z.literal(true) })
+      .strict()
+      .parse(req.body);
+    const id = String(req.params.id);
+    if (!calendar?.isCalendarPreview(id, res.locals.me.id))
+      throw new DomainError('This calendar preview is unavailable.', 404);
+    calendar.dismiss(res.locals.me.id, id);
+    res.json({ ok: true });
   });
   app.delete('/api/previews/:id', (req, res) => {
     const id = String(req.params.id);
@@ -204,7 +214,12 @@ export function createApp(
   app.use(
     (error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
       if (error instanceof DomainError) {
-        res.status(error.status).json({ error: error.message });
+        res.status(error.status).json({
+          error: error.message,
+          ...(error instanceof CalendarOutcomeError
+            ? { calendarOutcome: error.calendarOutcome }
+            : {}),
+        });
         return;
       }
       if (error instanceof z.ZodError) {

@@ -29,6 +29,8 @@ import {
 } from 'lucide-react';
 import type {
   CalendarEvent,
+  CalendarOutcome,
+  ConfirmationResult,
   ChatStatus,
   Category,
   Message,
@@ -78,6 +80,7 @@ async function api<T>(
   if (!response.ok)
     throw Object.assign(new Error(value.error || 'Unable to reach the household server.'), {
       status: response.status,
+      calendarOutcome: value.calendarOutcome,
     });
   return value;
 }
@@ -227,17 +230,39 @@ function App() {
         setPreviewError('');
       })
       .catch((problem) => {
-        setPreviewError((problem as Error).message);
-        setPreviewRetryable(true);
+        const outcome = (problem as { calendarOutcome?: CalendarOutcome }).calendarOutcome;
+        if (outcome) setPreview({ ...preview, calendarOutcome: outcome });
+        setPreviewError(outcome ? '' : (problem as Error).message);
+        setPreviewRetryable(!outcome || outcome.status === 'unknown');
       })
       .finally(() => setBusy(false));
   }, [preview, busy]);
+  async function dismissPreview() {
+    if (!preview || busy) return;
+    setBusy(true);
+    try {
+      await api(`/previews/${preview.id}/dismiss`, { acknowledgeUncertain: true });
+      setPreview(null);
+      setPreviewError('');
+      await refresh();
+    } catch (problem) {
+      setPreviewError((problem as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function confirm() {
     if (!preview) return;
     setBusy(true);
     setPreviewError('');
     try {
-      const result = await api<{ targetId: string }>(`/previews/${preview.id}/confirm`, {});
+      const result = await api<ConfirmationResult>(`/previews/${preview.id}/confirm`, {});
+      if (!result.ok && result.calendarOutcome) {
+        setPreview({ ...preview, calendarOutcome: result.calendarOutcome });
+        setPreviewRetryable(result.calendarOutcome.status === 'unknown');
+        await refresh();
+        return;
+      }
       if (threadForm) setThreadId(result.targetId);
       setPreview(null);
       setTaskForm(null);
@@ -245,8 +270,14 @@ function App() {
       setThreadForm(false);
       await refresh();
     } catch (problem) {
-      setPreviewError((problem as Error).message);
-      setPreviewRetryable(((problem as { status?: number }).status ?? 500) >= 500);
+      const outcome = (problem as { calendarOutcome?: CalendarOutcome }).calendarOutcome;
+      if (outcome) setPreview({ ...preview, calendarOutcome: outcome });
+      setPreviewError(outcome ? '' : (problem as Error).message);
+      setPreviewRetryable(
+        outcome
+          ? outcome.status === 'unknown'
+          : ((problem as { status?: number }).status ?? 500) >= 500,
+      );
     } finally {
       setBusy(false);
     }
@@ -1308,7 +1339,10 @@ function App() {
         </Modal>
       )}
       {preview && (
-        <Modal title={preview.title} close={cancelPreview}>
+        <Modal
+          title={preview.title}
+          close={preview.calendarOutcome ? () => void dismissPreview() : cancelPreview}
+        >
           <ConfirmationDetails
             preview={preview}
             format={(value, label) => formatDetail(value, label, zone)}
@@ -1318,19 +1352,37 @@ function App() {
               {previewError}
             </p>
           )}
-          <p className="small muted">Nothing changes until you confirm.</p>
+          <p className="small muted" role={preview.calendarOutcome ? 'status' : undefined}>
+            {preview.calendarOutcome?.message ?? 'Nothing changes until you confirm.'}
+          </p>
+          {preview.calendarOutcome?.status === 'unknown' && (
+            <p className="small muted">
+              Dismissal only hides this result; it does not undo a calendar change. Dismiss to
+              return to the app, then review the Calendar tab before making a replacement proposal.
+            </p>
+          )}
           <div className="dialog-actions">
-            <Button variant="outline" onClick={cancelPreview} disabled={busy}>
-              Go back
+            <Button
+              variant="outline"
+              onClick={preview.calendarOutcome ? () => void dismissPreview() : cancelPreview}
+              disabled={busy}
+            >
+              {preview.calendarOutcome ? 'Dismiss result' : 'Go back'}
             </Button>
             <Button
-              variant="default"
-
               onClick={() => void confirm()}
-              disabled={busy || !connected || (Boolean(previewError) && !previewRetryable)}
+              disabled={busy || !connected || !previewRetryable}
             >
               <Check size={16} />
-              {busy ? 'Saving…' : 'Confirm change'}
+              {busy
+                ? preview.calendarOutcome
+                  ? 'Checking…'
+                  : 'Saving…'
+                : preview.calendarOutcome?.status === 'unknown'
+                  ? 'Check result (read only)'
+                  : preview.calendarOutcome
+                    ? 'New preview required'
+                    : 'Confirm change'}
             </Button>
           </div>
         </Modal>
