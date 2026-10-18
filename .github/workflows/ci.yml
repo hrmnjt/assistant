@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   checks:
-    name: Tests, build, and Cloudflare bundle
+    name: Typecheck, Worker bundle, and tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -28,9 +28,8 @@ jobs:
           path: .cache/npm
           key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npm ci --cache ./.cache/npm --ignore-scripts
+      - run: npm run check
       - run: npm test
-      - run: npm run build
-      - run: npm run cloudflare:check
 
   browser:
     name: Browser checks
