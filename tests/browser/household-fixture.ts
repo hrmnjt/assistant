@@ -235,13 +235,16 @@ export class HouseholdFixture {
 }
 
 export const test = base.extend<{ household: HouseholdFixture }>({
-  household: async ({ page }, use) => {
-    const household = new HouseholdFixture();
-    const errors: string[] = [];
-    page.on('pageerror', (error) => errors.push(error.message));
-    await household.install(page);
-    await use(household);
-    expect(errors, 'No uncaught browser errors').toEqual([]);
-  },
+  household: [
+    async ({ page }, use) => {
+      const household = new HouseholdFixture();
+      const errors: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      await household.install(page);
+      await use(household);
+      expect(errors, 'No uncaught browser errors').toEqual([]);
+    },
+    { auto: true },
+  ],
 });
 export { expect };

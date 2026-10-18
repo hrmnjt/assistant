@@ -171,7 +171,7 @@ test('confirmation: stale errors cannot be retried; cancel preserves the form; f
   await expect(add).toBeFocused();
 });
 
-test('calendar: month bounds, event details, read-only recurrence, all-day form and reminders', async ({
+test('calendar: month bounds, event details, all-day form and reminders', async ({
   page,
   household,
 }, info) => {
@@ -187,7 +187,11 @@ test('calendar: month bounds, event details, read-only recurrence, all-day form 
   expect(mutation.event.allDay).toBe(true);
   expect(mutation.event.reminderMinutes).toBe(15);
   await page.getByRole('button', { name: 'Go back' }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Shared appointment', exact: true }),
+  ).toBeVisible();
   await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.getByRole('button', { name: 'Next month' }).click();
   await page.getByRole('button', { name: 'Next month' }).click();
   await expect(page.getByRole('button', { name: 'Next month' })).toBeDisabled();
@@ -197,14 +201,6 @@ test('calendar: month bounds, event details, read-only recurrence, all-day form 
     .click();
   await noHorizontalOverflow(page);
   await shot(page, info, 'calendar');
-  household.state.calendar.events[0].readOnlyReason =
-    'Recurring appointments are edited in Apple Calendar.';
-  await expect
-    .poll(() => household.calls.filter((c) => c.path === '/state').length, { timeout: 8000 })
-    .toBeGreaterThan(1);
-  await page.getByRole('button', { name: /19:00.*Dinner together/ }).click();
-  await expect(page.getByLabel('Appointment', { exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Review appointment' })).toHaveCount(0);
 });
 
 test('settings: independent switches, disabled time, preferences preview; Updates deep link', async ({

@@ -103,7 +103,7 @@ export function Modal({
       <DialogContent
         aria-describedby={undefined}
         onCloseAutoFocus={restoreFocus}
-        className="app-dialog"
+        className="app-dialog max-md:top-auto max-md:bottom-0 max-md:translate-y-0"
         data-preview-covered={inactive || undefined}
       >
         <DialogHeader className="pr-8 text-left">
@@ -148,9 +148,9 @@ export function TaskCollection({
 }) {
   return (
     <Tabs value={value} onValueChange={(next) => onValueChange(next as typeof value)}>
-      <TabsList aria-label="Task view" className="h-11">
+      <TabsList aria-label="Task view" className="h-auto">
         {(['mine', 'household', 'all'] as const).map((filter) => (
-          <TabsTrigger className="min-h-10" key={filter} value={filter}>
+          <TabsTrigger className="min-h-11" key={filter} value={filter}>
             {filter === 'mine' ? 'For me' : filter === 'household' ? 'Household' : 'Everything'}
           </TabsTrigger>
         ))}

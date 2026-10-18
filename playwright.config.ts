@@ -31,7 +31,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5189 --strictPort',
+    command:
+      'npm run build && node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 5189 --strictPort',
     url: 'http://127.0.0.1:5189',
     reuseExistingServer: false,
   },
