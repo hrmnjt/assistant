@@ -3,19 +3,11 @@
 # are uploaded as Worker secrets by `npm run secrets`. Keep both files private;
 # Git ignores them.
 #
-# Deployments only: Cloudflare Access signs people in. Its team domain and the
-# application's audience (AUD) tag; with these set the app trusts only Access's
-# signed token. Leave them out of .dev.vars: development has no sign-in and
-# answers only on this computer.
-# ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
-# ACCESS_AUD=
-# The two people. Deployments need both emails: the addresses Access allows.
-OWNER_NAME=You
-# OWNER_EMAIL=you@example.com
-PARTNER_NAME=Partner
-# PARTNER_EMAIL=partner@example.com
+# There are no sign-in or people settings: Cloudflare Access signs people in to
+# a deployment, `npm run dev` has no sign-in, and the two names and emails are
+# entered in the app at its first sign-in.
 # Phone push: a stable VAPID keypair (changing it breaks existing subscriptions)
-# and a contact. Without PUSH_CONTACT, mailto:OWNER_EMAIL is used.
+# and a contact. Without PUSH_CONTACT, the email of whoever set up the household is used.
 VAPID_PUBLIC_KEY=
 VAPID_PRIVATE_KEY=
 # PUSH_CONTACT=mailto:you@example.com
