@@ -1,8 +1,9 @@
 # Household assistant
 
-Updated: 2026-10-18. Status: Cloudflare is the selected deployment target;
-unification of the full application and compatibility prototype is planned,
-not completed. The Mac is for development and testing, not long-term hosting.
+Updated: 2026-10-18. Status: one Cloudflare application. The same Worker and
+household Durable Object run locally through Wrangler on the Mac for development
+and on Cloudflare when deployed. There is no separate Node server. The app
+starts fresh, with no data imported.
 
 ## Purpose
 
@@ -13,13 +14,23 @@ unfinished responsibilities easy to capture, see, and follow up on.
 
 ## Current build
 
-The first foundation includes two household accounts, shared tasks with
-confirmation previews, daily/weekly chores with missed-date history, per-person
-summary settings, and topic messages persisted through Pi Durable. An iCloud
-agenda supports confirmed appointment creation, edits, and deletion against the
-original records. The assistant can read household information and prepare the
-same confirmation previews from chat. Phone push, a real iCloud round trip, and
-completed ChatGPT inference still require local account/device verification.
+The MVP has two household accounts, shared tasks with confirmation previews,
+daily/weekly chores with missed-date history, per-person summary settings, and
+topic messages persisted through Pi Durable. An iCloud agenda supports confirmed
+appointment creation, edits, and deletion against the original records. The
+assistant can read household information and prepare the same confirmation
+previews from chat. Phone push, a real iCloud round trip, and completed ChatGPT
+inference still need verification with the user's accounts and devices.
+
+**Architecture.** A Worker serves the built React client as static assets and
+sends `/api/*` to one SQLite-backed Durable Object, `Household`. That object
+holds both accounts, the shared records, and the Pi conversations, which share
+its SQLite storage through one serialized queue. A single alarm runs calendar
+refreshes, reminders, summaries, and recovery of unfinished assistant work.
+`server/` holds the application (domain rules, API router, integrations),
+`cloudflare/worker.ts` is the only host, and `src/` is the client.
+
+### Run on the Mac
 
 Use Node.js 24 or newer. All project data, caches, and scripts stay in this repo.
 
@@ -29,90 +40,87 @@ npm run configure
 npm run dev
 ```
 
-Open `http://localhost:5173`. The local `.env` file contains the generated
-`owner` and `partner` passwords; edit names there before the first start.
-Existing accounts are preserved in `data/`: `.env` passwords only create the
-first two accounts. Afterwards, `npm run accounts -- password <owner|partner>`
-changes one password without echoing it and signs that account out everywhere;
-`npm run accounts -- signout <owner|partner|all>` ends sessions and
-`npm run accounts -- list` shows the accounts. For a built app, use `npm run build`
-and `npm start`, set `APP_ORIGIN` to its actual address, and route Cloudflare
-Tunnel to the local server on port 3000. Use a stable HTTPS hostname for phones.
-Set `PUSH_CONTACT` to a real `mailto:` address or use the HTTPS app origin for
-phone notifications. With no push setup, reminders remain available in the app.
+Open `http://localhost:8787`. `npm run configure` creates the private
+`cloudflare/.dev.vars` with generated `owner` and `partner` passwords and a push
+keypair; it never overwrites the file. Edit names there and restart `npm run dev`.
+`npm run dev` runs `wrangler dev` with the client rebuilt on each change (reload
+the page to see it). Local state lives in `data/cloudflare/` and survives
+restarts; delete that folder to start over. The local app stops with its process.
+
+### Deploy to Cloudflare
+
+```sh
+npm run wrangler -- login
+npm run configure -- --production https://household-assistant.<subdomain>.workers.dev
+npm run deploy
+```
+
+Use the Worker's real HTTPS address (find the workers.dev subdomain in the
+Cloudflare dashboard, or use a custom domain). The second command writes the
+private `cloudflare/.prod.vars` with new passwords and a stable push keypair.
+`npm run deploy` builds the client, uploads the Worker, and uploads that file's
+values as Worker secrets. Secrets left out of the file keep their deployed value.
+Run `npm run check` first to typecheck and build the bundle without uploading.
+Keep the Durable Object class, binding, and migration history on later deploys so
+they keep addressing the same storage. There is no export or backup command yet.
+
+### Accounts and settings
+
+Accounts come from `OWNER_*` and `PARTNER_*` settings, with distinct passwords
+of at least 12 characters. Changing a password and restarting (`npm run dev`) or
+redeploying signs that account out everywhere; changing a name or username
+keeps the account's records. Sessions last 30 days. Sign-in allows ten attempts
+per client address per 15 minutes. The app only answers at `APP_ORIGIN`; use a
+stable HTTPS origin for phones, which the service worker and push require.
+
+Set `PUSH_CONTACT` to a real `mailto:` address, or the HTTPS app origin is used.
+Keep the generated VAPID keys: changing them breaks existing phone subscriptions.
+Without push setup, reminders stay available in the app's Updates.
 
 To connect the calendar, create/share the iCloud `Household` calendar and set
 `ICLOUD_USERNAME`, `ICLOUD_APP_PASSWORD` (an Apple app-specific password), and
-`ICLOUD_CALENDAR_NAME` in the local `.env`. Restart the server. If names are
-ambiguous, set `ICLOUD_CALENDAR_URL` to the exact calendar URL instead. Credentials
-stay on the server; neither spouse needs to enter them for everyday app use.
+`ICLOUD_CALENDAR_NAME` in the vars file, then restart or redeploy. If names are
+ambiguous, set `ICLOUD_CALENDAR_URL` to the exact calendar URL instead.
+Credentials stay in the Worker's secrets; neither spouse enters them in the app.
 The app refreshes complete months (previous month through two months ahead,
-with time-zone boundary padding) every minute
-and checks the live event version again before a confirmed write. Recurring
-events and invitations are readable; edit those in Apple Calendar initially.
-New appointments default to a configurable 30-minute reminder in the preview;
-existing alarms are preserved unless explicitly changed. Both native calendar
-alerts and the app's matching relative reminders are retained.
+with time-zone boundary padding) every five minutes in the background, and
+within a minute while someone is using the app. It checks the live event version
+again before a confirmed write. Recurring events and invitations are readable;
+edit those in Apple Calendar initially. New appointments default to a
+configurable 30-minute reminder in the preview; existing alarms are preserved
+unless explicitly changed. Both native calendar alerts and the app's matching
+relative reminders are retained.
 
-Validation commands: `npm test` and `npm run build`. Install the repository-local
-browsers once with `npm run test:ui:install`, then run `npm run test:ui` for
-the design-system/browser checks against fixture API responses. Run
-`npm run test:browser` for preview recovery against the built UI and an isolated
-Express/SQLite/Pi test server with a synthetic calendar. Neither suite loads
-production credentials or calls live providers. Browser binaries, reports,
-screenshots, temporary profiles, and test data stay in `.cache/`; household data
-and push keys stay in `data/`. GitHub Actions runs `npm test`, `npm run build`,
-`npm run cloudflare:check`, and both browser suites on pull requests, without
-secrets.
+### Validation
+
+`npm test` runs the Node suite (the application on Node's SQLite through the
+same storage interface) and the Workers suite in workerd: the real Worker,
+assets, Durable Object restart, alarm-driven Web Push, and CalDAV parsing with
+mocked HTTP. `npm run check` typechecks and builds the deployment bundle.
+Install the repository-local browsers once with `npm run test:ui:install`, then
+run `npm run test:ui` for the design-system/browser checks against fixture API
+responses, and `npm run test:browser` for preview recovery against the built UI
+and the real API handler with a synthetic calendar. No suite loads
+`cloudflare/.dev.vars` values or calls live providers. Browser binaries, reports,
+and test data stay in `.cache/`. GitHub Actions runs these checks on pull
+requests, without secrets.
 
 The household database records its schema version and applies ordered
 migrations at startup; a database written by a newer app version is refused.
-Stopping the server (Ctrl-C or SIGTERM) lets in-flight requests, a calendar
-refresh, and a notification pass finish before storage closes, waiting at most
-ten seconds. `GET /api/health` reports readiness without signing in. The Node
-host has no built-in supervisor: if Pi storage fails it exits non-zero, and a
-restart (manual, or a supervisor such as launchd `KeepAlive`) resumes pending
-assistant work. Sign-in allows ten attempts per client address per 15 minutes,
-held in memory and cleared on restart; behind the local tunnel the forwarded
-client address counts.
-
-## Cloudflare compatibility prototype
-
-A separate Cloudflare prototype now evaluates Workers and one SQLite-backed
-Durable Object for the selected hosting approach. It has two sign-ins, a shared persistent Pi
-conversation, durable test reminders, and optional read-only iCloud and phone
-push probes. It uses fixture replies by default, without calling an AI provider.
-The existing Node application and its data remain separate. Cloudflare is now
-the selected deployment target: the next step is one shared application core,
-React client, and API, running locally through Wrangler on the Mac and on
-Cloudflare in deployment. The full app has **not** yet been ported or migrated.
-See [the unification plan](docs/cloudflare-unification.md) for ownership, adapters,
-and cutover boundaries; do not run two schedulers against the same household.
-
-```sh
-npm run cloudflare:configure
-npm run cloudflare:dev
-```
-
-Open `http://localhost:8787` and use the generated `owner` or `partner` password
-in `cloudflare/.dev.vars`. Local runtime state lives in `data/cloudflare/`.
-`npm test` includes the Cloudflare runtime tests; `npm run cloudflare:check`
-checks types and builds a deployment bundle without uploading it.
-See [Cloudflare setup and deployment](cloudflare/README.md) for secrets, live
-integration checks, recovery behavior, and remaining migration work. No cloud
-account deployment or real-device delivery is implied by local test results.
+`GET /api/health` reports readiness without signing in. If Pi storage fails, the
+Durable Object restarts and resumes pending assistant work from committed state.
 
 ## Confirmed requirements
 
 - Build on Pi Durable and run the assistant on user-controlled infrastructure.
 - Use the user's Mac for local development/testing, not long-term service hosting.
-- Deploy to Cloudflare. Unify the full app and prototype around one application
-  core and the same local/deployed Worker + Durable Object runtime; do not
-  maintain two feature implementations.
+- Deploy to Cloudflare. Run the same Worker + Durable Object application locally
+  through Wrangler and in deployment; do not maintain a second host or feature
+  implementation.
+- Start fresh: no existing household data is imported.
 - Support iPhones for both spouses and a laptop web interface.
 - Start with an iPhone-focused SPA, installable as a web app. Native iOS comes later.
 - Permit access away from home through the deployed Cloudflare HTTPS app.
-  Tunnel access to the current Node server remains transitional.
 - Use text chat, with the iPhone keyboard's dictation for speech input.
 - Show a preview and require confirmation before changes from either chat or
   direct task/calendar controls.
@@ -210,18 +218,17 @@ Browser coverage includes Chromium at 320px/390px phone and 1440px laptop widths
 plus WebKit at 390px. It checks loading, empty, error, disabled, and confirmation
 states, keyboard/focus behavior, and a simulated reduced keyboard viewport.
 Physical iPhone installation, safe areas, keyboard/dictation, and push delivery
-still need device verification. Native iOS remains deferred. The isolated
-Cloudflare probe client is unchanged; it is not the React product frontend.
+still need device verification. Native iOS remains deferred.
 
 ## Calendar integration
 
 Use one shared iCloud Household calendar for the POC, as chosen by the user.
 One Apple Account is its
-technical owner and invites the other with editing permission. The assistant
-server connects through CalDAV; Apple Calendar, the assistant's calendar view,
+technical owner and invites the other with editing permission. The household
+app connects through CalDAV; Apple Calendar, the assistant's calendar view,
 and confirmed conversational changes all operate on those same events.
 
-The server may cache events for display, but iCloud remains authoritative.
+The app may cache events for display, but iCloud remains authoritative.
 Preserve event identity when updating an appointment. Refresh human edits and
 deletions, detect conflicting updates, and show pending or failed synchronization.
 Do not treat a calendar subscription or exported copy as two-way integration.
@@ -325,19 +332,12 @@ after retries should still be prevented.
 
 ## Development and hosting
 
-**Chosen target:** Cloudflare Worker routing/assets and one SQLite-backed Durable
-Object per household, owning shared records, independent Pi conversations, and
-alarm-driven jobs. Use the same Worker/DO application locally through Wrangler
-on the Mac and in deployment. Keep domain/confirmation logic, API contracts, and
-the React UI shared; isolate storage, alarms, credentials, and transports behind
-narrow adapters. The migration plan is in [Cloudflare unification](docs/cloudflare-unification.md).
-
-**Current implementation:** `npm run dev` still runs the full Node application;
-`npm run cloudflare:dev` still runs only the compatibility prototype. These are
-not equivalent yet. The Node app remains a transitional test/reference host
-until parity, recovery tests, and a deliberate data cutover are established.
-Its Mac/tunnel must stay awake for timely service; Wrangler's local emulator
-also stops with its process. Do not interpret either as production availability.
+**Target:** Cloudflare Worker routing/assets and one SQLite-backed Durable
+Object for the household, owning shared records, independent Pi conversations,
+and alarm-driven jobs. The same application runs locally through Wrangler on the
+Mac, which is for development and testing, not long-term hosting: the local app
+stops with its process. Storage goes through Pi's `SqliteDatabase` interface,
+so the Node test suite runs the same code on Node's SQLite.
 
 Restrict access to the two users. A public hostname does not imply public
 registration or access to household data. Use a stable HTTPS origin for the
@@ -349,8 +349,8 @@ isolated fixture credentials/data, not implicit copies of production secrets.
 Live iCloud, ChatGPT eligibility/inference, and device acceptance remain pending
 user configuration and validation (#24, #36). Hosted ChatGPT eligibility is not
 established by choosing Cloudflare; keep AI optional/disabled when unavailable,
-with no API-key billing fallback. Do not start two household schedulers or import
-Mac/prototype data automatically.
+with no API-key billing fallback. Run one deployment per household; a local
+`npm run dev` keeps its own separate data.
 
 ## AI access
 
@@ -374,22 +374,20 @@ can fund both spouses' interactive use. Keep this eligibility question explicit;
 neither library support nor a Pro upgrade alone resolves it. Keep application
 sign-in distinct from the account authorizing model usage.
 
-The following commands configure only the current transitional Node host, not
-the Worker deployment. Unified hosted credential/reconnect setup remains part
-of the migration and OAuth work; do not copy these tokens or Codex tokens into
-cloud secrets as an implicit migration.
-
-Run `npm run ai:connect` in a terminal on the Mac to authorize this installation
-with Sign in with ChatGPT and choose a model from the account's catalog. Restart
-the app afterward. Tokens and the stable host ID stay under the ignored
-`DATA_DIR` with restricted file permissions; the app never reads Codex's tokens
-or falls back to an API key. `npm run ai:disconnect` removes the local credential;
-restart the service and revoke the app in ChatGPT settings if desired. If a
-crash leaves `chatgpt-auth.json.lock`, stop all app/setup processes before
-inspecting and removing that directory; locks are never stolen automatically.
+Run `npm run ai:connect` in a terminal on the Mac to authorize the local app
+with Sign in with ChatGPT and choose a model from the account's catalog; it saves
+the connection in `cloudflare/.dev.vars`, so restart `npm run dev` afterward.
+`npm run ai:connect -- --production` saves a separate connection in
+`cloudflare/.prod.vars` for `npm run deploy`. Tokens are never printed, and the
+app never reads Codex's tokens or falls back to an API key. The Durable Object
+adopts a newly connected credential once and keeps refreshed tokens in its own
+storage. `npm run ai:disconnect` (with `-- --production` for the deployment)
+removes the connection; revoke the app in ChatGPT settings if desired. Whether
+OpenAI treats a Cloudflare deployment as an eligible installation is not yet
+established.
 
 The first connected session explains plan usage; the composer links to ChatGPT
-usage settings. Both household accounts use the server connection. This wires
+usage settings. Both household accounts use the household connection. This wires
 the requested experience but does not establish shared-plan eligibility or
 verify this account's access. Each chat runs one assistant request at a time and accepts up to ten queued
 messages while it works. Queued requests retain their authors and survive restarts.
@@ -405,7 +403,7 @@ change. Cancelled and expired proposals cannot apply changes. A failed request
 keeps its message and any surviving proposals visible for review. While AI
 is unavailable, unfinished requests stay paused and new assistant requests in
 that conversation are refused, but ordinary messages are still saved; the
-paused request resumes once after reconnecting. If the ChatGPT files cannot be
+paused request resumes once after reconnecting. If the ChatGPT settings cannot be
 read, the app starts without the assistant.
 
 Verified against [OpenAI's local-app flow](https://developers.openai.com/siwc/token-sharing-open-source)
@@ -456,8 +454,8 @@ The [17 October 2026 review](docs/reviews/2026-10-17/README.md) records implemen
 findings, Pi Durable architecture recommendations, and reproduction evidence at
 commit `c85e65a`. Its recommendations remain proposals; this README continues to
 define confirmed requirements. Cloudflare was subsequently selected as the
-deployment target; historical hosting proposals are superseded by the
-unification direction above.
+deployment target, and the Node host was replaced by the single Cloudflare
+application described above.
 
 ## References
 
@@ -470,6 +468,7 @@ unification direction above.
 - CalDAV client documentation: https://tsdav.vercel.app/intro/
 - iPhone Home Screen web push: https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/
 - HTTPS and service workers: https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API/Using_Service_Workers
-- Cloudflare Tunnel: https://developers.cloudflare.com/tunnel/get-started/
+- Cloudflare Durable Objects: https://developers.cloudflare.com/durable-objects/
+- Wrangler: https://developers.cloudflare.com/workers/wrangler/
 - Fizzy: https://www.fizzy.do/
 - Fizzy API: https://github.com/basecamp/fizzy/blob/main/docs/api/README.md

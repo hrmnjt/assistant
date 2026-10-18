@@ -10,9 +10,9 @@
   behavior when it matters, and capture decisions as implementation evolves.
 - Keep documentation concise and grounded in the implementation. Native iOS,
   offline use, task time-blocking, and documentation features are deferred.
-- Develop on the user's Mac initially. Keep the home Linux PC, a dedicated
-  server, and Cloudflare compute as future hosting options; do not assume a
-  final deployment target.
+- Cloudflare is the deployment target: one Worker and one household Durable
+  Object. Develop and test on the user's Mac with Wrangler running that same
+  application; do not add a second host or a parallel implementation.
 
 ## Pull request workflow
 
