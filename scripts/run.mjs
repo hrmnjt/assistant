@@ -15,7 +15,6 @@ const env = {
 };
 const tsc = ['./node_modules/typescript/bin/tsc', '--noEmit'];
 const commands = {
-  check: [tsc],
   build: [tsc, ['./node_modules/vite/bin/vite.js', 'build']],
   test: [
     [
@@ -27,12 +26,10 @@ const commands = {
         .map((file) => `tests/${file}`),
     ],
   ],
-  'ai-connect': [['--import', 'tsx', 'scripts/chatgpt.ts']],
-  'ai-disconnect': [['--import', 'tsx', 'scripts/chatgpt.ts', '--logout']],
-  accounts: [['--import', 'tsx', 'scripts/accounts.ts', ...process.argv.slice(3)]],
-  server: [['--import', 'tsx', 'server/index.ts']],
-  'server-watch': [['--watch', '--import', 'tsx', 'server/index.ts']],
-  client: [['./node_modules/vite/bin/vite.js', '--host', '127.0.0.1']],
+  'ai-connect': [['--import', 'tsx', 'scripts/chatgpt.ts', ...process.argv.slice(3)]],
+  'ai-disconnect': [
+    ['--import', 'tsx', 'scripts/chatgpt.ts', '--remove', ...process.argv.slice(3)],
+  ],
 };
 const selected = commands[process.argv[2]];
 if (!selected) throw new Error('Unknown project command.');

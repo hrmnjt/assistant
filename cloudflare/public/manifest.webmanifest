@@ -1,9 +1,0 @@
-{
-  "name": "Our day Cloud Lab",
-  "short_name": "Cloud Lab",
-  "start_url": "/",
-  "display": "standalone",
-  "background_color": "#f5f2eb",
-  "theme_color": "#f5f2eb",
-  "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" }]
-}

@@ -80,7 +80,7 @@ async function api<T>(
   });
   const value = await response.json();
   if (!response.ok)
-    throw Object.assign(new Error(value.error || 'Unable to reach the household server.'), {
+    throw Object.assign(new Error(value.error || 'Unable to reach the household app.'), {
       status: response.status,
       calendarOutcome: value.calendarOutcome,
     });
@@ -1275,8 +1275,8 @@ function App() {
                 </h2>
                 <p className="muted">
                   {state.integrations.ai === 'configured'
-                    ? 'Eligible AI requests use the server’s connected ChatGPT plan. Messages in this topic and the household tasks, settings, and appointments the assistant reads are sent to OpenAI. Every proposed change still needs your confirmation.'
-                    : 'The owner can connect ChatGPT on the household server. You can keep using shared messages, tasks, and the calendar meanwhile.'}
+                    ? 'Eligible AI requests use the household’s connected ChatGPT plan. Messages in this topic and the household tasks, settings, and appointments the assistant reads are sent to OpenAI. Every proposed change still needs your confirmation.'
+                    : 'The owner can connect ChatGPT from the setup scripts. You can keep using shared messages, tasks, and the calendar meanwhile.'}
                 </p>
                 <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">
                   Manage ChatGPT usage

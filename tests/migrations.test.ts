@@ -1,146 +1,74 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-import { Database, migrations } from '../server/database.js';
-import { provision } from '../server/auth.js';
-import { Household } from '../server/domain.js';
+import { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite';
+import { migrate, migrations, schemaVersion } from '../server/database.js';
+import { directory, openStore, type Row } from './support.js';
 
-function directory() {
-  mkdirSync(resolve('.cache/tests'), { recursive: true });
-  return mkdtempSync(resolve('.cache/tests/migrations-'));
-}
-const columns = (db: Database, table: string) =>
-  db.sql
-    .prepare(`PRAGMA table_info(${table})`)
-    .all()
-    .map((row) => String(row.name));
-const recurring = JSON.stringify({
-  id: 'b1d2c3e4-0000-4000-8000-000000000001',
-  title: 'Take out recycling',
-  notes: '',
-  category: 'household',
-  ownerId: 'owner',
-  dueAt: '2026-10-15T06:00:00.000Z',
-  schedule: { frequency: 'daily', timezone: 'Asia/Dubai' },
-  status: 'open',
-  revision: 2,
-  completedBy: null,
-  completedAt: null,
-  missedDates: [],
-});
-
-/** A populated database as written before schema versioning existed. */
-function legacy(path: string) {
-  const db = new Database(path, migrations.slice(0, 1));
-  provision(db, [
-    { username: 'owner', name: 'Alex', password: 'Test-only-owner-password' },
-    { username: 'partner', name: 'Sam', password: 'Test-only-partner-password' },
-  ]);
-  db.sql
-    .prepare('INSERT INTO tasks VALUES (?, ?, 2)')
-    .run('b1d2c3e4-0000-4000-8000-000000000001', recurring);
-  db.sql
-    .prepare(
-      "INSERT INTO task_history VALUES (?, '2026-10-14T06:00:00.000Z', 'completed', 'partner')",
-    )
-    .run('b1d2c3e4-0000-4000-8000-000000000001');
-  db.sql
-    .prepare(
-      "INSERT INTO notices(id,user_id,title,body,created_at) VALUES ('change:legacy:owner','owner','Changed','Task','2026-10-14T07:00:00.000Z')",
-    )
-    .run();
-  db.sql.exec('PRAGMA user_version = 0');
-  db.close();
-}
-
-test('a populated pre-versioning database upgrades in place and reopens idempotently', () => {
-  const path = directory();
+test('a new store is migrated once and reopening is idempotent', async () => {
+  const path = directory('migrations');
   const file = resolve(path, 'household.sqlite');
   try {
-    legacy(file);
-    let db = new Database(file);
-    assert.equal(db.version, migrations.length);
-    assert.ok(columns(db, 'task_history').includes('completed_at'));
-    // Existing notices keep their previous push window: two hours after creation.
-    assert.equal(
-      db.sql.prepare('SELECT push_until FROM notices').get()!.push_until,
-      '2026-10-14T09:00:00.000Z',
-    );
-    let now = new Date('2026-10-15T05:00:00Z');
-    const household = new Household(db, () => now);
-    const [old] = household.history('b1d2c3e4-0000-4000-8000-000000000001');
-    // The legacy actor survives; its unrecorded completion time stays unknown.
-    assert.deepEqual(old, {
-      dueAt: '2026-10-14T06:00:00.000Z',
-      outcome: 'completed',
-      completedBy: 'partner',
-      completedAt: null,
-    });
-    const preview = household.preview('owner', {
-      kind: 'task.complete',
-      id: 'b1d2c3e4-0000-4000-8000-000000000001',
-      revision: 2,
-    });
-    household.confirm('owner', preview.id);
-    db.close();
-    db = new Database(file);
-    assert.equal(db.version, migrations.length);
-    now = new Date('2026-10-15T06:30:00Z');
-    const history = new Household(db, () => now).history('b1d2c3e4-0000-4000-8000-000000000001');
-    assert.equal(history.length, 2);
-    assert.equal(history[0].completedAt, '2026-10-15T05:00:00.000Z');
-    assert.equal(history[0].completedBy, 'owner');
-    assert.equal(db.sql.prepare('SELECT COUNT(*) AS n FROM users').get()!.n, 2);
-    db.close();
+    let db = openStore(file);
+    await migrate(db);
+    assert.equal(await schemaVersion(db), migrations.length);
+    await db.run("INSERT INTO users VALUES ('owner','owner','Alex')");
+    await db.close();
+    db = openStore(file);
+    await migrate(db);
+    assert.equal(await schemaVersion(db), migrations.length);
+    assert.equal((await db.get<Row>('SELECT COUNT(*) AS n FROM users'))!.n, 1);
+    await db.close();
   } finally {
     rmSync(path, { recursive: true, force: true });
   }
 });
 
-test('a failed migration rolls back completely and keeps the previous version', () => {
-  const path = directory();
-  const file = resolve(path, 'household.sqlite');
+test('household tables and Pi tables share one store without name collisions', async () => {
+  const db = openStore();
+  await migrate(db);
+  await SqliteStorage.open(db);
+  const tables = (await db.all<Row>("SELECT name FROM sqlite_master WHERE type='table'")).map(
+    (row) => row.name,
+  );
+  // Pi owns `tasks`; household tasks live in their own table.
+  assert.ok(tables.includes('tasks'));
+  assert.ok(tables.includes('household_tasks'));
+  await migrate(db);
+  await db.close();
+});
+
+test('a failed migration rolls back completely and keeps the previous version', async () => {
+  const db = openStore();
   try {
-    new Database(file).close();
+    await migrate(db);
     const broken = [
       ...migrations,
       'CREATE TABLE half_applied (id INTEGER); INSERT INTO missing_table VALUES (1);',
     ];
-    assert.throws(() => new Database(file, broken), /missing_table/);
-    const db = new Database(file);
-    assert.equal(db.version, migrations.length);
+    await assert.rejects(migrate(db, broken), /missing_table/);
+    assert.equal(await schemaVersion(db), migrations.length);
     assert.equal(
-      db.sql.prepare("SELECT 1 FROM sqlite_master WHERE name='half_applied'").get(),
+      await db.get("SELECT 1 AS found FROM sqlite_master WHERE name='half_applied'"),
       undefined,
     );
-    db.close();
     // A corrected later step applies on the next start.
-    const fixed = new Database(file, [...migrations, 'CREATE TABLE half_applied (id INTEGER);']);
-    assert.equal(fixed.version, migrations.length + 1);
-    fixed.close();
+    await migrate(db, [...migrations, 'CREATE TABLE half_applied (id INTEGER);']);
+    assert.equal(await schemaVersion(db), migrations.length + 1);
   } finally {
-    rmSync(path, { recursive: true, force: true });
+    await db.close();
   }
 });
 
-test('a database from a newer app version is refused rather than modified', () => {
-  const path = directory();
-  const file = resolve(path, 'household.sqlite');
+test('a store from a newer app version is refused rather than modified', async () => {
+  const db = openStore();
   try {
-    new Database(file).close();
-    const raw = new DatabaseSync(file);
-    raw.exec(`PRAGMA user_version = ${migrations.length + 1}`);
-    raw.close();
-    assert.throws(() => new Database(file), /newer app version/);
-    const check = new DatabaseSync(file);
-    assert.equal(
-      Number(check.prepare('PRAGMA user_version').get()!.user_version),
-      migrations.length + 1,
-    );
-    check.close();
+    await migrate(db);
+    await db.run('UPDATE household_schema SET version=?', migrations.length + 1);
+    await assert.rejects(migrate(db), /newer app version/);
+    assert.equal(await schemaVersion(db), migrations.length + 1);
   } finally {
-    rmSync(path, { recursive: true, force: true });
+    await db.close();
   }
 });

@@ -1,8 +1,7 @@
-import { randomUUID } from 'node:crypto';
 import { DateTime, IANAZone } from 'luxon';
 import { z } from 'zod';
 import { notifyPartner } from './changes.js';
-import type { Database } from './database.js';
+import type { Executor, Row, Store } from './database.js';
 import type {
   HouseholdMutation as Mutation,
   Person,
@@ -113,59 +112,73 @@ export function repeatedOccurrence(
 
 export class Household {
   constructor(
-    readonly db: Database,
+    readonly db: Store,
     readonly clock: () => Date = () => new Date(),
   ) {}
-  people(): Person[] {
-    return this.db.sql
-      .prepare('SELECT id, username, name FROM users ORDER BY id')
-      .all() as unknown as Person[];
+  async people(q: Executor = this.db): Promise<Person[]> {
+    return q.all<Person>('SELECT id, username, name FROM users ORDER BY id');
   }
-  ensureSpaces() {
-    this.db.transaction(() => {
-      for (const person of this.people())
-        this.ensureSpace(`assistant:${person.id}`, `${person.name}'s assistant`, 'personal');
-      this.ensureSpace('household', 'household', 'household');
+  async ensureSpaces() {
+    await this.db.transaction(async (tx) => {
+      for (const person of await this.people(tx))
+        await this.ensureSpace(
+          tx,
+          `assistant:${person.id}`,
+          `${person.name}'s assistant`,
+          'personal',
+        );
+      await this.ensureSpace(tx, 'household', 'household', 'household');
     });
   }
-  private ensureSpace(key: string, title: string, category: 'personal' | 'household') {
-    if (this.db.sql.prepare('SELECT 1 FROM thread_spaces WHERE key=?').get(key)) return;
-    const id = randomUUID();
-    this.db.sql
-      .prepare('INSERT INTO threads VALUES (?,?,?,?)')
-      .run(id, title, category, this.clock().toISOString());
-    this.db.sql.prepare('INSERT INTO thread_spaces VALUES (?,?)').run(key, id);
+  private async ensureSpace(
+    q: Executor,
+    key: string,
+    title: string,
+    category: 'personal' | 'household',
+  ) {
+    if (await q.get('SELECT 1 AS found FROM thread_spaces WHERE key=?', key)) return;
+    const id = crypto.randomUUID();
+    await q.run(
+      'INSERT INTO threads VALUES (?,?,?,?)',
+      id,
+      title,
+      category,
+      this.clock().toISOString(),
+    );
+    await q.run('INSERT INTO thread_spaces VALUES (?,?)', key, id);
   }
-  preferences(userId: string): Preferences {
-    const row = this.db.sql.prepare('SELECT * FROM preferences WHERE user_id=?').get(userId);
+  async preferences(userId: string, q: Executor = this.db): Promise<Preferences> {
+    const row = await q.get<Row>('SELECT * FROM preferences WHERE user_id=?', userId);
     if (!row) throw new DomainError('Account not found.', 404);
     return { ...JSON.parse(String(row.value)), revision: Number(row.revision) };
   }
-  tasks(): Task[] {
-    return this.db.sql
-      .prepare('SELECT value, revision FROM tasks ORDER BY rowid DESC')
-      .all()
-      .map((row) => this.decorate(JSON.parse(String(row.value))));
+  async tasks(q: Executor = this.db): Promise<Task[]> {
+    const rows = await q.all<Row>('SELECT value FROM household_tasks ORDER BY rowid DESC');
+    const recorded = await this.allRecorded(q);
+    return rows.map((row) => {
+      const task: Task = JSON.parse(String(row.value));
+      return this.decorate(task, recorded.get(task.id) ?? []);
+    });
   }
-  task(taskId: string): Task {
-    const row = this.db.sql.prepare('SELECT value FROM tasks WHERE id=?').get(taskId);
+  async task(taskId: string, q: Executor = this.db): Promise<Task> {
+    const row = await q.get<Row>('SELECT value FROM household_tasks WHERE id=?', taskId);
     if (!row) throw new DomainError('This task no longer exists.', 404);
-    return this.decorate(JSON.parse(String(row.value)));
+    return this.decorate(JSON.parse(String(row.value)), await this.recorded(taskId, q));
   }
   /** Occurrence outcomes, newest first, including elapsed misses not yet recorded. */
-  history(taskId: string): TaskOccurrence[] {
-    const task = this.task(taskId);
-    const recorded = this.db.sql
-      .prepare(
+  async history(taskId: string): Promise<TaskOccurrence[]> {
+    const task = await this.task(taskId);
+    const recorded = (
+      await this.db.all<Row>(
         'SELECT due_at, outcome, completed_by, completed_at FROM task_history WHERE task_id=?',
+        taskId,
       )
-      .all(taskId)
-      .map((row): TaskOccurrence => ({
-        dueAt: String(row.due_at),
-        outcome: row.outcome === 'completed' ? 'completed' : 'missed',
-        completedBy: row.completed_by === null ? null : String(row.completed_by),
-        completedAt: row.completed_at === null ? null : String(row.completed_at),
-      }));
+    ).map((row): TaskOccurrence => ({
+      dueAt: String(row.due_at),
+      outcome: row.outcome === 'completed' ? 'completed' : 'missed',
+      completedBy: row.completed_by === null ? null : String(row.completed_by),
+      completedAt: row.completed_at === null ? null : String(row.completed_at),
+    }));
     const known = new Set(recorded.map((row) => Date.parse(row.dueAt!)));
     const pending = task.missedDates
       .filter((dueAt) => !known.has(Date.parse(dueAt)))
@@ -191,14 +204,26 @@ export class Household {
       Date.parse(occurrence.dueAt ?? occurrence.completedAt!);
     return [...recorded, ...pending, ...once].sort((a, b) => at(b) - at(a));
   }
-  private recorded(taskId: string) {
-    return this.db.sql
-      .prepare('SELECT due_at, outcome FROM task_history WHERE task_id=? ORDER BY due_at')
-      .all(taskId)
-      .map((row) => ({ dueAt: String(row.due_at), outcome: String(row.outcome) }));
+  private async recorded(taskId: string, q: Executor = this.db) {
+    return (
+      await q.all<Row>(
+        'SELECT due_at, outcome FROM task_history WHERE task_id=? ORDER BY due_at',
+        taskId,
+      )
+    ).map((row) => ({ dueAt: String(row.due_at), outcome: String(row.outcome) }));
   }
-  private decorate(task: Task): Task {
-    const recorded = this.recorded(task.id);
+  private async allRecorded(q: Executor) {
+    const byTask = new Map<string, { dueAt: string; outcome: string }[]>();
+    for (const row of await q.all<Row>(
+      'SELECT task_id, due_at, outcome FROM task_history ORDER BY due_at',
+    )) {
+      const list = byTask.get(String(row.task_id)) ?? [];
+      list.push({ dueAt: String(row.due_at), outcome: String(row.outcome) });
+      byTask.set(String(row.task_id), list);
+    }
+    return byTask;
+  }
+  private decorate(task: Task, recorded: { dueAt: string; outcome: string }[]): Task {
     const historic = recorded.filter((row) => row.outcome === 'missed').map((row) => row.dueAt);
     // An elapsed date that was already completed keeps that outcome after a reschedule.
     const completed = new Set(
@@ -216,8 +241,8 @@ export class Household {
     return { ...task, missedDates };
   }
   /** Reject schedules whose active occurrence would repeat a recorded outcome. */
-  private assertNewOccurrences(task: Task, dueAt: string, recurrence: Schedule) {
-    const recorded = this.recorded(task.id).map((row) => row.dueAt);
+  private async assertNewOccurrences(q: Executor, task: Task, dueAt: string, recurrence: Schedule) {
+    const recorded = (await this.recorded(task.id, q)).map((row) => row.dueAt);
     // Confirming an update first records the old schedule's elapsed dates as missed.
     if (task.status === 'open' && task.schedule && task.dueAt)
       recorded.push(...recurrenceDates(task.dueAt, task.schedule, this.clock()).missed);
@@ -228,34 +253,36 @@ export class Household {
         409,
       );
   }
-  threads(): Thread[] {
-    return this.db.sql
-      .prepare(
-        `SELECT t.id,t.title,t.category,t.created_at AS createdAt,
-        CASE WHEN s.key LIKE 'assistant:%' THEN substr(s.key,11) ELSE NULL END AS assistantFor
-        FROM threads t LEFT JOIN thread_spaces s ON s.thread_id=t.id ORDER BY t.created_at`,
-      )
-      .all() as unknown as Thread[];
+  async threads(q: Executor = this.db): Promise<Thread[]> {
+    return q.all<Thread>(
+      `SELECT t.id,t.title,t.category,t.created_at AS createdAt,
+      CASE WHEN s.key LIKE 'assistant:%' THEN substr(s.key,11) ELSE NULL END AS assistantFor
+      FROM threads t LEFT JOIN thread_spaces s ON s.thread_id=t.id ORDER BY t.created_at`,
+    );
   }
-  private validate(mutation: Mutation, actorId: string) {
+  private async validate(q: Executor, mutation: Mutation, actorId: string) {
     if (mutation.kind === 'task.create' || mutation.kind === 'task.update') {
-      if (!this.people().some((person) => person.id === mutation.task.ownerId))
+      if (!(await this.people(q)).some((person) => person.id === mutation.task.ownerId))
         throw new DomainError('Choose a household member as the owner.');
       if (mutation.task.schedule && !mutation.task.dueAt)
         throw new DomainError('A recurring task needs its first due date.');
     }
     if ('id' in mutation) {
-      const task = this.task(mutation.id);
+      const task = await this.task(mutation.id, q);
       if (task.revision !== mutation.revision)
         throw new DomainError('This task changed. Refresh it and review a new preview.', 409);
       if (task.status === 'completed' && mutation.kind === 'task.complete')
         throw new DomainError('This task is already complete.', 409);
       if (mutation.kind === 'task.update' && mutation.task.schedule && mutation.task.dueAt)
-        this.assertNewOccurrences(task, mutation.task.dueAt, mutation.task.schedule);
+        await this.assertNewOccurrences(q, task, mutation.task.dueAt, mutation.task.schedule);
       if (mutation.kind === 'task.complete' && task.schedule && task.dueAt) {
         // Older data may already hold such a state; never preview a completion that cannot apply.
         const { current } = recurrenceDates(task.dueAt, task.schedule, this.clock());
-        if (this.recorded(task.id).some((row) => Date.parse(row.dueAt) === Date.parse(current)))
+        if (
+          (await this.recorded(task.id, q)).some(
+            (row) => Date.parse(row.dueAt) === Date.parse(current),
+          )
+        )
           throw new DomainError(
             "This occurrence is already in the task's history. Edit its due date to a later occurrence first.",
             409,
@@ -264,30 +291,31 @@ export class Household {
     }
     if (
       mutation.kind === 'preferences.update' &&
-      mutation.revision !== this.preferences(actorId).revision
+      mutation.revision !== (await this.preferences(actorId, q)).revision
     ) {
       throw new DomainError('Your settings changed. Review a new preview.', 409);
     }
   }
-  preview(actorId: string, input: unknown): Preview {
+  async preview(actorId: string, input: unknown): Promise<Preview> {
     const parsed = mutationSchema.safeParse(input);
     if (!parsed.success)
       throw new DomainError(parsed.error.issues.map((issue) => issue.message).join(' '));
     const mutation: Mutation = parsed.data;
-    this.validate(mutation, actorId);
+    await this.validate(this.db, mutation, actorId);
     const view: Preview = {
-      id: randomUUID(),
+      id: crypto.randomUUID(),
       title: '',
       details: [],
       expiresAt: new Date(this.clock().getTime() + 600_000).toISOString(),
     };
     const detail = (label: string, after: string, before?: string) =>
       view.details.push({ label, after, ...(before !== undefined ? { before } : {}) });
+    const people = await this.people();
     const personName = (userId: string) =>
-      this.people().find((person) => person.id === userId)?.name ?? userId;
+      people.find((person) => person.id === userId)?.name ?? userId;
     if (mutation.kind === 'task.create' || mutation.kind === 'task.update') {
       view.title = mutation.kind === 'task.create' ? 'Create this task?' : 'Save these changes?';
-      const prior = mutation.kind === 'task.update' ? this.task(mutation.id) : undefined;
+      const prior = mutation.kind === 'task.update' ? await this.task(mutation.id) : undefined;
       detail('Task', mutation.task.title, prior?.title);
       detail(
         'Follow-up owner',
@@ -313,7 +341,7 @@ export class Household {
       );
       detail('Notes', mutation.task.notes || 'None', prior ? prior.notes || 'None' : undefined);
     } else if (mutation.kind === 'task.complete') {
-      const task = this.task(mutation.id);
+      const task = await this.task(mutation.id);
       view.title = 'Mark this task complete?';
       detail('Task', task.title);
       detail('Completed by', personName(actorId));
@@ -327,7 +355,7 @@ export class Household {
       }
     } else if (mutation.kind === 'task.delete') {
       view.title = 'Delete this task?';
-      detail('Task', this.task(mutation.id).title);
+      detail('Task', (await this.task(mutation.id)).title);
       detail('Result', 'Removes the task and its history for both of you.');
     } else if (mutation.kind === 'thread.create') {
       view.title = 'Create this channel?';
@@ -335,7 +363,7 @@ export class Household {
       detail('Space', mutation.category);
     } else {
       view.title = 'Save your summary settings?';
-      const prior = this.preferences(actorId);
+      const prior = await this.preferences(actorId);
       detail('Time zone', mutation.preferences.timezone, prior.timezone);
       for (const key of ['morning', 'evening'] as const) {
         const value = mutation.preferences[key];
@@ -347,42 +375,43 @@ export class Household {
         );
       }
     }
-    this.db.sql
-      .prepare(
-        'INSERT INTO previews(id, user_id, mutation, view, expires_at) VALUES (?, ?, ?, ?, ?)',
-      )
-      .run(
-        view.id,
-        actorId,
-        JSON.stringify(mutation),
-        JSON.stringify(view),
-        Date.parse(view.expiresAt),
-      );
+    await this.db.run(
+      'INSERT INTO previews(id, user_id, mutation, view, expires_at) VALUES (?, ?, ?, ?, ?)',
+      view.id,
+      actorId,
+      JSON.stringify(mutation),
+      JSON.stringify(view),
+      Date.parse(view.expiresAt),
+    );
     return view;
   }
-  cancel(actorId: string, previewId: string) {
-    this.db.sql
-      .prepare('DELETE FROM previews WHERE id=? AND user_id=? AND applied_at IS NULL')
-      .run(previewId, actorId);
+  async cancel(actorId: string, previewId: string) {
+    await this.db.run(
+      'DELETE FROM previews WHERE id=? AND user_id=? AND applied_at IS NULL',
+      previewId,
+      actorId,
+    );
   }
-  confirm(actorId: string, previewId: string) {
-    return this.db.transaction(() => {
-      const row = this.db.sql
-        .prepare('SELECT * FROM previews WHERE id=? AND user_id=?')
-        .get(previewId, actorId);
+  confirm(actorId: string, previewId: string): Promise<{ ok: boolean; targetId: string }> {
+    return this.db.transaction(async (tx) => {
+      const row = await tx.get<Row>(
+        'SELECT * FROM previews WHERE id=? AND user_id=?',
+        previewId,
+        actorId,
+      );
       if (!row) throw new DomainError('This preview is unavailable. Make a new one.', 404);
       if (row.applied_at !== null) return JSON.parse(String(row.result));
       if (Number(row.expires_at) <= this.clock().getTime())
         throw new DomainError('This preview expired. Review a new preview.', 409);
       const mutation: Mutation = JSON.parse(String(row.mutation));
-      this.validate(mutation, actorId);
+      await this.validate(tx, mutation, actorId);
       const changedTitle =
         mutation.kind === 'task.create' || mutation.kind === 'task.update'
           ? mutation.task.title
           : mutation.kind === 'task.complete' || mutation.kind === 'task.delete'
-            ? this.task(mutation.id).title
+            ? (await this.task(mutation.id, tx)).title
             : null;
-      let targetId = 'id' in mutation ? mutation.id : randomUUID();
+      let targetId = 'id' in mutation ? mutation.id : crypto.randomUUID();
       if (mutation.kind === 'task.create') {
         const task: Task = {
           ...mutation.task,
@@ -396,20 +425,22 @@ export class Household {
           completedAt: null,
           missedDates: [],
         };
-        this.db.sql
-          .prepare('INSERT INTO tasks VALUES (?, ?, ?)')
-          .run(task.id, JSON.stringify(task), task.revision);
+        await tx.run(
+          'INSERT INTO household_tasks VALUES (?, ?, ?)',
+          task.id,
+          JSON.stringify(task),
+          task.revision,
+        );
       } else if (mutation.kind === 'task.update' || mutation.kind === 'task.complete') {
-        const task = this.task(mutation.id);
+        const task = await this.task(mutation.id, tx);
         if (mutation.kind === 'task.update') {
           if (task.schedule && task.dueAt) {
-            for (const dueAt of recurrenceDates(task.dueAt, task.schedule, this.clock()).missed) {
-              this.db.sql
-                .prepare(
-                  "INSERT OR IGNORE INTO task_history(task_id, due_at, outcome) VALUES (?, ?, 'missed')",
-                )
-                .run(task.id, dueAt);
-            }
+            for (const dueAt of recurrenceDates(task.dueAt, task.schedule, this.clock()).missed)
+              await tx.run(
+                "INSERT OR IGNORE INTO task_history(task_id, due_at, outcome) VALUES (?, ?, 'missed')",
+                task.id,
+                dueAt,
+              );
           }
           Object.assign(task, mutation.task, {
             dueAt: mutation.task.dueAt
@@ -423,16 +454,18 @@ export class Household {
             throw new DomainError('The recurring schedule advanced. Review a new preview.', 409);
           }
           for (const dueAt of dates.missed)
-            this.db.sql
-              .prepare(
-                "INSERT OR IGNORE INTO task_history(task_id, due_at, outcome) VALUES (?, ?, 'missed')",
-              )
-              .run(task.id, dueAt);
-          this.db.sql
-            .prepare(
-              "INSERT INTO task_history(task_id, due_at, outcome, completed_by, completed_at) VALUES (?, ?, 'completed', ?, ?)",
-            )
-            .run(task.id, dates.current, actorId, this.clock().toISOString());
+            await tx.run(
+              "INSERT OR IGNORE INTO task_history(task_id, due_at, outcome) VALUES (?, ?, 'missed')",
+              task.id,
+              dueAt,
+            );
+          await tx.run(
+            "INSERT INTO task_history(task_id, due_at, outcome, completed_by, completed_at) VALUES (?, ?, 'completed', ?, ?)",
+            task.id,
+            dates.current,
+            actorId,
+            this.clock().toISOString(),
+          );
           task.dueAt = dates.next;
           task.completedAt = null;
           task.completedBy = null;
@@ -442,32 +475,48 @@ export class Household {
           task.completedAt = this.clock().toISOString();
         }
         task.revision += 1;
-        this.db.sql
-          .prepare('UPDATE tasks SET value=?, revision=? WHERE id=?')
-          .run(JSON.stringify(task), task.revision, task.id);
+        await tx.run(
+          'UPDATE household_tasks SET value=?, revision=? WHERE id=?',
+          JSON.stringify(task),
+          task.revision,
+          task.id,
+        );
       } else if (mutation.kind === 'task.delete') {
-        this.db.sql.prepare('DELETE FROM task_history WHERE task_id=?').run(mutation.id);
-        this.db.sql.prepare('DELETE FROM tasks WHERE id=?').run(mutation.id);
+        await tx.run('DELETE FROM task_history WHERE task_id=?', mutation.id);
+        await tx.run('DELETE FROM household_tasks WHERE id=?', mutation.id);
       } else if (mutation.kind === 'preferences.update') {
         targetId = actorId;
-        this.db.sql
-          .prepare('UPDATE preferences SET value=?, revision=revision+1 WHERE user_id=?')
-          .run(JSON.stringify(mutation.preferences), actorId);
+        await tx.run(
+          'UPDATE preferences SET value=?, revision=revision+1 WHERE user_id=?',
+          JSON.stringify(mutation.preferences),
+          actorId,
+        );
       } else {
-        this.db.sql
-          .prepare('INSERT INTO threads VALUES (?, ?, ?, ?)')
-          .run(targetId, mutation.title, mutation.category, this.clock().toISOString());
+        await tx.run(
+          'INSERT INTO threads VALUES (?, ?, ?, ?)',
+          targetId,
+          mutation.title,
+          mutation.category,
+          this.clock().toISOString(),
+        );
       }
       const result = { ok: true, targetId };
-      this.db.sql
-        .prepare('UPDATE previews SET applied_at=?, result=? WHERE id=?')
-        .run(this.clock().getTime(), JSON.stringify(result), previewId);
-      this.db.sql
-        .prepare('INSERT INTO audit(actor_id,kind,target_id,created_at) VALUES (?,?,?,?)')
-        .run(actorId, mutation.kind, targetId, this.clock().toISOString());
+      await tx.run(
+        'UPDATE previews SET applied_at=?, result=? WHERE id=?',
+        this.clock().getTime(),
+        JSON.stringify(result),
+        previewId,
+      );
+      await tx.run(
+        'INSERT INTO audit(actor_id,kind,target_id,created_at) VALUES (?,?,?,?)',
+        actorId,
+        mutation.kind,
+        targetId,
+        this.clock().toISOString(),
+      );
       if (changedTitle)
-        notifyPartner(
-          this.db,
+        await notifyPartner(
+          tx,
           actorId,
           previewId,
           mutation.kind,

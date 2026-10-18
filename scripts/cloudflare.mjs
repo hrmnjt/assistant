@@ -24,6 +24,7 @@ const env = {
 const wrangler = ['./node_modules/wrangler/bin/wrangler.js'];
 const commands = {
   check: [
+    ['./node_modules/typescript/bin/tsc', '--noEmit'],
     ['./node_modules/typescript/bin/tsc', '-p', 'cloudflare/tsconfig.json'],
     ['./node_modules/typescript/bin/tsc', '-p', 'cloudflare/tests/tsconfig.json'],
     [
@@ -50,12 +51,32 @@ const commands = {
       '8787',
     ],
   ],
-  deploy: [[...wrangler, 'deploy', '--config', 'cloudflare/wrangler.jsonc']],
-  test: [['./node_modules/vitest/vitest.mjs', 'run', '--config', 'cloudflare/vitest.config.ts']],
+  // Code and secrets ship together; secrets missing from the file are kept.
+  deploy: [
+    [
+      ...wrangler,
+      'deploy',
+      '--config',
+      'cloudflare/wrangler.jsonc',
+      '--secrets-file',
+      'cloudflare/.prod.vars',
+    ],
+  ],
+  // The Worker under test serves the built client, so build it first.
+  test: [
+    ['./node_modules/vite/bin/vite.js', 'build', '--logLevel', 'warn'],
+    ['./node_modules/vitest/vitest.mjs', 'run', '--config', 'cloudflare/vitest.config.ts'],
+  ],
   wrangler: [[...wrangler, ...process.argv.slice(3)]],
 };
 const selected = commands[process.argv[2]];
 if (!selected) throw new Error('Unknown Cloudflare command');
+if (process.argv[2] === 'deploy' && !existsSync('cloudflare/.prod.vars')) {
+  console.error(
+    'Create cloudflare/.prod.vars first: npm run configure -- --production https://<your app origin>',
+  );
+  process.exit(1);
+}
 for (const args of selected) {
   const child = spawn(process.execPath, args, { env, stdio: 'inherit' });
   const interrupt = () => child.kill('SIGINT'),

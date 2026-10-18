@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { createModels, type Models } from '@earendil-works/pi-ai/models';
 import {
@@ -7,9 +6,9 @@ import {
   type ConversationId,
   type ModelRef,
 } from '@earendil-works/pi-durable';
-import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
+import { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite';
 import { z } from 'zod';
-import type { Database } from './database.js';
+import type { Row, Store } from './database.js';
 import { DomainError, type Household } from './domain.js';
 import type { CalendarService } from './calendar.js';
 import type { ChatStatus, Message, Preview } from '../src/types.js';
@@ -36,7 +35,7 @@ export class Conversations {
   private closing = false;
   private failure = false;
   private constructor(
-    private db: Database,
+    private db: Store,
     private harness: Harness,
     private options: Options,
   ) {}
@@ -53,12 +52,13 @@ export class Conversations {
   get healthy() {
     return !this.closing && !this.failure;
   }
-  static async open(db: Database, path: string, options: Options = {}) {
+  /** Pi shares the household store, so its commits and household writes use one queue. */
+  static async open(db: Store, options: Options = {}) {
     const registry = createRegistry();
     if (options.household)
       registry.install(householdExtension(db, options.household, options.calendar));
     const harness = await Harness.open(
-      await openNodeSqliteStorage(path),
+      await SqliteStorage.open(db),
       {
         models: boundedModels(db, options.models ?? createModels()),
         registry,
@@ -80,24 +80,45 @@ export class Conversations {
     });
     if (instance.configured) {
       // Re-admit the exact persisted request; Pi's request ID resolves an already admitted input.
-      for (const row of db.sql.prepare("SELECT * FROM assistant_runs WHERE status='running'").all())
+      for (const row of await db.all<Row>("SELECT * FROM assistant_runs WHERE status='running'"))
         await instance
           .admit(row)
           .catch(() => instance.failed(String(row.thread_id), String(row.request_key)));
-      for (const row of db.sql
-        .prepare("SELECT DISTINCT thread_id FROM assistant_runs WHERE status='queued'")
-        .all())
+      for (const row of await db.all<Row>(
+        "SELECT DISTINCT thread_id FROM assistant_runs WHERE status='queued'",
+      ))
         await instance.drain(String(row.thread_id));
       harness.resume();
     }
     return instance;
   }
+  /** Whether assistant work is unfinished, so the host keeps a recovery wakeup armed. */
+  async pending() {
+    return (
+      this.configured &&
+      Boolean(
+        await this.db.get(
+          "SELECT 1 AS found FROM assistant_runs WHERE status IN ('running','queued') LIMIT 1",
+        ),
+      )
+    );
+  }
+  /** Wait for running assistant work, at most `timeoutMs`; the work itself is durable. */
+  async settle(timeoutMs: number) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      this.harness.waitForIdle(ctx).catch(() => undefined),
+      new Promise((resolve) => (timer = setTimeout(resolve, timeoutMs))),
+    ]);
+    clearTimeout(timer);
+  }
   private async conversation(threadId: string) {
-    if (!this.db.sql.prepare('SELECT id FROM threads WHERE id=?').get(threadId))
+    if (!(await this.db.get('SELECT id FROM threads WHERE id=?', threadId)))
       throw new DomainError('Conversation not found.', 404);
-    const row = this.db.sql
-      .prepare('SELECT conversation_id FROM pi_conversations WHERE thread_id=?')
-      .get(threadId);
+    const row = await this.db.get<Row>(
+      'SELECT conversation_id FROM pi_conversations WHERE thread_id=?',
+      threadId,
+    );
     if (row) {
       const conversation = await this.harness.conversation(
         Number(row.conversation_id) as ConversationId,
@@ -110,7 +131,7 @@ export class Conversations {
       { ownership: { kind: 'ownerless' } },
       ctx,
     );
-    this.db.sql.prepare('INSERT INTO pi_conversations VALUES (?,?)').run(threadId, created.id);
+    await this.db.run('INSERT INTO pi_conversations VALUES (?,?)', threadId, String(created.id));
     return created;
   }
   private serialize<T>(threadId: string, work: () => Promise<T>): Promise<T> {
@@ -128,6 +149,11 @@ export class Conversations {
     return this.serialize(threadId, async () => {
       const conversation = await this.conversation(threadId);
       const page = await conversation.entries({ order: 'descending' }, 200, undefined, ctx);
+      const replyTimes = new Map(
+        (await this.db.all<Row>('SELECT task_id, created_at FROM assistant_reply_times')).map(
+          (row) => [String(row.task_id), String(row.created_at)],
+        ),
+      );
       const messages = page.items
         .flatMap((entry): Message[] => {
           if (entry.kind === 'household.message') return [messageSchema.parse(entry.data)];
@@ -151,21 +177,19 @@ export class Conversations {
                   threadId,
                   authorId: 'assistant',
                   text,
-                  createdAt: String(
-                    this.db.sql
-                      .prepare('SELECT created_at FROM assistant_reply_times WHERE task_id=?')
-                      .get(entry.byTaskId ?? '')?.created_at ??
-                      new Date(message.timestamp).toISOString(),
-                  ),
+                  createdAt:
+                    replyTimes.get(String(entry.byTaskId ?? '')) ??
+                    new Date(message.timestamp).toISOString(),
                 },
               ]
             : [];
         })
         .reverse();
       const visible = new Set(messages.map((message) => message.id));
-      for (const row of this.db.sql
-        .prepare('SELECT * FROM assistant_runs WHERE thread_id=? ORDER BY rowid DESC LIMIT 20')
-        .all(threadId)) {
+      for (const row of await this.db.all<Row>(
+        'SELECT * FROM assistant_runs WHERE thread_id=? ORDER BY rowid DESC LIMIT 20',
+        threadId,
+      )) {
         if (!visible.has(String(row.message_id)))
           messages.push({
             id: String(row.message_id),
@@ -178,39 +202,39 @@ export class Conversations {
       return messages.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
     });
   }
-  status(threadId: string): ChatStatus {
-    if (!this.db.sql.prepare('SELECT id FROM threads WHERE id=?').get(threadId))
+  async status(threadId: string): Promise<ChatStatus> {
+    if (!(await this.db.get('SELECT id FROM threads WHERE id=?', threadId)))
       throw new DomainError('Conversation not found.', 404);
-    const last = this.db.sql
-      .prepare(
-        'SELECT status,error FROM assistant_runs WHERE thread_id=? ORDER BY rowid DESC LIMIT 1',
-      )
-      .get(threadId);
-    const previews = this.db.sql
-      .prepare(
-        'SELECT actor_id,preview_id FROM assistant_previews WHERE thread_id=? ORDER BY created_at,preview_id',
-      )
-      .all(threadId);
+    const last = await this.db.get<Row>(
+      'SELECT status,error FROM assistant_runs WHERE thread_id=? ORDER BY rowid DESC LIMIT 1',
+      threadId,
+    );
+    const previews = await this.db.all<Row>(
+      'SELECT actor_id,preview_id FROM assistant_previews WHERE thread_id=? ORDER BY created_at,preview_id',
+      threadId,
+    );
     const recovered = new Map<string, Map<string, Preview>>();
     for (const row of previews) {
       const actorId = String(row.actor_id);
       if (!recovered.has(actorId))
         recovered.set(
           actorId,
-          new Map(recoverablePreviews(this.db, actorId).map((preview) => [preview.id, preview])),
+          new Map(
+            (await recoverablePreviews(this.db, actorId)).map((preview) => [preview.id, preview]),
+          ),
         );
     }
     const running = Boolean(
-      this.db.sql
-        .prepare("SELECT 1 FROM assistant_runs WHERE thread_id=? AND status='running'")
-        .get(threadId),
+      await this.db.get(
+        "SELECT 1 AS found FROM assistant_runs WHERE thread_id=? AND status='running'",
+        threadId,
+      ),
     );
     const queued = Number(
-      this.db.sql
-        .prepare(
-          "SELECT COUNT(*) AS count FROM assistant_runs WHERE thread_id=? AND status='queued'",
-        )
-        .get(threadId)!.count,
+      (await this.db.get<Row>(
+        "SELECT COUNT(*) AS count FROM assistant_runs WHERE thread_id=? AND status='queued'",
+        threadId,
+      ))!.count,
     );
     return {
       running: running && this.configured,
@@ -218,7 +242,7 @@ export class Conversations {
       error: last?.error
         ? String(last.error)
         : (running || queued > 0) && !this.configured
-          ? 'An unfinished assistant request is paused. Reconnect ChatGPT on the household server to resume it.'
+          ? 'An unfinished assistant request is paused. Reconnect ChatGPT to resume it.'
           : null,
       previews: previews.flatMap((row) => {
         const actorId = String(row.actor_id);
@@ -231,9 +255,11 @@ export class Conversations {
     return this.serialize(threadId, async () => {
       const conversation = await this.conversation(threadId);
       const requestKey = `${authorId}:${requestId}`;
-      const prior = this.db.sql
-        .prepare('SELECT * FROM assistant_runs WHERE thread_id=? AND request_key=?')
-        .get(threadId, requestKey);
+      const prior = await this.db.get<Row>(
+        'SELECT * FROM assistant_runs WHERE thread_id=? AND request_key=?',
+        threadId,
+        requestKey,
+      );
       if (prior) {
         if (prior.text !== text)
           throw new DomainError('This message ID was already used for different text.', 409);
@@ -242,20 +268,19 @@ export class Conversations {
       const paused =
         !this.configured &&
         Boolean(
-          this.db.sql
-            .prepare(
-              "SELECT 1 FROM assistant_runs WHERE thread_id=? AND status IN ('running','queued')",
-            )
-            .get(threadId),
+          await this.db.get(
+            "SELECT 1 AS found FROM assistant_runs WHERE thread_id=? AND status IN ('running','queued')",
+            threadId,
+          ),
         );
       // Only new assistant requests wait for the paused one; human messages stay available.
       if (paused && askAssistant)
         throw new DomainError(
-          'This conversation has an unfinished assistant request. Reconnect ChatGPT on the server to resume it.',
+          'This conversation has an unfinished assistant request. Reconnect ChatGPT to resume it.',
           409,
         );
       const message: Message = {
-        id: randomUUID(),
+        id: crypto.randomUUID(),
         threadId,
         authorId,
         text,
@@ -307,20 +332,26 @@ export class Conversations {
           throw new DomainError('The message could not be saved. Please retry.', 503);
       } else {
         const queued = Number(
-          this.db.sql
-            .prepare(
-              "SELECT COUNT(*) AS count FROM assistant_runs WHERE thread_id=? AND status='queued'",
-            )
-            .get(threadId)!.count,
+          (await this.db.get<Row>(
+            "SELECT COUNT(*) AS count FROM assistant_runs WHERE thread_id=? AND status='queued'",
+            threadId,
+          ))!.count,
         );
         if (queued >= 10)
           throw new DomainError(
             'Ten messages are already waiting in this chat. Let the assistant catch up.',
             429,
           );
-        this.db.sql
-          .prepare('INSERT INTO assistant_runs VALUES (?,?,?,?,?,?,?,NULL)')
-          .run(threadId, requestKey, authorId, text, message.id, message.createdAt, 'queued');
+        await this.db.run(
+          'INSERT INTO assistant_runs VALUES (?,?,?,?,?,?,?,NULL)',
+          threadId,
+          requestKey,
+          authorId,
+          text,
+          message.id,
+          message.createdAt,
+          'queued',
+        );
         await this.drain(threadId);
       }
       return { ok: true };
@@ -330,38 +361,37 @@ export class Conversations {
     if (
       this.closing ||
       !this.configured ||
-      this.db.sql
-        .prepare("SELECT 1 FROM assistant_runs WHERE thread_id=? AND status='running'")
-        .get(threadId)
+      (await this.db.get(
+        "SELECT 1 AS found FROM assistant_runs WHERE thread_id=? AND status='running'",
+        threadId,
+      ))
     )
       return;
-    const row = this.db.sql
-      .prepare(
-        "SELECT * FROM assistant_runs WHERE thread_id=? AND status='queued' ORDER BY rowid LIMIT 1",
-      )
-      .get(threadId);
+    const row = await this.db.get<Row>(
+      "SELECT * FROM assistant_runs WHERE thread_id=? AND status='queued' ORDER BY rowid LIMIT 1",
+      threadId,
+    );
     if (!row) return;
-    this.db.sql
-      .prepare("UPDATE assistant_runs SET status='running' WHERE thread_id=? AND request_key=?")
-      .run(threadId, String(row.request_key));
+    await this.db.run(
+      "UPDATE assistant_runs SET status='running' WHERE thread_id=? AND request_key=?",
+      threadId,
+      String(row.request_key),
+    );
     try {
       await this.admit(row);
     } catch {
-      this.failed(threadId, String(row.request_key));
+      await this.failed(threadId, String(row.request_key));
       await this.drain(threadId);
     }
   }
-  private failed(threadId: string, key: string) {
+  private async failed(threadId: string, key: string) {
     if (this.closing) return;
-    this.db.sql
-      .prepare(
-        "UPDATE assistant_runs SET status='error',error=? WHERE thread_id=? AND request_key=?",
-      )
-      .run(
-        'The assistant could not finish. Review any prepared changes before asking again. If needed, manage ChatGPT usage or reconnect on the server.',
-        threadId,
-        key,
-      );
+    await this.db.run(
+      "UPDATE assistant_runs SET status='error',error=? WHERE thread_id=? AND request_key=?",
+      'The assistant could not finish. Review any prepared changes before asking again. If needed, manage ChatGPT usage or reconnect it.',
+      threadId,
+      key,
+    );
   }
   private async admit(row: Record<string, unknown>) {
     const threadId = String(row.thread_id),
@@ -369,8 +399,10 @@ export class Conversations {
       watchKey = `${threadId}:${key}`;
     const conversation = await this.conversation(threadId);
     await conversation.configure({ model: this.options.model, thinkingLevel: 'low' }, ctx);
-    const author = this.options.household!.people().find((person) => person.id === row.author_id);
-    const prefs = this.options.household!.preferences(String(row.author_id));
+    const author = (await this.options.household!.people()).find(
+      (person) => person.id === row.author_id,
+    );
+    const prefs = await this.options.household!.preferences(String(row.author_id));
     const recent = (await conversation.entries({ order: 'descending' }, 30, undefined, ctx)).items
       .filter((entry) => entry.kind === 'household.message')
       .slice(0, 10)
@@ -399,15 +431,15 @@ export class Conversations {
     this.watching.add(watchKey);
     void submission
       .wait(ctx)
-      .then((settled) => {
+      .then(async (settled) => {
         if (this.closing) return;
-        if (settled.status !== 'done') this.failed(threadId, key);
+        if (settled.status !== 'done') await this.failed(threadId, key);
         else
-          this.db.sql
-            .prepare(
-              "UPDATE assistant_runs SET status='done',error=NULL WHERE thread_id=? AND request_key=?",
-            )
-            .run(threadId, key);
+          await this.db.run(
+            "UPDATE assistant_runs SET status='done',error=NULL WHERE thread_id=? AND request_key=?",
+            threadId,
+            key,
+          );
       })
       .catch(() => this.failed(threadId, key))
       .finally(() => {

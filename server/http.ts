@@ -3,7 +3,7 @@ export const securityHeaders = {
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'same-origin',
   'Content-Security-Policy':
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
 };
 export function json(value: unknown, status = 200, headers: Record<string, string> = {}) {
   return Response.json(value, { status, headers: { ...securityHeaders, ...headers } });
@@ -16,10 +16,10 @@ export class RequestError extends Error {
     super(message);
   }
 }
-export async function body(request: Request) {
+/** Parse a JSON body, counting the streamed bytes so a missing Content-Length cannot bypass the limit. */
+export async function body(request: Request, limit = 65_536) {
   if (!request.headers.get('content-type')?.startsWith('application/json'))
     throw new RequestError('Send JSON.');
-  // Check actual streamed bytes, including requests without Content-Length.
   const reader = request.body?.getReader();
   if (!reader) throw new RequestError('Missing request body.');
   const chunks: Uint8Array[] = [];
@@ -28,7 +28,7 @@ export async function body(request: Request) {
     const { done, value } = await reader.read();
     if (done) break;
     length += value.length;
-    if (length > 16384) {
+    if (length > limit) {
       await reader.cancel();
       throw new RequestError('Request too large.', 413);
     }
