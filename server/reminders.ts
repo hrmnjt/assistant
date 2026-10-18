@@ -156,13 +156,47 @@ export class Reminders {
       throw error;
     }
   }
+  private defer(noticeId: string, failure: 'calendar-unavailable' | 'push-transient') {
+    const previous = this.db.sql
+      .prepare('SELECT attempts FROM notice_retries WHERE notice_id=?')
+      .get(noticeId);
+    const attempts = Math.min(16, Number(previous?.attempts ?? 0) + 1);
+    const delay = Math.min(900_000, 60_000 * 2 ** Math.min(attempts - 1, 4));
+    this.db.sql
+      .prepare(
+        `INSERT INTO notice_retries VALUES (?,?,?,?)
+      ON CONFLICT(notice_id) DO UPDATE SET next_attempt_at=excluded.next_attempt_at,attempts=excluded.attempts,failure=excluded.failure`,
+      )
+      .run(noticeId, this.clock().getTime() + delay, attempts, failure);
+  }
   async deliver() {
     if (this.sending) return;
     this.sending = true;
     try {
+      const now = this.clock().getTime();
+      // Retire expired push work before any dependency check, across the whole
+      // queue rather than just the first batch. Keep its historical inbox row.
+      this.db.sql
+        .prepare("UPDATE notices SET delivery='inbox' WHERE delivery='pending' AND created_at<?")
+        .run(new Date(now - 7200_000).toISOString());
+      // Round-robin recipient/kind lanes. One broken integration or device must
+      // not monopolize all twenty slots while unrelated work is ready.
       const notices = this.db.sql
-        .prepare("SELECT * FROM notices WHERE delivery='pending' ORDER BY created_at LIMIT 20")
-        .all();
+        .prepare(
+          `
+        SELECT * FROM (
+          SELECT n.*,ROW_NUMBER() OVER (PARTITION BY n.user_id,
+            CASE WHEN n.id LIKE 'appointment:%' THEN 'appointment'
+              WHEN n.id LIKE 'task:%' THEN 'task'
+              WHEN n.id LIKE 'summary:%' THEN 'summary'
+              WHEN n.id LIKE 'change:%' THEN 'change' ELSE 'other' END
+            ORDER BY n.created_at,n.rowid) AS lane_position
+          FROM notices n LEFT JOIN notice_retries r ON r.notice_id=n.id
+          WHERE n.delivery='pending' AND COALESCE(r.next_attempt_at,0)<=?
+        ) ORDER BY lane_position,created_at,id LIMIT 20
+      `,
+        )
+        .all(now);
       for (const notice of notices) {
         const taskDeadline = String(notice.id).startsWith('task:');
         if (taskDeadline && !this.taskDeadlineCurrent(String(notice.id), String(notice.user_id))) {
@@ -171,7 +205,10 @@ export class Reminders {
         }
         if (String(notice.id).startsWith('appointment:')) {
           const calendar = this.calendar?.();
-          if (calendar?.status !== 'connected') continue;
+          if (calendar?.status !== 'connected') {
+            this.defer(String(notice.id), 'calendar-unavailable');
+            continue;
+          }
           if (
             !calendar.events.some(
               (event) => this.appointmentId(event, String(notice.user_id)) === notice.id,
@@ -189,6 +226,7 @@ export class Reminders {
           continue;
         }
         // Persist each device result so a retry does not resend successful deliveries.
+        let obsolete = false;
         for (const subscription of subscriptions) {
           // Recheck after each awaited device delivery: the task can change while
           // the previous device's push request is in flight.
@@ -197,6 +235,7 @@ export class Reminders {
             !this.taskDeadlineCurrent(String(notice.id), String(notice.user_id))
           ) {
             this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
+            obsolete = true;
             break;
           }
           const deliveryId = `${notice.id}:${String(subscription.endpoint)}`;
@@ -230,6 +269,7 @@ export class Reminders {
             }
           }
         }
+        if (obsolete) continue;
         const remaining = this.db.sql
           .prepare('SELECT endpoint FROM push_subscriptions WHERE user_id=?')
           .all(notice.user_id)
@@ -241,6 +281,7 @@ export class Reminders {
           );
         if (!remaining || this.clock().getTime() - Date.parse(String(notice.created_at)) > 7200_000)
           this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
+        else this.defer(String(notice.id), 'push-transient');
       }
     } finally {
       this.sending = false;

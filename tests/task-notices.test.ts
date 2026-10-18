@@ -180,6 +180,7 @@ test('a failed-device retry is suppressed after reassignment without resending t
       task: { ...f.fields, ownerId: 'partner' },
     });
     f.beforeSend(() => undefined);
+    f.time('2026-10-14T07:01:00Z'); // the persisted device retry is now due
     await f.reminders.deliver();
     assert.equal(f.sent.filter((item) => item.tag === f.noticeId).length, 1);
     assert.equal(
