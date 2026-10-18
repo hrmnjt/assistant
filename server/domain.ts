@@ -67,11 +67,13 @@ export const mutationSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 
+const recurrenceStep = (recurrence: Schedule) =>
+  recurrence.frequency === 'daily' ? { days: 1 } : { weeks: 1 };
 export function recurrenceDates(dueAt: string, recurrence: Schedule, now: Date) {
   let cursor = DateTime.fromISO(dueAt, { zone: recurrence.timezone });
   const until = DateTime.fromJSDate(now);
   const elapsed: string[] = [];
-  const step = recurrence.frequency === 'daily' ? { days: 1 } : { weeks: 1 };
+  const step = recurrenceStep(recurrence);
   // Calendar arithmetic preserves local wall-clock time across daylight-saving changes.
   while (cursor.plus(step) <= until) {
     elapsed.push(cursor.toUTC().toISO()!);
@@ -82,6 +84,30 @@ export function recurrenceDates(dueAt: string, recurrence: Schedule, now: Date) 
     current: cursor.toUTC().toISO()!,
     next: cursor.plus(step).toUTC().toISO()!,
   };
+}
+
+/**
+ * The earliest recorded occurrence that this schedule would make active again,
+ * now or later. Elapsed occurrences keep their recorded outcome; only the active
+ * occurrence is ever completed, so a recorded one must never become active.
+ */
+export function repeatedOccurrence(
+  dueAt: string,
+  recurrence: Schedule,
+  now: Date,
+  recorded: Iterable<string>,
+) {
+  const { current } = recurrenceDates(dueAt, recurrence, now);
+  const keys = [...new Set([...recorded].map(Date.parse))]
+    .filter((key) => key >= Date.parse(current))
+    .sort((a, b) => a - b);
+  // Continue the same calendar stepping as recurrenceDates from its active occurrence.
+  let cursor = DateTime.fromISO(current, { zone: recurrence.timezone });
+  for (const key of keys) {
+    while (cursor.toMillis() < key) cursor = cursor.plus(recurrenceStep(recurrence));
+    if (cursor.toMillis() === key) return cursor.toUTC().toISO()!;
+  }
+  return null;
 }
 
 export class Household {
@@ -125,18 +151,42 @@ export class Household {
     if (!row) throw new DomainError('This task no longer exists.', 404);
     return this.decorate(JSON.parse(String(row.value)));
   }
+  private recorded(taskId: string) {
+    return this.db.sql
+      .prepare('SELECT due_at, outcome FROM task_history WHERE task_id=? ORDER BY due_at')
+      .all(taskId)
+      .map((row) => ({ dueAt: String(row.due_at), outcome: String(row.outcome) }));
+  }
   private decorate(task: Task): Task {
-    const historic = this.db.sql
-      .prepare(
-        "SELECT due_at FROM task_history WHERE task_id=? AND outcome='missed' ORDER BY due_at",
-      )
-      .all(task.id)
-      .map((row) => String(row.due_at));
+    const recorded = this.recorded(task.id);
+    const historic = recorded.filter((row) => row.outcome === 'missed').map((row) => row.dueAt);
+    // An elapsed date that was already completed keeps that outcome after a reschedule.
+    const completed = new Set(
+      recorded.filter((row) => row.outcome === 'completed').map((row) => Date.parse(row.dueAt)),
+    );
     const pending =
       task.status === 'open' && task.dueAt && task.schedule
-        ? recurrenceDates(task.dueAt, task.schedule, this.clock()).missed
+        ? recurrenceDates(task.dueAt, task.schedule, this.clock()).missed.filter(
+            (dueAt) => !completed.has(Date.parse(dueAt)),
+          )
         : [];
-    return { ...task, missedDates: [...new Set([...historic, ...pending])] };
+    const missedDates = [...new Set([...historic, ...pending])].sort(
+      (a, b) => Date.parse(a) - Date.parse(b),
+    );
+    return { ...task, missedDates };
+  }
+  /** Reject schedules whose active occurrence would repeat a recorded outcome. */
+  private assertNewOccurrences(task: Task, dueAt: string, recurrence: Schedule) {
+    const recorded = this.recorded(task.id).map((row) => row.dueAt);
+    // Confirming an update first records the old schedule's elapsed dates as missed.
+    if (task.status === 'open' && task.schedule && task.dueAt)
+      recorded.push(...recurrenceDates(task.dueAt, task.schedule, this.clock()).missed);
+    const repeated = repeatedOccurrence(dueAt, recurrence, this.clock(), recorded);
+    if (repeated)
+      throw new DomainError(
+        `This schedule would repeat the ${DateTime.fromISO(repeated, { zone: recurrence.timezone }).toFormat('d LLL yyyy, HH:mm')} occurrence, which is already in this task's history. Choose a due date after it.`,
+        409,
+      );
   }
   threads(): Thread[] {
     return this.db.sql
@@ -160,6 +210,17 @@ export class Household {
         throw new DomainError('This task changed. Refresh it and review a new preview.', 409);
       if (task.status === 'completed' && mutation.kind === 'task.complete')
         throw new DomainError('This task is already complete.', 409);
+      if (mutation.kind === 'task.update' && mutation.task.schedule && mutation.task.dueAt)
+        this.assertNewOccurrences(task, mutation.task.dueAt, mutation.task.schedule);
+      if (mutation.kind === 'task.complete' && task.schedule && task.dueAt) {
+        // Older data may already hold such a state; never preview a completion that cannot apply.
+        const { current } = recurrenceDates(task.dueAt, task.schedule, this.clock());
+        if (this.recorded(task.id).some((row) => Date.parse(row.dueAt) === Date.parse(current)))
+          throw new DomainError(
+            "This occurrence is already in the task's history. Edit its due date to a later occurrence first.",
+            409,
+          );
+      }
     }
     if (
       mutation.kind === 'preferences.update' &&
