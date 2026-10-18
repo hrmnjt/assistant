@@ -47,13 +47,20 @@ test('signed out: loading, then the reason and a way back through Cloudflare Acc
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.getByLabel('Message', { exact: true })).toBeVisible();
 
-  // An Access sign-in that has ended redirects API calls; that reads as signed out, not offline.
-  await page.route('**/api/state', (route) =>
-    route.fulfill({
-      status: 302,
-      headers: { Location: 'https://household.cloudflareaccess.com/' },
-    }),
-  );
+  // An Access sign-in that has ended redirects API calls to its login page; that reads as
+  // signed out, not offline. Not every browser lets Playwright fulfill a redirect, so stand
+  // in for fetch: a manual-redirect request sees the opaque redirect, and one that follows
+  // it fails as a cross-origin fetch would.
+  await page.addInitScript(() => {
+    const original = window.fetch;
+    window.fetch = async (input, init) => {
+      if (!String(input).endsWith('/api/state')) return original(input, init);
+      if (init?.redirect !== 'manual') throw new TypeError('Load failed');
+      const response = new Response(null);
+      Object.defineProperty(response, 'type', { value: 'opaqueredirect' });
+      return response;
+    };
+  });
   await page.reload();
   await expect(page.getByRole('alert')).toHaveText(
     'Your sign-in has ended. Sign in again to continue.',
