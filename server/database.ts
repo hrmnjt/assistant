@@ -69,6 +69,10 @@ export const migrations: readonly string[] = [
   `CREATE TABLE assistant_maintenance_calls (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL,
     created_at INTEGER NOT NULL);
   CREATE INDEX assistant_maintenance_recent ON assistant_maintenance_calls(thread_id, created_at);`,
+  // The latest useful phone-push time of each notice, set by its kind's catch-up
+  // policy. Earlier notices keep their previous two-hour window after creation.
+  `ALTER TABLE notices ADD COLUMN push_until TEXT NOT NULL DEFAULT '';
+  UPDATE notices SET push_until=strftime('%Y-%m-%dT%H:%M:%fZ', created_at, '+2 hours');`,
 ];
 
 export class Database {

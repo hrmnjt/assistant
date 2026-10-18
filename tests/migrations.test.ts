@@ -46,6 +46,11 @@ function legacy(path: string) {
       "INSERT INTO task_history VALUES (?, '2026-10-14T06:00:00.000Z', 'completed', 'partner')",
     )
     .run('b1d2c3e4-0000-4000-8000-000000000001');
+  db.sql
+    .prepare(
+      "INSERT INTO notices(id,user_id,title,body,created_at) VALUES ('change:legacy:owner','owner','Changed','Task','2026-10-14T07:00:00.000Z')",
+    )
+    .run();
   db.sql.exec('PRAGMA user_version = 0');
   db.close();
 }
@@ -58,6 +63,11 @@ test('a populated pre-versioning database upgrades in place and reopens idempote
     let db = new Database(file);
     assert.equal(db.version, migrations.length);
     assert.ok(columns(db, 'task_history').includes('completed_at'));
+    // Existing notices keep their previous push window: two hours after creation.
+    assert.equal(
+      db.sql.prepare('SELECT push_until FROM notices').get()!.push_until,
+      '2026-10-14T09:00:00.000Z',
+    );
     let now = new Date('2026-10-15T05:00:00Z');
     const household = new Household(db, () => now);
     const [old] = household.history('b1d2c3e4-0000-4000-8000-000000000001');

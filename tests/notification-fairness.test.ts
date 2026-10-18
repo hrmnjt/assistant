@@ -75,9 +75,19 @@ function fixture() {
       failOwner = true;
     },
     insert(id: string, user = 'owner', age = 0) {
+      const created = now.getTime() - age;
       db.sql
-        .prepare('INSERT INTO notices(id,user_id,title,body,created_at) VALUES (?,?,?,?,?)')
-        .run(id, user, 'Safe title', 'Safe body', new Date(now.getTime() - age).toISOString());
+        .prepare(
+          'INSERT INTO notices(id,user_id,title,body,created_at,push_until) VALUES (?,?,?,?,?,?)',
+        )
+        .run(
+          id,
+          user,
+          'Safe title',
+          'Safe body',
+          new Date(created).toISOString(),
+          new Date(created + 7200_000).toISOString(),
+        );
     },
     task() {
       const preview = household.preview('owner', {
