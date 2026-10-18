@@ -590,8 +590,11 @@
     @apply max-h-36 min-h-11 resize-none text-base;
     field-sizing: fixed;
   }
+  .ask-assistant-row {
+    @apply flex flex-wrap items-center gap-x-3 pb-2;
+  }
   .ask-assistant-toggle {
-    @apply pb-2 text-sm text-muted-foreground;
+    @apply text-sm text-muted-foreground;
   }
   .channel-section-label {
     @apply px-2 py-3 text-xs font-semibold tracking-wider text-muted-foreground;

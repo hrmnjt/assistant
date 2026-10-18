@@ -165,8 +165,24 @@ export class HouseholdFixture {
           });
         return json(this.messages[threadId] ?? []);
       }
+      if (path.startsWith('/tasks/') && path.endsWith('/history')) return json([]);
       if (path === '/previews') {
         if (request.method() === 'GET') return json(this.state.previews);
+        // Like the server, reject proposals built from an outdated record.
+        if (body.kind === 'task.update' || body.kind === 'task.delete') {
+          const task = this.state.tasks.find((item) => item.id === body.id);
+          if (!task) return json({ error: 'This task no longer exists.' }, 404);
+          if (task.revision !== body.revision)
+            return json({ error: 'This task changed. Refresh it and review a new preview.' }, 409);
+        }
+        if (body.kind === 'calendar.update' || body.kind === 'calendar.delete') {
+          const event = this.state.calendar.events.find((item) => item.id === body.id);
+          if (!event || event.etag !== body.etag)
+            return json(
+              { error: 'This appointment changed in iCloud. Refresh and review a new preview.' },
+              409,
+            );
+        }
         const id = crypto.randomUUID();
         this.proposals.set(id, body);
         const preview: Preview = {
