@@ -42,6 +42,7 @@ import type {
   TaskOccurrence,
 } from './types';
 import { CalendarCard, CalendarView, EventForm } from './Calendar';
+import { mentionsAssistant } from './mentions';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -110,6 +111,17 @@ function App() {
   const followMessages = useRef(true);
   const activeLogin = useRef<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
+  // Set when the open editor's record changed underneath it; edits are kept.
+  const [editorNotice, setEditorNotice] = useState<{ text: string; gone: boolean } | null>(null);
+  const [editorVersion, setEditorVersion] = useState(0);
+  const editing = useRef<{ task: Task | null; event: CalendarEvent | null }>({
+    task: null,
+    event: null,
+  });
+  editing.current = {
+    task: taskForm && taskForm !== 'new' ? taskForm : null,
+    event: eventForm && eventForm !== 'new' ? eventForm : null,
+  };
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const [previewRetryable, setPreviewRetryable] = useState(true);
@@ -126,7 +138,11 @@ function App() {
   const clientId = useRef(crypto.randomUUID());
   const draftValue = useRef(draft);
   draftValue.current = draft;
-  const messageRequest = useRef<string | null>(null);
+  // The last submitted text keeps its request ID, so retrying after a lost
+  // response cannot duplicate it; newer typing never changes that identity.
+  const messageRequest = useRef<{ requestId: string; threadId: string; text: string } | null>(null);
+  const visibleThread = useRef<string | null>(null);
+  visibleThread.current = page === 'chat' ? threadId : null;
   useEffect(() => {
     const openUpdates = (event: MessageEvent) => {
       if (event.data?.type === 'open-updates') setShowNotices(true);
@@ -219,6 +235,11 @@ function App() {
     if (followMessages.current && messagesPanel.current)
       messagesPanel.current.scrollTop = messagesPanel.current.scrollHeight;
   }, [messages, chatStatus.previews, threadId]);
+  const editorTarget =
+    (taskForm && (taskForm === 'new' ? 'new-task' : taskForm.id)) ||
+    (eventForm && (eventForm === 'new' ? 'new-event' : eventForm.id)) ||
+    null;
+  useEffect(() => setEditorNotice(null), [editorTarget]);
   const reviewPreview = (proposal: Preview) => {
     setRecoveryOpen(false);
     setTaskForm(null);
@@ -228,21 +249,77 @@ function App() {
     setPreviewRetryable(!proposal.calendarOutcome || proposal.calendarOutcome.status === 'unknown');
     setPreview(proposal);
   };
-  const act = useCallback(async (mutation: Mutation) => {
+  /**
+   * After a stale-version conflict, load the authoritative record into the open
+   * editor. Its inputs keep the person's edits, and the next review compares
+   * them with the latest saved version using its current revision or ETag.
+   * Returns whether the editor now explains the change.
+   */
+  const reloadEditor = useCallback(async () => {
+    const { task, event } = editing.current;
+    if (!task && !event) return false;
     const actorId = activeLogin.current;
-    setBusy(true);
-    setError('');
-    setPreviewError('');
-    setPreviewRetryable(true);
     try {
-      const proposal = await api<Preview>('/previews', mutation);
-      if (activeLogin.current === actorId) setPreview(proposal);
-    } catch (problem) {
-      if (activeLogin.current === actorId) setError((problem as Error).message);
-    } finally {
-      if (activeLogin.current === actorId) setBusy(false);
+      if (event) await api('/calendar/refresh', {});
+      const value = await api<Snapshot>('/state');
+      if (activeLogin.current !== actorId) return false;
+      setState(value);
+      const latest = task
+        ? value.tasks.find((item) => item.id === task.id)
+        : value.calendar.events.find((item) => item.id === event!.id);
+      // Other errors, such as an unavailable preview, leave an unchanged record alone.
+      if (
+        latest &&
+        (task
+          ? (latest as Task).revision === task.revision
+          : (latest as CalendarEvent).etag === event!.etag)
+      )
+        return false;
+      const label = task ? 'task' : 'appointment';
+      if (latest && task) setTaskForm(latest as Task);
+      else if (latest) setEventForm(latest as CalendarEvent);
+      setEditorNotice(
+        latest
+          ? {
+              gone: false,
+              text: `This ${label} changed while you were editing. Your edits are still here; review again to compare them with the latest version.`,
+            }
+          : {
+              gone: true,
+              text: `This ${label} was deleted while you were editing, so these edits cannot be saved.`,
+            },
+      );
+      return true;
+    } catch {
+      // The conflict message stays the guidance.
+      return false;
     }
   }, []);
+  const act = useCallback(
+    async (mutation: Mutation) => {
+      const actorId = activeLogin.current;
+      setBusy(true);
+      setError('');
+      setPreviewError('');
+      setPreviewRetryable(true);
+      try {
+        const proposal = await api<Preview>('/previews', mutation);
+        if (activeLogin.current === actorId) setPreview(proposal);
+      } catch (problem) {
+        if (activeLogin.current !== actorId) return;
+        // A conflict on the open editor's record is explained inside the editor.
+        const handled =
+          [404, 409].includes((problem as { status?: number }).status ?? 0) &&
+          'id' in mutation &&
+          [editing.current.task?.id, editing.current.event?.id].includes(mutation.id) &&
+          (await reloadEditor());
+        if (!handled && activeLogin.current === actorId) setError((problem as Error).message);
+      } finally {
+        if (activeLogin.current === actorId) setBusy(false);
+      }
+    },
+    [reloadEditor],
+  );
   const cancelPreview = useCallback(() => {
     if (busy || !preview) return;
     const actorId = activeLogin.current;
@@ -292,7 +369,8 @@ function App() {
       if (!result.ok && result.calendarOutcome) {
         setPreview({ ...preview, calendarOutcome: result.calendarOutcome });
         setPreviewRetryable(result.calendarOutcome.status === 'unknown');
-        await refresh();
+        if (result.calendarOutcome.status === 'conflicted') await reloadEditor();
+        else await refresh();
         return;
       }
       if (threadForm) setThreadId(result.targetId);
@@ -311,6 +389,13 @@ function App() {
           ? outcome.status === 'unknown'
           : ((problem as { status?: number }).status ?? 500) >= 500,
       );
+      // A preview reviewed from an open editor belongs to that editor's record.
+      if (
+        outcome
+          ? outcome.status === 'conflicted'
+          : [404, 409].includes((problem as { status?: number }).status ?? 0)
+      )
+        await reloadEditor();
     } finally {
       if (activeLogin.current === actorId) setBusy(false);
     }
@@ -1026,40 +1111,71 @@ function App() {
                         onSubmit={async (event) => {
                           event.preventDefault();
                           if (!draft.trim() || busy) return;
+                          const submitted = draft;
+                          const text = submitted.trim();
+                          const target = thread.id;
+                          const actorId = activeLogin.current;
+                          const prior = messageRequest.current;
+                          const requestId =
+                            prior?.threadId === target && prior.text === text
+                              ? prior.requestId
+                              : crypto.randomUUID();
+                          messageRequest.current = { requestId, threadId: target, text };
+                          // Results apply only while the same login still shows this thread.
+                          const current = () =>
+                            activeLogin.current === actorId && visibleThread.current === target;
                           setBusy(true);
                           setError('');
                           try {
-                            const requestId = messageRequest.current ?? crypto.randomUUID();
-                            messageRequest.current = requestId;
-                            await api(`/threads/${thread.id}/messages`, {
-                              text: draft.trim(),
+                            await api(`/threads/${target}/messages`, {
+                              text,
                               requestId,
                               askAssistant:
-                                isAssistant ||
-                                askChannelAssistant ||
-                                /^@assistant\b/i.test(draft.trim()),
+                                isAssistant || askChannelAssistant || mentionsAssistant(text),
                             });
-                            messageRequest.current = null;
-                            setDraft('');
-                            if (composerInput.current) composerInput.current.style.height = 'auto';
+                            if (messageRequest.current?.requestId === requestId)
+                              messageRequest.current = null;
+                            if (!current()) return;
+                            // Clear only what was sent; keep anything typed while it was sending.
+                            setDraft((latest) =>
+                              latest === submitted
+                                ? ''
+                                : latest.startsWith(submitted)
+                                  ? latest.slice(submitted.length).trimStart()
+                                  : latest,
+                            );
+                            if (draftValue.current === submitted && composerInput.current)
+                              composerInput.current.style.height = 'auto';
                             followMessages.current = true;
-                            setMessages(await api<Message[]>(`/threads/${thread.id}/messages`));
-                            setChatStatus(await api<ChatStatus>(`/threads/${thread.id}/assistant`));
+                            const [value, assistant] = await Promise.all([
+                              api<Message[]>(`/threads/${target}/messages`),
+                              api<ChatStatus>(`/threads/${target}/assistant`),
+                            ]);
+                            if (!current()) return;
+                            setMessages(value);
+                            setChatStatus(assistant);
                           } catch (problem) {
-                            setError((problem as Error).message);
+                            if (current()) setError((problem as Error).message);
                           } finally {
-                            setBusy(false);
+                            if (activeLogin.current === actorId) setBusy(false);
                           }
                         }}
                       >
                         {!isAssistant && (
-                          <Label className="ask-assistant-toggle">
-                            <Switch
-                              checked={askChannelAssistant}
-                              onCheckedChange={setAskChannelAssistant}
-                            />
-                            <span>Ask Our day</span>
-                          </Label>
+                          <div className="ask-assistant-row">
+                            <Label className="ask-assistant-toggle">
+                              <Switch
+                                checked={askChannelAssistant}
+                                onCheckedChange={setAskChannelAssistant}
+                              />
+                              <span>Ask Our day</span>
+                            </Label>
+                            <span className="small muted" role="status">
+                              {askChannelAssistant || mentionsAssistant(draft)
+                                ? `${askChannelAssistant ? '' : '@assistant mentioned · '}Our day will reply`
+                                : ''}
+                            </span>
+                          </div>
                         )}
                         <div className="composer-input-row">
                           <Textarea
@@ -1074,7 +1190,6 @@ function App() {
                               event.target.style.height = 'auto';
                               event.target.style.height = `${Math.min(140, event.target.scrollHeight)}px`;
                               lastTyping.current = Date.now();
-                              messageRequest.current = null;
                             }}
                             rows={1}
                           />
@@ -1302,10 +1417,20 @@ function App() {
           title={taskForm === 'new' ? 'A new task' : 'Edit task'}
           close={() => setTaskForm(null)}
         >
+          {editorNotice && (
+            <EditorNotice
+              notice={editorNotice}
+              onDiscard={() => {
+                setEditorNotice(null);
+                setEditorVersion((version) => version + 1);
+              }}
+            />
+          )}
           <TaskForm
+            key={editorVersion}
             task={taskForm === 'new' ? undefined : taskForm}
             state={state}
-            busy={busy || !connected}
+            busy={busy || !connected || Boolean(editorNotice?.gone)}
             onSubmit={(task) =>
               void act(
                 taskForm === 'new'
@@ -1328,11 +1453,26 @@ function App() {
           title={eventForm === 'new' ? 'A shared appointment' : 'Shared appointment'}
           close={() => setEventForm(null)}
         >
+          {editorNotice && (
+            <EditorNotice
+              notice={editorNotice}
+              onDiscard={() => {
+                setEditorNotice(null);
+                setEditorVersion((version) => version + 1);
+              }}
+            />
+          )}
           <EventForm
+            key={editorVersion}
             event={eventForm === 'new' ? undefined : eventForm}
             defaultDate={eventForm === 'new' ? eventDate : undefined}
             zone={zone}
-            busy={busy || !connected || state.calendar.status !== 'connected'}
+            busy={
+              busy ||
+              !connected ||
+              state.calendar.status !== 'connected' ||
+              Boolean(editorNotice?.gone)
+            }
             onSubmit={(event) =>
               void act(
                 eventForm === 'new'
@@ -1489,6 +1629,30 @@ function App() {
         </Modal>
       )}
     </div>
+  );
+}
+
+function EditorNotice({
+  notice,
+  onDiscard,
+}: {
+  notice: { text: string; gone: boolean };
+  onDiscard: () => void;
+}) {
+  const alert = useRef<HTMLDivElement>(null);
+  // The editor may be scrolled to its actions; bring the explanation into view.
+  useEffect(() => alert.current?.scrollIntoView({ block: 'nearest' }), [notice.text]);
+  return (
+    <Alert role="alert" ref={alert}>
+      <AlertDescription>
+        {notice.text}
+        {!notice.gone && (
+          <Button variant="link" className="h-auto px-0" type="button" onClick={onDiscard}>
+            Discard my edits and show the latest
+          </Button>
+        )}
+      </AlertDescription>
+    </Alert>
   );
 }
 

@@ -127,9 +127,10 @@ export function Disclosure({
   return (
     <Collapsible className={className}>
       <CollapsibleTrigger asChild>
-        <Button variant="ghost" className="disclosure-trigger">
+        <Button variant="ghost" className="disclosure-trigger group">
           <span>{title}</span>
-          <ChevronDown className="transition-transform in-data-[state=open]:rotate-180" />
+          {/* Follow this trigger's state, not an enclosing open dialog's. */}
+          <ChevronDown className="transition-transform group-data-[state=open]:rotate-180" />
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent>{children}</CollapsibleContent>
