@@ -63,7 +63,13 @@ export class Notices {
   ) {
     this.publicKey = push.publicKey || null;
     // Keep the VAPID pair stable: a new pair invalidates every phone's subscription.
-    this.enabled = Boolean(push.contact && push.publicKey && push.privateKey);
+    this.enabled = Boolean(push.publicKey && push.privateKey);
+  }
+  /** Push services' contact for this app: the email of the person who set up the household. */
+  private async contact() {
+    const row = await this.db.get<Row>("SELECT username FROM users WHERE id='owner'");
+    const email = String(row?.username ?? '');
+    return email.includes('@') ? `mailto:${email}` : 'mailto:household@localhost';
   }
   /** The plugins whose notices this delivers; partner-change notices are the core's own. */
   use(plugins: readonly Plugin[]) {
@@ -183,7 +189,7 @@ export class Notices {
               url: '/?updates=1',
             }),
             {
-              subject: this.push.contact!,
+              subject: this.push.contact ?? (await this.contact()),
               publicKey: this.push.publicKey!,
               privateKey: this.push.privateKey!,
             },

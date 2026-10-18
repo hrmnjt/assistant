@@ -186,7 +186,7 @@ export class CalendarService {
         error:
           error instanceof DomainError
             ? error.message
-            : 'The shared calendar could not be refreshed. The owner needs to check the connection.',
+            : 'The shared calendar could not be refreshed. Check the iCloud connection.',
       };
     }
   }

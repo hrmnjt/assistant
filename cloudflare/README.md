@@ -14,10 +14,10 @@ settings are in the [README](../README.md#run-on-the-mac).
 - `.dev.vars` (local, optional) and `.prod.vars` (deployment): private settings
   created by `npm run configure`, ignored by Git; `npm run secrets` uploads
   `.prod.vars` as Worker secrets. See [.dev.vars.example](.dev.vars.example).
-- `tests/`: workerd tests of the real Worker; `vitest.config.ts` configures a
-  test Cloudflare Access application and blanks every documented setting, so a
-  developer's `.dev.vars` never reaches them. The tests sign Access tokens with
-  their own key and serve it at the team's certificate URL.
+- `tests/`: workerd tests of the real Worker; `vitest.config.ts` blanks every
+  documented setting, so a developer's `.dev.vars` never reaches them. The
+  tests call the Worker as Cloudflare does, with or without an Access identity
+  on the request context.
 
 The runner `scripts/cloudflare.mjs` keeps Wrangler's configuration, login,
 logs, temporary bundles and test caches under `.cache/cloudflare/`, and local
@@ -41,10 +41,10 @@ when it creates earlier work, and a read refreshes a calendar older than a
 minute. Pending assistant work resumes on the next wakeup after an eviction.
 
 If configuration is missing or invalid, the API answers 503 with a message
-naming the setting; other startup errors are not exposed. Without
-`ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` the app runs as a development server,
-which answers only on loopback addresses, so a deployment missing them refuses
-every request instead of running without sign-in. If Pi storage fails,
+naming the setting; other startup errors are not exposed. Only
+`npm run dev` sets `HOUSEHOLD_DEVELOPMENT` (no sign-in, loopback addresses
+only); a deployment needs the identity Cloudflare Access gives each request.
+The Worker removes any identity header a client sends before setting its own. If Pi storage fails,
 the object restarts and reopens from committed state.
 
 ## Delivery semantics

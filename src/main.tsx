@@ -39,6 +39,7 @@ import type {
   Mutation,
   Preferences,
   Preview,
+  SetupNeeded,
   Snapshot,
   Task,
   TaskOccurrence,
@@ -102,6 +103,7 @@ async function api<T>(
       {
         status: response.status,
         calendarOutcome: value.calendarOutcome,
+        setup: value.setup,
       },
     );
   return value;
@@ -112,6 +114,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(true);
+  const [setup, setSetup] = useState<SetupNeeded | null>(null);
   const [signedOut, setSignedOut] = useState({
     status: 0,
     message: 'The household app can’t be reached right now. Try again in a moment.',
@@ -179,10 +182,14 @@ function App() {
     try {
       const value = await api<Snapshot>('/state');
       setState(value);
+      setSetup(null);
       setConnected(true);
     } catch (problem) {
       const status = (problem as { status?: number }).status;
-      if (status === 401 || status === 403) {
+      if (status === 428) {
+        setState(null);
+        setSetup((problem as { setup: SetupNeeded }).setup);
+      } else if (status === 401 || status === 403) {
         setState(null);
         setSignedOut({ status, message: (problem as Error).message });
       } else setConnected(false);
@@ -491,7 +498,11 @@ function App() {
         <p>Finding our place…</p>
       </div>
     );
+  if (!state && setup) return <HouseholdSetup setup={setup} onDone={refresh} />;
   if (!state) return <SignedOut {...signedOut} />;
+  const other = state.people.find((person) => person.id !== state.me.id);
+  const otherName = other?.name ?? 'the other person';
+  const setUpBy = state.people.find((person) => person.id === 'owner');
   const zone = state.preferences.timezone;
   const now = DateTime.now().setZone(zone);
   const person = (id: string) =>
@@ -639,7 +650,9 @@ function App() {
                     : 'Both of you + Our day'}
                 </small>
               </div>
-              {active.length > 0 && <span className="status-dot" aria-label="Partner active" />}
+              {active.length > 0 && (
+                <span className="status-dot" aria-label={`${otherName} active`} />
+              )}
             </Button>
           );
         })}
@@ -684,7 +697,7 @@ function App() {
         <div className="day-empty">
           <Bell size={28} />
           <h3>You’re all caught up</h3>
-          <p>Your partner’s changes, reminders, and summaries will appear here.</p>
+          <p>{otherName}’s changes, your reminders, and summaries will appear here.</p>
         </div>
       )}
     </>
@@ -839,7 +852,7 @@ function App() {
                   className="chat-activity"
                   onClick={() => setActivityOpen(true)}
                 >
-                  {isAssistant ? chatActivity : 'You, your partner & Our day'}
+                  {isAssistant ? chatActivity : `You, ${otherName} & Our day`}
                   {!isAssistant && <Users size={12} />}
                 </Button>
               </div>
@@ -1241,7 +1254,7 @@ function App() {
                 <div className="page-heading">
                   <div>
                     <h1>A little less on your mind.</h1>
-                    <p>One owner for the follow-up. Either of you can lend a hand.</p>
+                    <p>One of you follows up on each. Either of you can lend a hand.</p>
                   </div>
                   <Button
                     variant="default"
@@ -1308,9 +1321,12 @@ function App() {
                 <div className="page-heading">
                   <div>
                     <h1>Make yourself at home.</h1>
-                    <p>These settings are just for {state.me.name}. Your partner sets their own.</p>
+                    <p>
+                      These settings are just for {state.me.name}. {otherName} sets their own.
+                    </p>
                   </div>
                 </div>
+                <PeopleSettings state={state} onSaved={refresh} onError={setError} />
                 <SummarySettings
                   preferences={state.preferences}
                   busy={busy || !connected}
@@ -1331,9 +1347,8 @@ function App() {
                   </p>
                   <PushSettings onError={setError} />
                   <p className="small muted">
-                    Your partner’s confirmed changes appear in Updates and arrive on this device
-                    when notifications are enabled. Appointment alerts also come from Apple
-                    Calendar.
+                    {otherName}’s confirmed changes appear in Updates and arrive on this device when
+                    notifications are enabled. Appointment alerts also come from Apple Calendar.
                   </p>
                 </Card>
                 <AppearanceSettings />
@@ -1344,7 +1359,7 @@ function App() {
                   <p className="muted">
                     {state.integrations.ai === 'configured'
                       ? 'Eligible AI requests use the household’s connected ChatGPT plan. Messages in this topic and the household tasks, settings, and appointments the assistant reads are sent to OpenAI. Every proposed change still needs your confirmation.'
-                      : 'The owner can connect ChatGPT from the setup scripts. You can keep using shared messages, tasks, and the calendar meanwhile.'}
+                      : `${state.me.id === 'owner' ? 'You can' : `${setUpBy?.name ?? 'The person who set up the household'} can`} connect ChatGPT from the setup scripts. You can keep using shared messages, tasks, and the calendar meanwhile.`}
                   </p>
                   <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">
                     Manage ChatGPT usage
@@ -1405,7 +1420,7 @@ function App() {
       {showNotices && (
         <Modal title="Updates" informational close={() => setShowNotices(false)}>
           <p className="small muted inbox-intro">
-            Changes from your partner, plus your reminders and summaries.
+            Changes from {otherName}, plus your reminders and summaries.
           </p>
           {notifications}
         </Modal>
@@ -1465,9 +1480,9 @@ function App() {
           }}
         >
           <p>
-            Eligible assistant requests use the ChatGPT plan connected by the household owner and
-            share its usage limits. Messages in this topic and the household information the
-            assistant reads are sent to OpenAI.
+            Eligible assistant requests use the ChatGPT plan {setUpBy?.name ?? 'the household'}{' '}
+            connected and share its usage limits. Messages in this topic and the household
+            information the assistant reads are sent to OpenAI.
           </p>
           <p>Task and calendar changes always need a separate confirmation preview.</p>
           <p>
@@ -1756,12 +1771,8 @@ function Empty({ icon, title, text }: { icon: React.ReactNode; title: string; te
   );
 }
 
-/**
- * Cloudflare Access signs people in, so the app shows this only when that
- * sign-in has ended, names an email outside the household, or the app is not
- * set up at this address.
- */
-function SignedOut({ status, message }: { status: number; message: string }) {
+/** The welcome layout shared by the signed-out and first-setup screens. */
+function Welcome({ children }: { children: React.ReactNode }) {
   return (
     <div className="login-page">
       <div className="login-story">
@@ -1803,21 +1814,188 @@ function SignedOut({ status, message }: { status: number; message: string }) {
         <div className="mobile-brand brand">
           <Leaf size={26} /> our day.
         </div>
-        <div className="eyebrow">WELCOME HOME</div>
-        <h2>Your day starts here.</h2>
-        <p className="muted" role="alert">
-          {message}
-        </p>
-        <div className="form signed-out-actions">
-          <Button variant="default" onClick={() => location.reload()}>
-            {status ? 'Sign in' : 'Try again'}
-            <ArrowRight size={17} />
-          </Button>
-          {status === 401 && <a href="/cdn-cgi/access/logout">Use a different email</a>}
-        </div>
+        {children}
         <p className="small muted login-footnote">Your own view. Your shared household.</p>
       </section>
     </div>
+  );
+}
+
+/**
+ * Cloudflare Access signs people in, so the app shows this only when that
+ * sign-in has ended, names an email outside the household, or the app is not
+ * set up at this address.
+ */
+function SignedOut({ status, message }: { status: number; message: string }) {
+  return (
+    <Welcome>
+      <div className="eyebrow">WELCOME HOME</div>
+      <h2>Your day starts here.</h2>
+      <p className="muted" role="alert">
+        {message}
+      </p>
+      <div className="form signed-out-actions">
+        <Button variant="default" onClick={() => location.reload()}>
+          {status ? 'Sign in' : 'Try again'}
+          <ArrowRight size={17} />
+        </Button>
+        {status === 401 && <a href="/cdn-cgi/access/logout">Use a different email</a>}
+      </div>
+    </Welcome>
+  );
+}
+
+/**
+ * The household's first sign-in: name both people and give the other
+ * person's email. The names and emails stay in the household's own storage;
+ * afterwards only these two emails can use the app.
+ */
+function HouseholdSetup({ setup, onDone }: { setup: SetupNeeded; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  return (
+    <Welcome>
+      <div className="eyebrow">FIRST, THE TWO OF YOU</div>
+      <h2>Set up your household.</h2>
+      <p className="muted">
+        {setup.email
+          ? `You’re signed in as ${setup.email}. Only you and the person you add here can use the app.`
+          : 'This development server has no sign-in. Emails are optional here.'}
+      </p>
+      <form
+        className="form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          const partnerEmail = String(form.get('partnerEmail') ?? '').trim();
+          setBusy(true);
+          setError('');
+          void api('/setup', {
+            name: String(form.get('name')),
+            partner: {
+              name: String(form.get('partnerName')),
+              ...(partnerEmail ? { email: partnerEmail } : {}),
+            },
+          })
+            .then(() => onDone())
+            .catch((problem) => {
+              setError((problem as Error).message);
+              setBusy(false);
+            });
+        }}
+      >
+        <Label>
+          Your name
+          <Input name="name" required maxLength={60} autoComplete="given-name" />
+        </Label>
+        <Label>
+          The other person’s name
+          <Input name="partnerName" required maxLength={60} autoComplete="off" />
+        </Label>
+        <Label>
+          Their email address
+          <Input
+            name="partnerEmail"
+            type="email"
+            required={!setup.development}
+            autoComplete="off"
+          />
+        </Label>
+        {error && (
+          <p className="field-error" role="alert">
+            {error}
+          </p>
+        )}
+        <Button type="submit" disabled={busy}>
+          {busy ? 'Setting up…' : 'Set up our household'}
+          <ArrowRight size={17} />
+        </Button>
+      </form>
+    </Welcome>
+  );
+}
+
+/** Each person names themself; the person who set up can correct the other email. */
+function PeopleSettings({
+  state,
+  onSaved,
+  onError,
+}: {
+  state: Snapshot;
+  onSaved: () => void;
+  onError: (message: string) => void;
+}) {
+  const other = state.people.find((person) => person.id !== state.me.id);
+  const [name, setName] = useState(state.me.name);
+  const [email, setEmail] = useState(other?.username ?? '');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setName(state.me.name), [state.me.name]);
+  useEffect(() => setEmail(other?.username ?? ''), [other?.username]);
+  const save = (path: string, value: unknown) => {
+    setBusy(true);
+    void api(path, value)
+      .then(() => onSaved())
+      .catch((problem) => onError((problem as Error).message))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <Card className="settings-card">
+      <h2>
+        <Users size={19} /> The two of you
+      </h2>
+      {state.signIn === 'cloudflare-access' && (
+        <p className="muted">You’re signed in as {state.me.username}.</p>
+      )}
+      <form
+        className="form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          save('/people/me', { name });
+        }}
+      >
+        <Label>
+          Your name
+          <Input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            required
+            maxLength={60}
+          />
+        </Label>
+        <Button type="submit" variant="outline" disabled={busy || name.trim() === state.me.name}>
+          Save name
+        </Button>
+      </form>
+      {state.me.id === 'owner' && other && state.signIn === 'cloudflare-access' && (
+        <form
+          className="form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            save('/people/partner', { email });
+          }}
+        >
+          <Label>
+            {other.name}’s email
+            <Input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              required
+            />
+          </Label>
+          <p className="small muted">
+            The address {other.name} signs in with. Cloudflare Access must allow it too.
+          </p>
+          <Button
+            type="submit"
+            variant="outline"
+            disabled={busy || email.trim().toLowerCase() === other.username}
+          >
+            Save email
+          </Button>
+        </form>
+      )}
+    </Card>
   );
 }
 
@@ -1872,7 +2050,7 @@ function TaskForm({
       </Label>
       <div className="form-pair">
         <Label>
-          Follow-up owner
+          Who follows up
           <NativeSelect name="ownerId" defaultValue={task?.ownerId ?? state.me.id}>
             {state.people.map((p) => (
               <option key={p.id} value={p.id}>
