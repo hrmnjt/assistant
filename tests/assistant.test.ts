@@ -424,3 +424,114 @@ test('ChatGPT uses the public streaming Responses endpoint without storage and r
     rmSync(path, { recursive: true, force: true });
   }
 });
+
+async function within<T>(work: Promise<T>, label: string) {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} did not settle.`)), 5000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+test('human messages are saved while a queued request waits for AI, which resumes it once', async () => {
+  const f = fixture();
+  const passive = await Conversations.open(f.db, resolve(f.path, 'pi.sqlite'));
+  const request = randomUUID();
+  f.db.sql
+    .prepare('INSERT INTO assistant_runs VALUES (?,?,?,?,?,?,?,NULL)')
+    .run(
+      f.thread,
+      `owner:${request}`,
+      'owner',
+      'Plan dinner',
+      randomUUID(),
+      new Date().toISOString(),
+      'queued',
+    );
+  const human = randomUUID();
+  try {
+    await passive.send(f.thread, 'partner', 'I can cook on Friday', human, false);
+    // Retrying the same human message does not duplicate it.
+    await passive.send(f.thread, 'partner', 'I can cook on Friday', human, false);
+    await assert.rejects(
+      passive.send(f.thread, 'partner', 'Ask the assistant too', randomUUID(), true),
+      (error: unknown) => error instanceof DomainError && error.status === 409,
+    );
+    assert.match(passive.status(f.thread).error ?? '', /paused/);
+    assert.equal(passive.status(f.thread).queued, 1);
+  } finally {
+    await passive.close();
+  }
+  f.faux.setResponses([
+    (context) => {
+      assert.ok(JSON.stringify(context.messages).includes('I can cook on Friday'));
+      return fauxAssistantMessage('Friday dinner sounds good.');
+    },
+  ]);
+  const conversations = await Conversations.open(f.db, resolve(f.path, 'pi.sqlite'), f.options);
+  try {
+    await finished(conversations, f.thread);
+    assert.equal(conversations.status(f.thread).error, null);
+    assert.equal(f.faux.state.callCount, 1);
+    const messages = await conversations.messages(f.thread);
+    assert.deepEqual(
+      messages.map((message) => message.authorId),
+      ['owner', 'partner', 'assistant'],
+    );
+  } finally {
+    await conversations.close();
+    f.close();
+  }
+});
+
+test('human messages are saved while an admitted request is paused mid-run', async () => {
+  const f = fixture();
+  let started!: () => void;
+  const running = new Promise<void>((resolve) => (started = resolve));
+  f.faux.setResponses([
+    (_context, options) =>
+      new Promise((_, reject) => {
+        started();
+        options?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      }),
+  ]);
+  let conversations = await Conversations.open(f.db, resolve(f.path, 'pi.sqlite'), f.options);
+  await conversations.send(f.thread, 'owner', 'Plan the week', randomUUID());
+  await within(running, 'The first model call');
+  await conversations.close();
+  conversations = await Conversations.open(f.db, resolve(f.path, 'pi.sqlite'));
+  try {
+    await within(
+      conversations.send(f.thread, 'partner', 'Remember the dentist', randomUUID(), false),
+      'A passive message',
+    );
+    assert.ok(
+      (await conversations.messages(f.thread)).some(
+        (message) => message.text === 'Remember the dentist',
+      ),
+    );
+  } finally {
+    await conversations.close();
+  }
+  f.faux.setResponses([fauxAssistantMessage('Here is the week.')]);
+  conversations = await Conversations.open(f.db, resolve(f.path, 'pi.sqlite'), f.options);
+  try {
+    await finished(conversations, f.thread);
+    assert.equal(conversations.status(f.thread).error, null);
+    // The interrupted call plus exactly one resumed call.
+    assert.equal(f.faux.state.callCount, 2);
+    const messages = await conversations.messages(f.thread);
+    assert.equal(messages.filter((message) => message.text === 'Plan the week').length, 1);
+    assert.equal(messages.filter((message) => message.text === 'Remember the dentist').length, 1);
+    assert.equal(messages.filter((message) => message.authorId === 'assistant').length, 1);
+  } finally {
+    await conversations.close();
+    f.close();
+  }
+});
