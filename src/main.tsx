@@ -1641,7 +1641,10 @@ function EditorNotice({
 }) {
   const alert = useRef<HTMLDivElement>(null);
   // The editor may be scrolled to its actions; bring the explanation into view.
-  useEffect(() => alert.current?.scrollIntoView({ block: 'nearest' }), [notice.text]);
+  // Block body: newer browsers return a Promise, which React would call as cleanup.
+  useEffect(() => {
+    alert.current?.scrollIntoView({ block: 'nearest' });
+  }, [notice.text]);
   return (
     <Alert role="alert" ref={alert}>
       <AlertDescription>
