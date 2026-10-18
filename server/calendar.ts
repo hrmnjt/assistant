@@ -81,6 +81,12 @@ export class CalendarOutcomeError extends DomainError {
   }
 }
 
+class CalendarClaimError extends DomainError {
+  constructor() {
+    super('A newer check owns this preview. Reopen its current result before retrying.', 409);
+  }
+}
+
 export class CalendarService {
   private state: CalendarSnapshot = {
     status: 'not-connected',
@@ -389,10 +395,25 @@ export class CalendarService {
       targetId: eventId(operation.url, operation.uid),
       calendarOutcome: outcome,
     };
-    this.db.sql
-      .prepare('UPDATE previews SET result=? WHERE id=?')
-      .run(JSON.stringify(result), previewId);
-    return result;
+    return this.db.transaction(() => {
+      const row = this.db.sql
+        .prepare('SELECT applied_at,result FROM previews WHERE id=?')
+        .get(previewId);
+      if (!row) throw new DomainError('This calendar preview is unavailable.', 404);
+      const previous = row.result ? JSON.parse(String(row.result)) : null;
+      // Late responses cannot replace a committed receipt or erase dismissal.
+      if (row.applied_at !== null || previous?.dismissedAt) return { ...result, ...previous };
+      this.db.sql
+        .prepare('UPDATE previews SET result=? WHERE id=?')
+        .run(JSON.stringify(result), previewId);
+      return result;
+    });
+  }
+  private assertClaim(previewId: string, leaseUntil: number) {
+    const row = this.db.sql
+      .prepare('SELECT lease_until FROM calendar_operations WHERE preview_id=?')
+      .get(previewId);
+    if (!row || Number(row.lease_until) !== leaseUntil) throw new CalendarClaimError();
   }
   async confirm(actorId: string, previewId: string): Promise<ConfirmationResult> {
     if (!this.transport) throw new DomainError('The shared calendar is not connected yet.', 503);
@@ -424,10 +445,12 @@ export class CalendarService {
           'This confirmation is already in progress. Please wait before retrying.',
           409,
         );
+      const leaseUntil = this.clock().getTime() + 45_000;
       this.db.sql
         .prepare('UPDATE calendar_operations SET lease_until=? WHERE preview_id=?')
-        .run(this.clock().getTime() + 45_000, previewId);
+        .run(leaseUntil, previewId);
       return {
+        leaseUntil,
         operation: JSON.parse(String(row.operation)) as StoredOperation,
         previouslyAttempted: Boolean(row.attempted),
         view: JSON.parse(String(row.view)) as Preview,
@@ -449,6 +472,9 @@ export class CalendarService {
           'This preview expired before a write was attempted. Review a new preview.',
         );
       const current = await this.transport.get(operation.url);
+      // A slow preflight may outlive its lease. Only its current owner may
+      // decide the outcome or admit a new write after that awaited read.
+      this.assertClaim(previewId, claim.leaseUntil!);
       const alreadyWritten = current && hasOperation(current, previewId, operation.uid);
       const alreadyDeleted = operation.kind === 'calendar.delete' && attempted && !current;
       if (attempted && !alreadyWritten && !alreadyDeleted) {
@@ -499,7 +525,15 @@ export class CalendarService {
               : 'iCloud accepted this change.',
         },
       };
-      this.db.transaction(() => {
+      const committed = this.db.transaction<ConfirmationResult>(() => {
+        const saved = this.db.sql
+          .prepare('SELECT applied_at,result FROM previews WHERE id=?')
+          .get(previewId)!;
+        const previous: ConfirmationResult | null = saved.result
+          ? JSON.parse(String(saved.result))
+          : null;
+        if (saved.applied_at !== null) return previous!;
+        if (previous?.dismissedAt) result.dismissedAt = previous.dismissedAt;
         this.db.sql
           .prepare('UPDATE previews SET applied_at=?,result=? WHERE id=?')
           .run(this.clock().getTime(), JSON.stringify(result), previewId);
@@ -518,11 +552,13 @@ export class CalendarService {
             'Shared appointment',
           this.clock().toISOString(),
         );
+        return result;
       });
       await this.sync();
-      return result;
+      return committed;
     } catch (error) {
-      if (error instanceof CalendarOutcomeError) throw error;
+      if (error instanceof CalendarOutcomeError || error instanceof CalendarClaimError) throw error;
+      this.assertClaim(previewId, claim.leaseUntil!);
       // A definitive precondition rejection on the first attempt proves no write
       // occurred. A prior lost response must never be reclassified this way.
       if (!claim.previouslyAttempted && error instanceof DomainError && error.status === 409) {
@@ -547,8 +583,10 @@ export class CalendarService {
       throw new CalendarOutcomeError(outcome, 503);
     } finally {
       this.db.sql
-        .prepare('UPDATE calendar_operations SET lease_until=0 WHERE preview_id=?')
-        .run(previewId);
+        .prepare(
+          'UPDATE calendar_operations SET lease_until=0 WHERE preview_id=? AND lease_until=?',
+        )
+        .run(previewId, claim.leaseUntil!);
     }
   }
 }

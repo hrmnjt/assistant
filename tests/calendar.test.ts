@@ -624,6 +624,112 @@ test('uncertain writes remain read-only even before expiry when the remote reque
   }
 });
 
+test('an expired preflight cannot clear a newer lease or send a competing write', async () => {
+  const f = fixture();
+  let now = Date.parse('2026-10-14T07:00:00Z');
+  const timed = new CalendarService(f.db, f.transport, () => new Date(now));
+  let releaseFirst!: () => void, releaseSecond!: () => void;
+  let enteredFirst!: () => void, enteredSecond!: () => void;
+  const firstGate = new Promise<void>((done) => {
+    releaseFirst = done;
+  });
+  const secondGate = new Promise<void>((done) => {
+    releaseSecond = done;
+  });
+  const firstRead = new Promise<void>((done) => {
+    enteredFirst = done;
+  });
+  const secondRead = new Promise<void>((done) => {
+    enteredSecond = done;
+  });
+  let first: ReturnType<CalendarService['confirm']> | undefined;
+  let second: ReturnType<CalendarService['confirm']> | undefined;
+  try {
+    const preview = await timed.preview('owner', { kind: 'calendar.create', event: fields });
+    const get = f.transport.get.bind(f.transport);
+    let reads = 0;
+    f.transport.get = async (url) => {
+      const snapshot = await get(url);
+      if (++reads === 1) {
+        enteredFirst();
+        await firstGate;
+      } else if (reads === 2) {
+        enteredSecond();
+        await secondGate;
+      }
+      return snapshot;
+    };
+    first = timed.confirm('owner', preview.id);
+    await firstRead;
+    now += 46_000;
+    second = timed.confirm('owner', preview.id);
+    await secondRead;
+    releaseFirst();
+    await assert.rejects(first, /newer check/);
+    assert.equal(
+      f.db.sql.prepare('SELECT lease_until FROM calendar_operations').get()?.lease_until,
+      now + 45_000,
+    );
+    assert.throws(() => timed.cancel('owner', preview.id), /in progress/);
+    releaseSecond();
+    assert.equal((await second).ok, true);
+    assert.equal(f.transport.writes, 1);
+    assert.equal((await timed.confirm('owner', preview.id)).ok, true);
+    assert.equal(f.db.sql.prepare('SELECT COUNT(*) AS count FROM audit').get()?.count, 1);
+  } finally {
+    releaseFirst();
+    releaseSecond();
+    await Promise.allSettled([first, second]);
+    f.db.close();
+  }
+});
+
+for (const acceptedBeforeDelay of [false, true]) {
+  test(`a late PUT response preserves ${acceptedBeforeDelay ? 'the newer applied receipt' : 'explicit dismissal'} and commits one audit`, async () => {
+    const f = fixture();
+    let now = Date.parse('2026-10-14T07:00:00Z');
+    const timed = new CalendarService(f.db, f.transport, () => new Date(now));
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>((done) => {
+      release = done;
+    });
+    const reached = new Promise<void>((done) => {
+      entered = done;
+    });
+    let first: ReturnType<CalendarService['confirm']> | undefined;
+    try {
+      const preview = await timed.preview('owner', { kind: 'calendar.create', event: fields });
+      const put = f.transport.put.bind(f.transport);
+      f.transport.put = async (...args) => {
+        if (acceptedBeforeDelay) await put(...args);
+        entered();
+        await gate;
+        if (!acceptedBeforeDelay) await put(...args);
+      };
+      first = timed.confirm('owner', preview.id);
+      await reached;
+      now += 46_000;
+      const checked = await timed.confirm('owner', preview.id);
+      assert.equal(checked.calendarOutcome?.status, acceptedBeforeDelay ? 'applied' : 'unknown');
+      if (!acceptedBeforeDelay) timed.dismiss('owner', preview.id);
+      release();
+      assert.equal((await first).ok, true);
+      const stored = JSON.parse(
+        String(f.db.sql.prepare('SELECT result FROM previews WHERE id=?').get(preview.id)!.result),
+      );
+      assert.equal(stored.ok, true);
+      assert.equal(Boolean(stored.dismissedAt), !acceptedBeforeDelay);
+      assert.equal(f.transport.writes, 1);
+      assert.equal(f.db.sql.prepare('SELECT COUNT(*) AS count FROM audit').get()?.count, 1);
+      assert.equal(f.db.sql.prepare('SELECT COUNT(*) AS count FROM notices').get()?.count, 1);
+    } finally {
+      release();
+      await Promise.allSettled([first]);
+      f.db.close();
+    }
+  });
+}
+
 test('calendar confirmation notifies the other spouse once, including reconciliation after a lost response', async () => {
   const f = fixture();
   try {
