@@ -1,18 +1,20 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { DateTime } from 'luxon';
-import {
-  ArrowRight,
-  CalendarDays,
-  ChevronLeft,
-  ChevronRight,
-  MapPin,
-  Plus,
-  RefreshCw,
-  Repeat2,
-  Trash2,
-} from 'lucide-react';
+import { ArrowRight, CalendarDays, MapPin, Plus, RefreshCw, Repeat2, Trash2 } from 'lucide-react';
 import type { CalendarEvent, CalendarFields, CalendarSnapshot } from './types';
-import { monthDays, eventsForDay } from './calendar-days';
+import { eventsForDay } from './calendar-days';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { NativeSelect } from '@/components/ui/native-select';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Badge } from '@/components/ui/badge';
+import { Card } from '@/components/ui/card';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+
+const MonthCalendar = lazy(() => import('./MonthCalendar'));
 
 export function CalendarCard({
   calendar,
@@ -26,12 +28,12 @@ export function CalendarCard({
   const now = DateTime.now().setZone(zone);
   const next = calendar.events.find((event) => DateTime.fromISO(event.end, { zone }) >= now);
   return (
-    <section className="card calendar-card">
+    <Card className="calendar-card">
       <div className="section-heading">
         <h2>
           <CalendarDays size={18} /> Shared calendar
         </h2>
-        <span className="soft-badge">iCloud</span>
+        <Badge variant="secondary">iCloud</Badge>
       </div>
       <div className="calendar-date">
         <strong>{now.day}</strong>
@@ -52,14 +54,16 @@ export function CalendarCard({
           <p className="calendar-next-title">{next?.title ?? 'A little space in the calendar.'}</p>
           {next && <p className="small">{eventTime(next, zone)}</p>}
           {calendar.status === 'error' && (
-            <p className="calendar-warning">Calendar is out of date. Refresh before editing.</p>
+            <Alert className="calendar-warning">
+              <AlertDescription>Calendar is out of date. Refresh before editing.</AlertDescription>
+            </Alert>
           )}
-          <button className="text-button" onClick={open}>
+          <Button variant="ghost" onClick={open}>
             Open calendar <ArrowRight size={14} />
-          </button>
+          </Button>
         </>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -88,17 +92,11 @@ export function CalendarView({
   const today = DateTime.now().setZone(zone).toISODate()!;
   const [month, setMonth] = useState(today.slice(0, 7));
   const [selected, setSelected] = useState(today);
-  const monthDate = DateTime.fromISO(`${month}-01`, { zone });
-  const previous = monthDate.minus({ months: 1 }).toFormat('yyyy-MM');
-  const next = monthDate.plus({ months: 1 }).toFormat('yyyy-MM');
   const first = calendar.months?.first;
   const last = calendar.months?.last;
   const loaded = !first || !last || (selected.slice(0, 7) >= first && selected.slice(0, 7) <= last);
   const appointments = eventsForDay(calendar.events, selected, zone);
-  const move = (value: string) => {
-    setMonth(value);
-    setSelected(`${value}-01`);
-  };
+
   return (
     <>
       <div className="page-heading calendar-page-heading">
@@ -106,13 +104,14 @@ export function CalendarView({
           <div className="eyebrow">PLANS, TOGETHER</div>
           <h1>Calendar</h1>
         </div>
-        <button
-          className="primary"
+        <Button
+          variant="default"
+
           disabled={busy || calendar.status !== 'connected'}
           onClick={() => onNew(selected)}
         >
           <Plus size={17} /> Add
-        </button>
+        </Button>
       </div>
       <div className="calendar-status">
         <span className={`status-dot ${calendar.status !== 'connected' ? 'pending' : ''}`} />
@@ -124,85 +123,36 @@ export function CalendarView({
               ? 'Needs refresh'
               : 'Synced'}
         </span>
-        <button
-          className="text-button"
+        <Button
+          variant="ghost"
+
           onClick={onRefresh}
           disabled={busy || calendar.status === 'not-connected'}
           aria-label="Refresh calendar"
         >
           <RefreshCw size={15} />
-        </button>
+        </Button>
       </div>
-      <section className="card month-card" aria-label="Month calendar">
-        <div className="month-heading">
-          <h2 aria-live="polite">{monthDate.toFormat('LLLL yyyy')}</h2>
-          <div>
-            <button
-              className="text-button"
-              onClick={() => {
-                setMonth(today.slice(0, 7));
-                setSelected(today);
-              }}
-            >
-              Today
-            </button>
-            <button
-              className="icon-button"
-              aria-label="Previous month"
-              disabled={Boolean(first && previous < first)}
-              onClick={() => move(previous)}
-            >
-              <ChevronLeft size={20} />
-            </button>
-            <button
-              className="icon-button"
-              aria-label="Next month"
-              disabled={Boolean(last && next > last)}
-              onClick={() => move(next)}
-            >
-              <ChevronRight size={20} />
-            </button>
-          </div>
-        </div>
-        <div className="month-weekdays" aria-hidden="true">
-          {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, index) => (
-            <span key={index}>{day}</span>
-          ))}
-        </div>
-        <div className="month-grid" role="group" aria-label={monthDate.toFormat('LLLL yyyy')}>
-          {monthDays(month, zone).map((day) => {
-            const date = day.toISODate()!;
-            const count = eventsForDay(calendar.events, date, zone).length;
-            return (
-              <button
-                key={date}
-                className={`month-day ${day.month !== monthDate.month ? 'other-month' : ''} ${date === today ? 'is-today' : ''} ${date === selected ? 'is-selected' : ''}`}
-                aria-label={`${day.toFormat('cccc, d LLLL yyyy')}${calendar.status === 'not-connected' ? '' : `, ${count} appointment${count === 1 ? '' : 's'}`}`}
-                aria-pressed={date === selected}
-                aria-current={date === today ? 'date' : undefined}
-                disabled={Boolean(
-                  first && last && (date.slice(0, 7) < first || date.slice(0, 7) > last),
-                )}
-                onClick={() => {
-                  setSelected(date);
-                  if (day.month !== monthDate.month) setMonth(date.slice(0, 7));
-                }}
-              >
-                <span>{day.day}</span>
-                <span className="event-dots" aria-hidden="true">
-                  {Array.from({ length: Math.min(3, count) }, (_, index) => (
-                    <i key={index} />
-                  ))}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </section>
+      <Suspense
+        fallback={
+          <Skeleton className="h-96 w-full" aria-label="Loading month calendar" role="status" />
+        }
+      >
+        <MonthCalendar
+          calendar={calendar}
+          zone={zone}
+          month={month}
+          selected={selected}
+          setMonth={setMonth}
+          setSelected={setSelected}
+        />
+      </Suspense>
       {calendar.error && (
-        <p className="calendar-warning" role="status">
-          {calendar.error} Previously loaded appointments remain visible.
-        </p>
+        <Alert className="calendar-warning" role="status">
+          <AlertDescription>
+            {calendar.error} Previously loaded appointments remain visible.
+          </AlertDescription>
+        </Alert>
       )}
       <section className="day-agenda" aria-label="Selected day appointments" aria-live="polite">
         <div className="section-heading">
@@ -214,9 +164,9 @@ export function CalendarView({
               {DateTime.fromISO(selected, { zone }).toFormat('d LLLL')} · {zone}
             </p>
           </div>
-          <span className="soft-badge">
+          <Badge variant="secondary">
             {calendar.status === 'not-connected' ? '—' : appointments.length}
-          </span>
+          </Badge>
         </div>
         {calendar.status === 'not-connected' ? (
           <div className="day-empty">
@@ -234,33 +184,35 @@ export function CalendarView({
         ) : appointments.length ? (
           <div className="agenda-items">
             {appointments.map((event) => (
-              <button className="card agenda-event" key={event.id} onClick={() => onEdit(event)}>
-                <div className="agenda-time">
-                  {event.allDay
-                    ? 'All day'
-                    : DateTime.fromISO(event.start).setZone(zone).toFormat('HH:mm')}
-                  <small>
+              <Card className="gap-0 py-0" key={event.id}>
+                <Button variant="ghost" className="agenda-event" onClick={() => onEdit(event)}>
+                  <div className="agenda-time">
                     {event.allDay
-                      ? ''
-                      : DateTime.fromISO(event.end).setZone(zone).toFormat('HH:mm')}
-                  </small>
-                </div>
-                <div>
-                  <strong>{event.title}</strong>
-                  {event.location && (
-                    <span className="agenda-location">
-                      <MapPin size={11} />
-                      {event.location}
-                    </span>
-                  )}
-                  {event.recurring && (
-                    <span className="agenda-location">
-                      <Repeat2 size={11} /> Recurring
-                    </span>
-                  )}
-                </div>
-                <ArrowRight size={16} />
-              </button>
+                      ? 'All day'
+                      : DateTime.fromISO(event.start).setZone(zone).toFormat('HH:mm')}
+                    <small>
+                      {event.allDay
+                        ? ''
+                        : DateTime.fromISO(event.end).setZone(zone).toFormat('HH:mm')}
+                    </small>
+                  </div>
+                  <div>
+                    <strong>{event.title}</strong>
+                    {event.location && (
+                      <span className="agenda-location">
+                        <MapPin size={11} />
+                        {event.location}
+                      </span>
+                    )}
+                    {event.recurring && (
+                      <span className="agenda-location">
+                        <Repeat2 size={11} /> Recurring
+                      </span>
+                    )}
+                  </div>
+                  <ArrowRight size={16} />
+                </Button>
+              </Card>
             ))}
           </div>
         ) : (
@@ -333,64 +285,63 @@ export function EventForm({
         });
       }}
     >
-      {event?.readOnlyReason && <p className="calendar-warning">{event.readOnlyReason}</p>}
-      <label>
+      {event?.readOnlyReason && (
+        <Alert className="calendar-warning">
+          <AlertDescription>{event.readOnlyReason}</AlertDescription>
+        </Alert>
+      )}
+      <Label>
         Appointment
-        <input
+        <Input
           name="title"
           required
           maxLength={200}
           defaultValue={event?.title}
           disabled={readOnly}
         />
-      </label>
-      <label className="all-day-check">
-        <input
-          type="checkbox"
-          checked={allDay}
-          disabled={readOnly}
-          onChange={(value) => setAllDay(value.target.checked)}
-        />
+      </Label>
+      <Label className="all-day-check">
+        <Switch checked={allDay} disabled={readOnly} onCheckedChange={setAllDay} />
         All day
-      </label>
+      </Label>
       <div className="form-pair" key={String(allDay)}>
-        <label>
+        <Label>
           Starts
-          <input
+          <Input
             name="start"
             type={allDay ? 'date' : 'datetime-local'}
             required
             disabled={readOnly}
             defaultValue={local(event?.start)}
           />
-        </label>
-        <label>
+        </Label>
+        <Label>
           {allDay ? 'Last day' : 'Ends'}
-          <input
+          <Input
             name="end"
             type={allDay ? 'date' : 'datetime-local'}
             required
             disabled={readOnly}
             defaultValue={local(event?.end, true)}
           />
-        </label>
+        </Label>
       </div>
       <p className="small muted">
         {zone}
         {allDay ? ' · All-day appointments cover every selected day.' : ''}
       </p>
-      <label>
+      <Label>
         Location <span className="optional">optional</span>
-        <input
+        <Input
           name="location"
           maxLength={1000}
           defaultValue={event?.location}
           disabled={readOnly}
         />
-      </label>
-      <label>
+      </Label>
+      <Label>
         Reminder
-        <select
+        <NativeSelect
           name="reminder"
           disabled={readOnly}
           defaultValue={event ? (event.reminderMinutes ?? 'none') : 30}
@@ -406,29 +357,35 @@ export function EventForm({
             ![0, 15, 30, 60, 1440].includes(event.reminderMinutes) && (
               <option value={event.reminderMinutes}>{event.reminderMinutes} minutes before</option>
             )}
-        </select>
-      </label>
-      <label>
+        </NativeSelect>
+      </Label>
+      <Label>
         Notes <span className="optional">optional</span>
-        <textarea
+        <Textarea
           name="notes"
           maxLength={5000}
           rows={3}
           defaultValue={event?.notes}
           disabled={readOnly}
         />
-      </label>
+      </Label>
       {!readOnly && (
         <div className="dialog-actions">
           {onDelete && (
-            <button type="button" className="text-button danger" disabled={busy} onClick={onDelete}>
+            <Button
+              variant="ghost"
+              type="button"
+              className="text-destructive"
+              disabled={busy}
+              onClick={onDelete}
+            >
               <Trash2 size={16} />
               Delete
-            </button>
+            </Button>
           )}
-          <button className="primary" disabled={busy}>
+          <Button variant="default" disabled={busy}>
             Review appointment <ArrowRight size={15} />
-          </button>
+          </Button>
         </div>
       )}
     </form>

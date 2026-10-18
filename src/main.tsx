@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { DateTime } from 'luxon';
 import {
-  ArrowLeft,
   ArrowRight,
   Bell,
   CalendarDays,
@@ -40,6 +39,28 @@ import type {
   Task,
 } from './types';
 import { CalendarCard, CalendarView, EventForm } from './Calendar';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { NativeSelect } from '@/components/ui/native-select';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Card } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  Modal,
+  Disclosure,
+  ConfirmationDetails,
+  rememberOverlayOpener,
+  TaskCollection,
+} from '@/components/app-patterns';
 import './styles.css';
 
 async function api<T>(
@@ -59,80 +80,6 @@ async function api<T>(
       status: response.status,
     });
   return value;
-}
-
-function Modal({
-  title,
-  close,
-  children,
-  inactive = false,
-  drawer = false,
-}: {
-  title: string;
-  close: () => void;
-  children: React.ReactNode;
-  inactive?: boolean;
-  drawer?: boolean;
-}) {
-  const dialog = useRef<HTMLDivElement>(null);
-  const closeRef = useRef(close);
-  closeRef.current = close;
-  const titleId = React.useId();
-  useEffect(() => {
-    if (inactive) return;
-    const before = document.activeElement as HTMLElement | null;
-    const element = dialog.current!;
-    element.querySelector<HTMLElement>('input, button, select, textarea')?.focus();
-    function keyboard(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        closeRef.current();
-      }
-      if (event.key !== 'Tab') return;
-      const focusable = [
-        ...element.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), input, select, textarea, a[href]',
-        ),
-      ];
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
-      }
-    }
-    document.addEventListener('keydown', keyboard);
-    return () => {
-      document.removeEventListener('keydown', keyboard);
-      before?.focus();
-    };
-  }, [inactive]);
-  return (
-    <div
-      className={`scrim ${drawer ? 'channels-scrim' : ''}`}
-      style={inactive ? { display: 'none' } : undefined}
-      aria-hidden={inactive || undefined}
-    >
-      <div
-        className={`dialog ${drawer ? 'channels-dialog' : ''}`}
-        ref={dialog}
-        role="dialog"
-        aria-modal={!inactive}
-        aria-labelledby={titleId}
-      >
-        <div className="dialog-heading">
-          <h2 id={titleId}>{title}</h2>
-          <button className="icon-button" onClick={close} aria-label="Close dialog">
-            <X size={20} />
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
 }
 
 function App() {
@@ -357,7 +304,7 @@ function App() {
 
   if (loading)
     return (
-      <div className="boot">
+      <div className="boot" role="status">
         <Leaf size={32} />
         <p>Finding our place…</p>
       </div>
@@ -411,7 +358,8 @@ function App() {
       {state.threads
         .filter((item) => item.assistantFor === state.me.id)
         .map((item) => (
-          <button
+          <Button
+            variant="ghost"
             key={item.id}
             className={`thread-item ${threadId === item.id ? 'active' : ''}`}
             onClick={() => chooseThread(item.id)}
@@ -424,12 +372,14 @@ function App() {
               <strong>Our day</strong>
               <small>Your everyday assistant</small>
             </div>
-          </button>
+          </Button>
         ))}
       <div className="channel-section-heading">
         <p className="channel-section-label">SHARED CHANNELS</p>
-        <button
-          className="icon-button"
+        <Button
+          variant="ghost"
+          size="icon"
+
           aria-label="Add shared channel"
           onClick={() => {
             setChannelsOpen(false);
@@ -437,7 +387,7 @@ function App() {
           }}
         >
           <Plus size={17} />
-        </button>
+        </Button>
       </div>
       {state.threads
         .filter((item) => !item.assistantFor)
@@ -446,7 +396,8 @@ function App() {
             (p) => p.threadId === item.id && p.userId !== state.me.id,
           );
           return (
-            <button
+            <Button
+              variant="ghost"
               key={item.id}
               className={`thread-item ${threadId === item.id ? 'active' : ''}`}
               disabled={busy}
@@ -464,7 +415,7 @@ function App() {
                 </small>
               </div>
               {active.length > 0 && <span className="status-dot" aria-label="Partner active" />}
-            </button>
+            </Button>
           );
         })}
       <p className="channel-hint">
@@ -476,13 +427,14 @@ function App() {
     <>
       {state.notices.length ? (
         state.notices.map((notice) => (
-          <article className="notice" key={notice.id}>
+          <Card className="notice" key={notice.id}>
             <strong>{notice.title}</strong>
             <p>{notice.body}</p>
             <time>{DateTime.fromISO(notice.createdAt).setZone(zone).toFormat('d LLL, HH:mm')}</time>
             {notice.targetKind && (
-              <button
-                className="text-button notice-link"
+              <Button
+                variant="ghost"
+                className="notice-link"
                 onClick={() => {
                   setShowNotices(false);
                   if (notice.targetKind === 'task') {
@@ -499,9 +451,9 @@ function App() {
                 }}
               >
                 View {notice.targetKind === 'task' ? 'task' : 'calendar'} <ArrowRight size={14} />
-              </button>
+              </Button>
             )}
-          </article>
+          </Card>
         ))
       ) : (
         <div className="day-empty">
@@ -512,26 +464,14 @@ function App() {
       )}
     </>
   );
-  const filters = (
-    <div className="segments" aria-label="Task view">
-      {(['mine', 'household', 'all'] as const).map((value) => (
-        <button
-          key={value}
-          aria-pressed={filter === value}
-          className={filter === value ? 'selected' : ''}
-          onClick={() => setFilter(value)}
-        >
-          {value === 'mine' ? 'For me' : value === 'household' ? 'Household' : 'Everything'}
-        </button>
-      ))}
-    </div>
-  );
   const rows = (tasks: Task[]) =>
     tasks.length ? (
       <div className="task-list">
         {tasks.map((task) => (
-          <article className="task-row" key={task.id}>
-            <button
+          <Card className="task-row" key={task.id}>
+            <Button
+              variant="ghost"
+              size="icon"
               className="complete-button"
               disabled={busy || !connected}
               onClick={() =>
@@ -540,11 +480,11 @@ function App() {
               aria-label={`Review completion of ${task.title}`}
             >
               <Circle size={23} />
-            </button>
+            </Button>
             <div className="task-content">
-              <button className="task-title" onClick={() => setTaskForm(task)}>
+              <Button variant="ghost" className="task-title" onClick={() => setTaskForm(task)}>
                 {task.title}
-              </button>
+              </Button>
               <div className="task-meta">
                 <span className={`category-dot ${task.category}`} />
                 <span>{person(task.ownerId)}</span>
@@ -563,11 +503,15 @@ function App() {
                 )}
               </div>
               {task.missedDates.length > 0 && (
-                <details className="missed">
-                  <summary>
-                    Missed {task.missedDates.length}{' '}
-                    {task.missedDates.length === 1 ? 'time' : 'times'}
-                  </summary>
+                <Disclosure
+                  className="missed"
+                  title={
+                    <>
+                      Missed {task.missedDates.length}{' '}
+                      {task.missedDates.length === 1 ? 'time' : 'times'}
+                    </>
+                  }
+                >
                   <ul>
                     {task.missedDates.map((date) => (
                       <li key={date}>
@@ -575,17 +519,28 @@ function App() {
                       </li>
                     ))}
                   </ul>
-                </details>
+                </Disclosure>
               )}
             </div>
-            <button
-              className="icon-button more-task"
-              onClick={() => setTaskForm(task)}
-              aria-label={`Edit ${task.title}`}
-            >
-              <MoreHorizontal size={20} />
-            </button>
-          </article>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" aria-label={`Actions for ${task.title}`}>
+                  <MoreHorizontal />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => setTaskForm(task)}>Edit task</DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={busy || !connected}
+                  onSelect={() =>
+                    void act({ kind: 'task.complete', id: task.id, revision: task.revision })
+                  }
+                >
+                  Review completion
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </Card>
         ))}
       </div>
     ) : (
@@ -599,56 +554,8 @@ function App() {
   return (
     <div
       className={`app-shell ${page === 'chat' ? 'chat-active' : ''} ${keyboardOpen ? 'keyboard-open' : ''}`}
+      onClickCapture={rememberOverlayOpener}
     >
-      <aside className="sidebar">
-        <a
-          className="brand"
-          href="#"
-          onClick={(event) => {
-            event.preventDefault();
-            setPage('today');
-          }}
-        >
-          <span className="brand-mark">
-            <Leaf size={22} />
-          </span>
-          our day<span className="brand-dot">.</span>
-        </a>
-        <div className="sidebar-label">A LITTLE LESS TO REMEMBER</div>
-        <nav>
-          {navigation.map((item) => (
-            <button
-              key={item.id}
-              className={page === item.id ? 'nav-active' : ''}
-              onClick={() => setPage(item.id)}
-            >
-              <item.icon size={19} />
-              <span>{item.title}</span>
-              {item.id === 'tasks' && <small>{open.length}</small>}
-            </button>
-          ))}
-        </nav>
-        <div className="household-note">
-          <Users size={19} />
-          <strong>Better, together.</strong>
-          <p>A shared place for the things that make a home.</p>
-          <div className="avatar-stack">
-            {state.people.map((p) => (
-              <span className={`avatar ${p.id}`} key={p.id} title={p.name}>
-                {p.name[0]}
-              </span>
-            ))}
-          </div>
-        </div>
-        <button className="account" onClick={() => setPage('settings')}>
-          <span className={`avatar ${state.me.id}`}>{state.me.name[0]}</span>
-          <span>
-            {state.me.name}
-            <small>Your household</small>
-          </span>
-          <ChevronRight size={16} />
-        </button>
-      </aside>
       <main>
         <header className="topbar">
           <span>
@@ -656,29 +563,40 @@ function App() {
           </span>
           <div>
             <span className="top-date">{now.toFormat('cccc, d LLL')}</span>
-            <button
-              className="icon-button"
+            <Button
+              variant="ghost"
+              size="icon"
+
               aria-label="Open updates"
               onClick={() => setShowNotices(true)}
             >
               <Bell size={19} />
               {state.notices.some((notice) => !notice.readAt) && <span className="unread-dot" />}
-            </button>
+            </Button>
             <span className={`avatar ${state.me.id}`}>{state.me.name[0]}</span>
           </div>
         </header>
         {!connected && (
-          <div className="connection-banner" role="status">
-            Connection lost. Showing the last loaded view; reconnect before making changes.
-          </div>
+          <Alert className="connection-banner" role="status">
+            <AlertDescription>
+              Connection lost. Showing the last loaded view; reconnect before making changes.
+            </AlertDescription>
+          </Alert>
         )}
         {error && (
-          <div className="error-banner" role="alert">
-            {error}
-            <button className="icon-button" onClick={() => setError('')} aria-label="Dismiss error">
-              <X size={16} />
-            </button>
-          </div>
+          <Alert className="error-banner" role="alert">
+            <AlertDescription>
+              {error}
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setError('')}
+                aria-label="Dismiss error"
+              >
+                <X size={16} />
+              </Button>
+            </AlertDescription>
+          </Alert>
         )}
         <div className={`page ${page === 'chat' ? 'chat-page' : ''}`}>
           {page === 'today' && (
@@ -698,13 +616,14 @@ function App() {
                   </h1>
                   <p>Make a little room for what matters.</p>
                 </div>
-                <button
-                  className="primary"
+                <Button
+                  variant="default"
+
                   onClick={() => setTaskForm('new')}
                   disabled={!connected}
                 >
                   <Plus size={17} /> Add task
-                </button>
+                </Button>
               </div>
               <div className="overview">
                 <div>
@@ -737,26 +656,27 @@ function App() {
                 </div>
               </div>
               <div className="today-grid">
-                <section className="card focus-card">
+                <Card className="focus-card">
                   <div className="section-heading">
                     <div>
                       <span className="eyebrow">ONE THING AT A TIME</span>
                       <h2>Your focus today</h2>
                     </div>
-                    <button className="text-button" onClick={() => setPage('tasks')}>
+                    <Button variant="ghost" onClick={() => setPage('tasks')}>
                       All tasks <ArrowRight size={15} />
-                    </button>
+                    </Button>
                   </div>
-                  {filters}
-                  {rows(today)}
-                </section>
+                  <TaskCollection value={filter} onValueChange={setFilter}>
+                    {rows(today)}
+                  </TaskCollection>
+                </Card>
                 <aside className="day-aside">
                   <CalendarCard
                     calendar={state.calendar}
                     zone={zone}
                     open={() => setPage('calendar')}
                   />
-                  <section className="summary-card">
+                  <Card className="summary-card">
                     <Sunset size={24} />
                     <h3>A moment to reset.</h3>
                     <p>
@@ -764,10 +684,10 @@ function App() {
                         ? `Your evening summary is set for ${state.preferences.evening.time}.`
                         : 'Your evening summary is switched off.'}
                     </p>
-                    <button className="text-button" onClick={() => setPage('settings')}>
+                    <Button variant="ghost" onClick={() => setPage('settings')}>
                       Make it yours <ArrowRight size={14} />
-                    </button>
-                  </section>
+                    </Button>
+                  </Card>
                 </aside>
               </div>
               <section className="conversation-strip">
@@ -776,9 +696,9 @@ function App() {
                   <h3>Keep the conversation going.</h3>
                   <p>Household plans, work, or something just for you. A topic for each.</p>
                 </div>
-                <button className="secondary" onClick={() => setPage('chat')}>
+                <Button variant="outline" onClick={() => setPage('chat')}>
                   Open conversations <ArrowRight size={15} />
-                </button>
+                </Button>
               </section>
             </>
           )}
@@ -790,28 +710,34 @@ function App() {
                   <h1>A little less on your mind.</h1>
                   <p>One owner for the follow-up. Either of you can lend a hand.</p>
                 </div>
-                <button
-                  className="primary"
+                <Button
+                  variant="default"
+
                   onClick={() => setTaskForm('new')}
                   disabled={!connected}
                 >
                   <Plus size={17} /> Add task
-                </button>
+                </Button>
               </div>
-              <section className="card full-card">
+              <Card className="full-card">
                 <div className="section-heading">
                   <h2>
-                    Open tasks <span className="count">{selected.length}</span>
+                    Open tasks <Badge variant="secondary">{selected.length}</Badge>
                   </h2>
-                  {filters}
                 </div>
-                {rows(selected)}
-              </section>
+                <TaskCollection value={filter} onValueChange={setFilter}>
+                  {rows(selected)}
+                </TaskCollection>
+              </Card>
               {state.tasks.some((t) => t.status === 'completed') && (
-                <details className="completed-section">
-                  <summary>
-                    Completed tasks · {state.tasks.filter((t) => t.status === 'completed').length}
-                  </summary>
+                <Disclosure
+                  className="completed-section"
+                  title={
+                    <>
+                      Completed tasks · {state.tasks.filter((t) => t.status === 'completed').length}
+                    </>
+                  }
+                >
                   {relevant(state.tasks.filter((t) => t.status === 'completed')).map((task) => (
                     <div className="completed-row" key={task.id}>
                       <Check size={16} />
@@ -819,41 +745,50 @@ function App() {
                       <small>{person(task.completedBy || '')}</small>
                     </div>
                   ))}
-                </details>
+                </Disclosure>
               )}
             </>
           )}
           {page === 'chat' && (
             <>
               <div className="conversation-layout">
-                <aside className="card channel-rail">{channelNavigation}</aside>
-                <section className="card conversation-content">
+                <Card className="channel-rail">{channelNavigation}</Card>
+                <Card className="conversation-content">
                   {thread ? (
                     <>
                       <div className="thread-heading">
-                        <button
-                          className="icon-button channels-toggle"
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="channels-toggle"
                           onClick={() => setChannelsOpen(true)}
                           aria-label="Open channels"
                         >
                           <Menu size={22} />
-                        </button>
-                        <button
+                        </Button>
+                        <Button
+                          variant="ghost"
                           className="assistant-avatar"
                           onClick={() => setActivityOpen(true)}
                           aria-label="Assistant activity"
                         >
                           <Leaf size={24} />
-                        </button>
+                        </Button>
                         <div className="chat-heading-copy">
                           <h1>{chatTitle}</h1>
-                          <button className="chat-activity" onClick={() => setActivityOpen(true)}>
+                          <Button
+                            variant="ghost"
+                            className="chat-activity"
+                            onClick={() => setActivityOpen(true)}
+                          >
                             {isAssistant ? chatActivity : 'You, your partner & Our day'}
                             {!isAssistant && <Users size={12} />}
-                          </button>
+                          </Button>
                         </div>
-                        <button
-                          className="icon-button chat-updates"
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="chat-updates"
                           aria-label="Open updates"
                           onClick={() => setShowNotices(true)}
                         >
@@ -861,7 +796,7 @@ function App() {
                           {state.notices.some((notice) => !notice.readAt) && (
                             <span className="unread-dot" />
                           )}
-                        </button>
+                        </Button>
                       </div>
                       <div className="ai-status">
                         <span
@@ -882,6 +817,8 @@ function App() {
                       </div>
                       <div
                         className="messages"
+                        role="log"
+                        aria-label="Conversation messages"
                         ref={messagesPanel}
                         aria-live="polite"
                         onScroll={() => {
@@ -940,7 +877,8 @@ function App() {
                                   'What needs following up?',
                                   'Help me add a household task',
                                 ].map((prompt) => (
-                                  <button
+                                  <Button
+                                    variant="outline"
                                     key={prompt}
                                     onClick={() => {
                                       setDraft(prompt);
@@ -949,7 +887,7 @@ function App() {
                                   >
                                     {prompt}
                                     <ArrowRight size={15} />
-                                  </button>
+                                  </Button>
                                 ))}
                               </div>
                             )}
@@ -958,15 +896,16 @@ function App() {
                         {chatStatus.previews.length > 0 && (
                           <div className="chat-proposals">
                             {chatStatus.previews.map(({ actorId, preview: proposal }) => (
-                              <div className="chat-proposal" key={proposal.id}>
+                              <Card className="chat-proposal" key={proposal.id}>
                                 <div>
                                   <strong>{proposal.title}</strong>
                                   <p className="small muted">
                                     Prepared for {person(actorId)}. Nothing changes until confirmed.
                                   </p>
                                 </div>
-                                <button
-                                  className="button secondary"
+                                <Button
+                                  variant="outline"
+
                                   disabled={busy || !connected || actorId !== state.me.id}
                                   onClick={() => {
                                     setPreviewError('');
@@ -975,23 +914,25 @@ function App() {
                                   }}
                                 >
                                   Review change
-                                </button>
-                              </div>
+                                </Button>
+                              </Card>
                             ))}
                           </div>
                         )}
                       </div>
                       {chatStatus.error && (
-                        <div role="status" className="chat-error">
-                          {chatStatus.error}{' '}
-                          <a
-                            href="https://chatgpt.com/#settings/Usage"
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Manage usage
-                          </a>
-                        </div>
+                        <Alert role="status" className="chat-error">
+                          <AlertDescription>
+                            {chatStatus.error}{' '}
+                            <a
+                              href="https://chatgpt.com/#settings/Usage"
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Manage usage
+                            </a>
+                          </AlertDescription>
+                        </Alert>
                       )}
                       <div className="typing-status">
                         {chatStatus.running && 'Our day assistant is thinking… '}
@@ -1002,6 +943,7 @@ function App() {
                       </div>
                       <form
                         className="composer"
+                        aria-busy={busy}
                         onSubmit={async (event) => {
                           event.preventDefault();
                           if (!draft.trim() || busy) return;
@@ -1032,17 +974,16 @@ function App() {
                         }}
                       >
                         {!isAssistant && (
-                          <label className="ask-assistant-toggle">
-                            <input
-                              type="checkbox"
+                          <Label className="ask-assistant-toggle">
+                            <Switch
                               checked={askChannelAssistant}
-                              onChange={(event) => setAskChannelAssistant(event.target.checked)}
+                              onCheckedChange={setAskChannelAssistant}
                             />
                             <span>Ask Our day</span>
-                          </label>
+                          </Label>
                         )}
                         <div className="composer-input-row">
-                          <textarea
+                          <Textarea
                             ref={composerInput}
                             aria-label="Message"
                             placeholder={
@@ -1058,14 +999,16 @@ function App() {
                             }}
                             rows={1}
                           />
-                          <button
+                          <Button
+                            variant="default"
+                            size="icon"
                             className="send-button"
                             type="submit"
                             aria-label="Send message"
                             disabled={busy || !connected || !draft.trim()}
                           >
                             <Send size={18} />
-                          </button>
+                          </Button>
                         </div>
                       </form>
                     </>
@@ -1076,7 +1019,7 @@ function App() {
                       text="Your conversation is being prepared."
                     />
                   )}
-                </section>
+                </Card>
               </div>
             </>
           )}
@@ -1119,7 +1062,7 @@ function App() {
                   })
                 }
               />
-              <section className="card settings-card">
+              <Card className="settings-card">
                 <h2>
                   <Bell size={19} /> Phone notifications
                 </h2>
@@ -1131,8 +1074,8 @@ function App() {
                   Your partner’s confirmed changes appear in Updates and arrive on this device when
                   notifications are enabled. Appointment alerts also come from Apple Calendar.
                 </p>
-              </section>
-              <section className="card settings-card">
+              </Card>
+              <Card className="settings-card">
                 <h2>
                   <MessageCircle size={19} /> Household assistant
                 </h2>
@@ -1144,9 +1087,10 @@ function App() {
                 <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">
                   Manage ChatGPT usage
                 </a>
-              </section>
-              <button
-                className="text-button logout"
+              </Card>
+              <Button
+                variant="ghost"
+                className="logout"
                 onClick={async () => {
                   try {
                     const registration = await navigator.serviceWorker?.getRegistration();
@@ -1167,7 +1111,7 @@ function App() {
                 }}
               >
                 <LogOut size={17} /> Sign out
-              </button>
+              </Button>
             </>
           )}
         </div>
@@ -1177,14 +1121,16 @@ function App() {
       </main>
       <nav className="mobile-nav" aria-label="Main navigation">
         {navigation.map((item) => (
-          <button
+          <Button
+            variant="ghost"
             className={`${page === item.id ? 'active' : ''} nav-${item.id}`}
+            aria-current={page === item.id ? 'page' : undefined}
             key={item.id}
             onClick={() => setPage(item.id)}
           >
             <item.icon size={21} />
             <span>{item.id === 'chat' ? 'Chat' : item.title}</span>
-          </button>
+          </Button>
         ))}
       </nav>
       {channelsOpen && (
@@ -1193,7 +1139,7 @@ function App() {
         </Modal>
       )}
       {showNotices && (
-        <Modal title="Updates" close={() => setShowNotices(false)}>
+        <Modal title="Updates" informational close={() => setShowNotices(false)}>
           <p className="small muted inbox-intro">
             Changes from your partner, plus your reminders and summaries.
           </p>
@@ -1201,7 +1147,7 @@ function App() {
         </Modal>
       )}
       {activityOpen && (
-        <Modal title="Our day activity" close={() => setActivityOpen(false)}>
+        <Modal title="Our day activity" informational close={() => setActivityOpen(false)}>
           <p>{chatActivity}</p>
           <p className="small muted">
             {chatStatus.running
@@ -1210,24 +1156,26 @@ function App() {
           </p>
           <p>{chatStatus.previews.length} changes waiting for your household to review.</p>
           {chatStatus.error && <p className="field-error">{chatStatus.error}</p>}
-          <button
-            className="text-button"
+          <Button
+            variant="ghost"
+
             onClick={() => {
               setActivityOpen(false);
               setPage('today');
             }}
           >
             Today’s overview <ArrowRight size={15} />
-          </button>
-          <button
-            className="text-button"
+          </Button>
+          <Button
+            variant="ghost"
+
             onClick={() => {
               setActivityOpen(false);
               setPage('settings');
             }}
           >
             Assistant settings <ArrowRight size={15} />
-          </button>
+          </Button>
         </Modal>
       )}
       {planNotice && (
@@ -1253,8 +1201,9 @@ function App() {
               Manage ChatGPT usage
             </a>
           </p>
-          <button
-            className="button primary"
+          <Button
+            variant="default"
+
             onClick={() => {
               try {
                 localStorage.setItem(`chatgpt-plan-notice:${state.me.id}`, 'seen');
@@ -1265,7 +1214,7 @@ function App() {
             }}
           >
             Got it
-          </button>
+          </Button>
         </Modal>
       )}
       {taskForm && (
@@ -1339,40 +1288,31 @@ function App() {
               });
             }}
           >
-            <label>
+            <Label>
               Channel name
-              <input name="title" required maxLength={120} placeholder="Weekend plans" />
-            </label>
-            <label>
+              <Input name="title" required maxLength={120} placeholder="Weekend plans" />
+            </Label>
+            <Label>
               Space
-              <select name="category">
+              <NativeSelect name="category">
                 <option value="household">Household</option>
                 <option value="work">Work</option>
                 <option value="personal">Personal</option>
-              </select>
-            </label>
+              </NativeSelect>
+            </Label>
             <p className="small muted">Both of you can see and join this conversation.</p>
-            <button className="primary" disabled={busy || !connected}>
+            <Button variant="default" disabled={busy || !connected}>
               Review channel <ArrowRight size={15} />
-            </button>
+            </Button>
           </form>
         </Modal>
       )}
       {preview && (
         <Modal title={preview.title} close={cancelPreview}>
-          <div className="preview-details">
-            {preview.details.map((detail, index) => (
-              <div key={index}>
-                <span>{detail.label}</span>
-                <p>
-                  {detail.before !== undefined && detail.before !== detail.after && (
-                    <del>{formatDetail(detail.before, detail.label, zone)}</del>
-                  )}
-                  <strong>{formatDetail(detail.after, detail.label, zone)}</strong>
-                </p>
-              </div>
-            ))}
-          </div>
+          <ConfirmationDetails
+            preview={preview}
+            format={(value, label) => formatDetail(value, label, zone)}
+          />
           {previewError && (
             <p className="field-error" role="alert">
               {previewError}
@@ -1380,17 +1320,18 @@ function App() {
           )}
           <p className="small muted">Nothing changes until you confirm.</p>
           <div className="dialog-actions">
-            <button className="secondary" onClick={cancelPreview} disabled={busy}>
+            <Button variant="outline" onClick={cancelPreview} disabled={busy}>
               Go back
-            </button>
-            <button
-              className="primary"
+            </Button>
+            <Button
+              variant="default"
+
               onClick={() => void confirm()}
               disabled={busy || !connected || (Boolean(previewError) && !previewRetryable)}
             >
               <Check size={16} />
               {busy ? 'Saving…' : 'Confirm change'}
-            </button>
+            </Button>
           </div>
         </Modal>
       )}
@@ -1482,23 +1423,23 @@ function Login({ onLogin }: { onLogin: () => Promise<void> }) {
             }
           }}
         >
-          <label>
+          <Label>
             Username
-            <input name="username" autoComplete="username" required />
-          </label>
-          <label>
+            <Input name="username" autoComplete="username" required />
+          </Label>
+          <Label>
             Password
-            <input name="password" type="password" autoComplete="current-password" required />
-          </label>
+            <Input name="password" type="password" autoComplete="current-password" required />
+          </Label>
           {error && (
             <p className="field-error" role="alert">
               {error}
             </p>
           )}
-          <button className="primary" disabled={busy}>
+          <Button variant="default" disabled={busy}>
             {busy ? 'Signing in…' : 'Come on in'}
             <ArrowRight size={17} />
-          </button>
+          </Button>
         </form>
         <p className="small muted login-footnote">Your own view. Your shared household.</p>
       </section>
@@ -1545,39 +1486,39 @@ function TaskForm({
         });
       }}
     >
-      <label>
+      <Label>
         What needs doing?
-        <input
+        <Input
           name="title"
           required
           maxLength={200}
           defaultValue={task?.title}
           placeholder="Something to take off your mind"
         />
-      </label>
+      </Label>
       <div className="form-pair">
-        <label>
+        <Label>
           Follow-up owner
-          <select name="ownerId" defaultValue={task?.ownerId ?? state.me.id}>
+          <NativeSelect name="ownerId" defaultValue={task?.ownerId ?? state.me.id}>
             {state.people.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
               </option>
             ))}
-          </select>
-        </label>
-        <label>
+          </NativeSelect>
+        </Label>
+        <Label>
           Space
-          <select name="category" defaultValue={task?.category ?? 'household'}>
+          <NativeSelect name="category" defaultValue={task?.category ?? 'household'}>
             <option value="household">Household</option>
             <option value="work">Work</option>
             <option value="personal">Personal</option>
-          </select>
-        </label>
+          </NativeSelect>
+        </Label>
       </div>
-      <label>
+      <Label>
         Due date & time <span className="optional">optional · {state.preferences.timezone}</span>
-        <input
+        <Input
           name="dueAt"
           type="datetime-local"
           defaultValue={
@@ -1588,30 +1529,36 @@ function TaskForm({
               : ''
           }
         />
-      </label>
-      <label>
+      </Label>
+      <Label>
         Repeat
-        <select name="schedule" defaultValue={task?.schedule?.frequency ?? 'once'}>
+        <NativeSelect name="schedule" defaultValue={task?.schedule?.frequency ?? 'once'}>
           <option value="once">Just this once</option>
           <option value="daily">Every day</option>
           <option value="weekly">Every week</option>
-        </select>
-      </label>
-      <label>
+        </NativeSelect>
+      </Label>
+      <Label>
         Anything else? <span className="optional">optional</span>
-        <textarea name="notes" rows={3} maxLength={5000} defaultValue={task?.notes} />
-      </label>
+        <Textarea name="notes" rows={3} maxLength={5000} defaultValue={task?.notes} />
+      </Label>
       <p className="small muted">Either of you can help or mark this task complete.</p>
       <div className="dialog-actions">
         {onDelete && (
-          <button className="text-button danger" type="button" onClick={onDelete} disabled={busy}>
+          <Button
+            variant="ghost"
+            className="text-destructive"
+            type="button"
+            onClick={onDelete}
+            disabled={busy}
+          >
             <Trash2 size={16} /> Delete
-          </button>
+          </Button>
         )}
-        <button className="primary" disabled={busy}>
+        <Button variant="default" disabled={busy}>
           Review {task ? 'changes' : 'task'}
           <ArrowRight size={15} />
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -1632,78 +1579,79 @@ function SummarySettings({
     setValue(preferences);
   }, [preferences.revision]);
   return (
-    <form
-      className="card settings-card"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const { revision: _, ...next } = value;
-        onSave(next);
-      }}
-    >
-      <h2>A moment, twice a day.</h2>
-      <p className="muted">
-        Choose when you’d like a little overview. Switch either summary off whenever you like.
-      </p>
-      {(['morning', 'evening'] as const).map((key) => (
-        <div className="summary-setting" key={key}>
-          <span className={`overview-icon ${key === 'morning' ? 'peach' : 'purple'}`}>
-            {key === 'morning' ? <Sun size={22} /> : <Sunset size={22} />}
-          </span>
-          <div>
-            <strong>{key === 'morning' ? 'Morning summary' : 'Evening summary'}</strong>
-            <small>
-              {key === 'morning'
-                ? 'What’s ahead, and what needs a follow-up.'
-                : 'A look at what’s still on your plate.'}
-            </small>
-          </div>
-          <label className="switch">
-            <input
-              type="checkbox"
-              aria-label={`Enable ${key} summary`}
-              checked={value[key].enabled}
+    <Card className="settings-card">
+      <form
+        className="form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const { revision: _, ...next } = value;
+          onSave(next);
+        }}
+      >
+        <h2>A moment, twice a day.</h2>
+        <p className="muted">
+          Choose when you’d like a little overview. Switch either summary off whenever you like.
+        </p>
+        {(['morning', 'evening'] as const).map((key) => (
+          <div className="summary-setting" key={key}>
+            <span className={`overview-icon ${key === 'morning' ? 'peach' : 'purple'}`}>
+              {key === 'morning' ? <Sun size={22} /> : <Sunset size={22} />}
+            </span>
+            <div>
+              <strong>{key === 'morning' ? 'Morning summary' : 'Evening summary'}</strong>
+              <small>
+                {key === 'morning'
+                  ? 'What’s ahead, and what needs a follow-up.'
+                  : 'A look at what’s still on your plate.'}
+              </small>
+            </div>
+            <Label className="switch-target" htmlFor={`summary-${key}`}>
+              <span className="sr-only">Enable {key} summary</span>
+              <Switch
+                id={`summary-${key}`}
+                checked={value[key].enabled}
+                onCheckedChange={(enabled) =>
+                  setValue({ ...value, [key]: { ...value[key], enabled } })
+                }
+              />
+            </Label>
+            <Input
+              className="summary-time"
+              aria-label={`${key} summary time`}
+              type="time"
+              required
+              value={value[key].time}
+              disabled={!value[key].enabled}
               onChange={(event) =>
-                setValue({ ...value, [key]: { ...value[key], enabled: event.target.checked } })
+                setValue({ ...value, [key]: { ...value[key], time: event.target.value } })
               }
             />
-            <span />
-          </label>
-          <input
-            className="summary-time"
-            aria-label={`${key} summary time`}
-            type="time"
+          </div>
+        ))}
+        <Label className="timezone-label">
+          Your time zone
+          <Input
+            value={value.timezone}
             required
-            value={value[key].time}
-            disabled={!value[key].enabled}
-            onChange={(event) =>
-              setValue({ ...value, [key]: { ...value[key], time: event.target.value } })
-            }
+            onChange={(event) => setValue({ ...value, timezone: event.target.value })}
+            list="timezones"
           />
+          <datalist id="timezones">
+            <option value="Asia/Dubai" />
+            <option value="Europe/London" />
+            <option value="Asia/Kolkata" />
+            <option value="America/New_York" />
+          </datalist>
+        </Label>
+        <div className="settings-actions">
+          <span className="small muted">Changes are previewed before saving.</span>
+          <Button variant="default" disabled={busy || !dirty}>
+            Review settings
+            <ArrowRight size={15} />
+          </Button>
         </div>
-      ))}
-      <label className="timezone-label">
-        Your time zone
-        <input
-          value={value.timezone}
-          required
-          onChange={(event) => setValue({ ...value, timezone: event.target.value })}
-          list="timezones"
-        />
-        <datalist id="timezones">
-          <option value="Asia/Dubai" />
-          <option value="Europe/London" />
-          <option value="Asia/Kolkata" />
-          <option value="America/New_York" />
-        </datalist>
-      </label>
-      <div className="settings-actions">
-        <span className="small muted">Changes are previewed before saving.</span>
-        <button className="primary" disabled={busy || !dirty}>
-          Review settings
-          <ArrowRight size={15} />
-        </button>
-      </div>
-    </form>
+      </form>
+    </Card>
   );
 }
 
@@ -1717,8 +1665,9 @@ function PushSettings({ onError }: { onError: (message: string) => void }) {
     window.isSecureContext;
   return (
     <>
-      <button
-        className="secondary"
+      <Button
+        variant="outline"
+
         disabled={busy || !enabled}
         onClick={async () => {
           setBusy(true);
@@ -1751,7 +1700,7 @@ function PushSettings({ onError }: { onError: (message: string) => void }) {
       >
         <Bell size={16} />
         {busy ? 'Enabling…' : 'Enable on this device'}
-      </button>
+      </Button>
       <p className="small muted" role="status">
         {status ||
           (!enabled
