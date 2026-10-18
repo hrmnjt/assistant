@@ -7,6 +7,7 @@ import type { Conversations } from './conversations.js';
 import { validPushEndpoint, type Reminders } from './reminders.js';
 import type { Person, Snapshot } from '../src/types.js';
 import { CalendarOutcomeError, type CalendarService } from './calendar.js';
+import { recoverablePreviews } from './preview-recovery.js';
 
 export function createApp(
   db: Database,
@@ -45,6 +46,7 @@ export function createApp(
       me,
       people: household.people(),
       tasks: household.tasks(),
+      previews: recoverablePreviews(db, me.id, household.clock()),
       preferences: household.preferences(me.id),
       threads: household.threads(),
       presence: db.sql
@@ -77,6 +79,9 @@ export function createApp(
       },
     };
     res.json(state);
+  });
+  app.get('/api/previews', (_req, res) => {
+    res.json(recoverablePreviews(db, res.locals.me.id, household.clock()));
   });
   app.post('/api/previews', async (req, res) => {
     if (typeof req.body?.kind === 'string' && req.body.kind.startsWith('calendar.')) {

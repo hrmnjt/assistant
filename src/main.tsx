@@ -109,6 +109,7 @@ function App() {
   const followMessages = useRef(true);
   const activeLogin = useRef<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const [previewRetryable, setPreviewRetryable] = useState(true);
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -164,10 +165,19 @@ function App() {
   useEffect(() => {
     if (!state) {
       activeLogin.current = null;
+      setPreview(null);
+      setRecoveryOpen(false);
+      setTaskForm(null);
+      setEventForm(null);
+      setThreadForm(false);
       return;
     }
     if (activeLogin.current !== state.me.id) {
       activeLogin.current = state.me.id;
+      setPreview(null);
+      setRecoveryOpen(state.previews.length > 0);
+      setPreviewError('');
+      setBusy(false);
       setPage('chat');
       setThreadId(state.threads.find((thread) => thread.assistantFor === state.me.id)?.id ?? null);
       setChannelsOpen(false);
@@ -208,55 +218,76 @@ function App() {
     if (followMessages.current && messagesPanel.current)
       messagesPanel.current.scrollTop = messagesPanel.current.scrollHeight;
   }, [messages, chatStatus.previews, threadId]);
+  const reviewPreview = (proposal: Preview) => {
+    setRecoveryOpen(false);
+    setTaskForm(null);
+    setEventForm(null);
+    setThreadForm(false);
+    setPreviewError('');
+    setPreviewRetryable(!proposal.calendarOutcome || proposal.calendarOutcome.status === 'unknown');
+    setPreview(proposal);
+  };
   const act = useCallback(async (mutation: Mutation) => {
+    const actorId = activeLogin.current;
     setBusy(true);
     setError('');
     setPreviewError('');
     setPreviewRetryable(true);
     try {
-      setPreview(await api<Preview>('/previews', mutation));
+      const proposal = await api<Preview>('/previews', mutation);
+      if (activeLogin.current === actorId) setPreview(proposal);
     } catch (problem) {
-      setError((problem as Error).message);
+      if (activeLogin.current === actorId) setError((problem as Error).message);
     } finally {
-      setBusy(false);
+      if (activeLogin.current === actorId) setBusy(false);
     }
   }, []);
   const cancelPreview = useCallback(() => {
     if (busy || !preview) return;
+    const actorId = activeLogin.current;
     setBusy(true);
     void api(`/previews/${preview.id}`, undefined, 'DELETE')
       .then(() => {
+        if (activeLogin.current !== actorId) return;
         setPreview(null);
         setPreviewError('');
+        void refresh();
       })
       .catch((problem) => {
+        if (activeLogin.current !== actorId) return;
         const outcome = (problem as { calendarOutcome?: CalendarOutcome }).calendarOutcome;
         if (outcome) setPreview({ ...preview, calendarOutcome: outcome });
         setPreviewError(outcome ? '' : (problem as Error).message);
         setPreviewRetryable(!outcome || outcome.status === 'unknown');
       })
-      .finally(() => setBusy(false));
-  }, [preview, busy]);
+      .finally(() => {
+        if (activeLogin.current === actorId) setBusy(false);
+      });
+  }, [preview, busy, refresh]);
   async function dismissPreview() {
     if (!preview || busy) return;
+    const actorId = activeLogin.current;
     setBusy(true);
     try {
       await api(`/previews/${preview.id}/dismiss`, { acknowledgeUncertain: true });
+      if (activeLogin.current !== actorId) return;
       setPreview(null);
       setPreviewError('');
       await refresh();
     } catch (problem) {
-      setPreviewError((problem as Error).message);
+      if (activeLogin.current === actorId) setPreviewError((problem as Error).message);
     } finally {
-      setBusy(false);
+      if (activeLogin.current === actorId) setBusy(false);
     }
   }
   async function confirm() {
     if (!preview) return;
+    const actorId = activeLogin.current;
     setBusy(true);
     setPreviewError('');
     try {
       const result = await api<ConfirmationResult>(`/previews/${preview.id}/confirm`, {});
+      if (activeLogin.current !== actorId) return;
       if (!result.ok && result.calendarOutcome) {
         setPreview({ ...preview, calendarOutcome: result.calendarOutcome });
         setPreviewRetryable(result.calendarOutcome.status === 'unknown');
@@ -270,6 +301,7 @@ function App() {
       setThreadForm(false);
       await refresh();
     } catch (problem) {
+      if (activeLogin.current !== actorId) return;
       const outcome = (problem as { calendarOutcome?: CalendarOutcome }).calendarOutcome;
       if (outcome) setPreview({ ...preview, calendarOutcome: outcome });
       setPreviewError(outcome ? '' : (problem as Error).message);
@@ -279,7 +311,7 @@ function App() {
           : ((problem as { status?: number }).status ?? 500) >= 500,
       );
     } finally {
-      setBusy(false);
+      if (activeLogin.current === actorId) setBusy(false);
     }
   }
   useEffect(() => {
@@ -383,6 +415,19 @@ function App() {
     setThreadId(id);
     setChannelsOpen(false);
   };
+  const savedChangesButton = state.previews.length > 0 && (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="relative"
+      aria-label={`Review saved changes (${state.previews.length})`}
+      onClick={() => setRecoveryOpen(true)}
+      disabled={busy}
+    >
+      <ClipboardList size={19} />
+      <span className="unread-dot" />
+    </Button>
+  );
   const channelNavigation = (
     <>
       <p className="channel-section-label">YOUR ASSISTANT</p>
@@ -594,10 +639,10 @@ function App() {
           </span>
           <div>
             <span className="top-date">{now.toFormat('cccc, d LLL')}</span>
+            {savedChangesButton}
             <Button
               variant="ghost"
               size="icon"
-
               aria-label="Open updates"
               onClick={() => setShowNotices(true)}
             >
@@ -816,6 +861,7 @@ function App() {
                             {!isAssistant && <Users size={12} />}
                           </Button>
                         </div>
+                        {savedChangesButton}
                         <Button
                           variant="ghost"
                           size="icon"
@@ -938,11 +984,12 @@ function App() {
                                   variant="outline"
 
                                   disabled={busy || !connected || actorId !== state.me.id}
-                                  onClick={() => {
-                                    setPreviewError('');
-                                    setPreviewRetryable(true);
-                                    setPreview(proposal);
-                                  }}
+                                  onClick={() =>
+                                    reviewPreview(
+                                      state.previews.find((item) => item.id === proposal.id) ??
+                                        proposal,
+                                    )
+                                  }
                                 >
                                   Review change
                                 </Button>
@@ -1338,10 +1385,49 @@ function App() {
           </form>
         </Modal>
       )}
+      {recoveryOpen && (
+        <Modal
+          title="Saved changes"
+          close={() => setRecoveryOpen(false)}
+          inactive={Boolean(preview)}
+        >
+          <p className="small muted">
+            These are your saved previews, including unresolved calendar writes. Nothing new is
+            applied by opening them.
+          </p>
+          <div className="grid max-h-[55dvh] gap-3 overflow-y-auto p-1">
+            {state.previews.length === 0 && <p>No saved changes need review.</p>}
+            {state.previews.map((proposal) => (
+              <Card role="article" className="gap-2 px-4 py-4" key={proposal.id}>
+                <strong>{proposal.title}</strong>
+                <p>
+                  {
+                    proposal.details.find((detail) =>
+                      ['Task', 'Appointment', 'Channel'].includes(detail.label),
+                    )?.after
+                  }
+                </p>
+                <p>
+                  {proposal.calendarOutcome?.message ??
+                    `Awaiting confirmation · expires ${DateTime.fromISO(proposal.expiresAt).setZone(zone).toFormat('d LLL, HH:mm')}`}
+                </p>
+                <Button
+                  variant="outline"
+                  className="self-start"
+                  disabled={busy || !connected}
+                  onClick={() => reviewPreview(proposal)}
+                >
+                  Review saved change
+                </Button>
+              </Card>
+            ))}
+          </div>
+        </Modal>
+      )}
       {preview && (
         <Modal
           title={preview.title}
-          close={preview.calendarOutcome ? () => void dismissPreview() : cancelPreview}
+          close={preview.calendarOutcome ? () => setPreview(null) : cancelPreview}
         >
           <ConfirmationDetails
             preview={preview}
@@ -1357,9 +1443,23 @@ function App() {
           </p>
           {preview.calendarOutcome?.status === 'unknown' && (
             <p className="small muted">
-              Dismissal only hides this result; it does not undo a calendar change. Dismiss to
-              return to the app, then review the Calendar tab before making a replacement proposal.
+              Dismissal only hides this result; it does not undo a calendar change. You can review
+              the calendar and return to this result from Saved changes.
             </p>
+          )}
+          {preview.calendarOutcome?.status === 'unknown' && (
+            <Button
+              variant="link"
+              className="px-0"
+              onClick={() => {
+                setPreview(null);
+                setRecoveryOpen(false);
+                setPage('calendar');
+              }}
+              disabled={busy}
+            >
+              Review current calendar
+            </Button>
           )}
           <div className="dialog-actions">
             <Button

@@ -15,6 +15,7 @@ import { provision } from '../server/auth.js';
 import { Household, DomainError } from '../server/domain.js';
 import { Conversations } from '../server/conversations.js';
 import { LocalCredentials, chatgptModels } from '../server/ai.js';
+import { recoverablePreviews } from '../server/preview-recovery.js';
 
 function directory() {
   mkdirSync('.cache/tests', { recursive: true });
@@ -97,6 +98,11 @@ test('Pi tools read household state and only prepare actor-bound changes; retrie
     assert.equal(f.household.tasks().length, 0);
     const proposal = conversations.status(f.thread).previews[0];
     assert.equal(proposal.actorId, 'owner');
+    assert.deepEqual(
+      recoverablePreviews(f.db, 'owner').map((p) => p.id),
+      [proposal.preview.id],
+    );
+    assert.deepEqual(recoverablePreviews(f.db, 'partner'), []);
     assert.throws(() => f.household.confirm('partner', proposal.preview.id), DomainError);
     const messages = await conversations.messages(f.thread);
     assert.equal(messages.filter((message) => message.authorId === 'owner').length, 1);
@@ -115,6 +121,10 @@ test('Pi tools read household state and only prepare actor-bound changes; retrie
     conversations = await Conversations.open(f.db, resolve(f.path, 'pi.sqlite'), f.options);
     await conversations.send(f.thread, 'owner', 'Add buy milk for Sam', request);
     assert.equal(f.faux.state.callCount, 3);
+    assert.deepEqual(
+      recoverablePreviews(f.db, 'owner').map((p) => p.id),
+      [proposal.preview.id],
+    );
     f.household.confirm('owner', proposal.preview.id);
     assert.equal(f.household.tasks()[0].ownerId, 'partner');
     assert.equal(conversations.status(f.thread).previews.length, 0);

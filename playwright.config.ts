@@ -2,6 +2,8 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/browser',
+  // This full-stack scenario has its own isolated server/configuration.
+  testIgnore: '**/preview-recovery.spec.ts',
   outputDir: './.cache/ui-results',
   fullyParallel: true,
   reporter: [['list'], ['html', { outputFolder: '.cache/ui-report', open: 'never' }]],
