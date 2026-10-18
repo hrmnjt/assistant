@@ -13,7 +13,15 @@ import { DomainError, Household, mutationSchema } from './domain.js';
 import { CalendarService, calendarMutationSchema } from './calendar.js';
 import type { Mutation } from '../src/types.js';
 
-export function boundedModels(db: Database, models: Models): Models {
+/** Generation budget: model calls answering one person's request, including tool rounds. */
+export const requestModelCalls = 8;
+/**
+ * Maintenance budget: Pi compaction summaries of a topic, which serve the whole
+ * conversation rather than one person's request, per rolling day.
+ */
+export const dailyMaintenanceCalls = 6;
+
+export function boundedModels(db: Database, models: Models, now = () => Date.now()): Models {
   const stream: Models['streamSimple'] = (model, context, options) => {
     const session = options?.sessionId;
     if (!session) throw new Error('Assistant request has no durable session.');
@@ -50,16 +58,39 @@ export function boundedModels(db: Database, models: Models): Models {
         'SELECT COUNT(*) AS count FROM assistant_model_calls WHERE thread_id=? AND request_key=?',
       )
       .get(String(thread.thread_id), String(run.request_key))!;
-    if (Number(count.count) >= 8)
+    if (Number(count.count) >= requestModelCalls)
       throw new Error('This assistant request reached its model-turn limit.');
     db.sql
       .prepare('INSERT INTO assistant_model_calls VALUES (?,?,?)')
       .run(randomUUID(), String(thread.thread_id), String(run.request_key));
     return models.streamSimple(model, context, options);
   };
+  const complete: Models['completeSimple'] = async (model, context, options) => {
+    // Bound by the conversation's provider session, never to whichever request is running.
+    const thread = db.sql
+      .prepare('SELECT thread_id FROM assistant_sessions WHERE session_id=?')
+      .get(options?.sessionId ?? '');
+    if (!thread) throw new Error('Assistant maintenance cannot be bound to a household topic.');
+    const recent = db.sql
+      .prepare(
+        'SELECT COUNT(*) AS count FROM assistant_maintenance_calls WHERE thread_id=? AND created_at>?',
+      )
+      .get(String(thread.thread_id), now() - 86_400_000)!;
+    if (Number(recent.count) >= dailyMaintenanceCalls)
+      throw new Error('This topic reached its daily assistant maintenance limit.');
+    db.sql
+      .prepare('INSERT INTO assistant_maintenance_calls VALUES (?,?,?)')
+      .run(randomUUID(), String(thread.thread_id), now());
+    return models.completeSimple(model, context, options);
+  };
+  const unmetered = () => {
+    throw new Error('Unmetered model access is disabled.');
+  };
   return new Proxy(models, {
     get(target, key) {
       if (key === 'streamSimple') return stream;
+      if (key === 'completeSimple') return complete;
+      if (key === 'stream' || key === 'complete' || key === 'streamDeferred') return unmetered;
       const value = Reflect.get(target, key, target);
       return typeof value === 'function' ? value.bind(target) : value;
     },
