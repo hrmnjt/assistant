@@ -1,9 +1,9 @@
 import ICAL from 'ical.js';
 import { createHash } from 'node:crypto';
 import { DateTime } from 'luxon';
-import type { CalendarEvent, CalendarFields } from '../src/types.js';
+import type { CalendarEvent, CalendarFields } from '../../../src/types.js';
 import type { CalendarResource } from './caldav.js';
-import { DomainError } from './domain.js';
+import { DomainError } from '../../errors.js';
 
 export function eventId(url: string, uid: string, recurrenceId = '') {
   return createHash('sha256').update(`${url}\n${uid}\n${recurrenceId}`).digest('hex');

@@ -1,6 +1,6 @@
 import { DateTime } from 'luxon';
 import { z } from 'zod';
-import { notifyPartner } from './changes.js';
+import { notifyPartner } from '../../changes.js';
 import type {
   CalendarEvent,
   CalendarOutcome,
@@ -9,9 +9,9 @@ import type {
   CalendarMutation,
   CalendarSnapshot,
   Preview,
-} from '../src/types.js';
-import type { Executor, Row, Store } from './database.js';
-import { DomainError } from './domain.js';
+} from '../../../src/types.js';
+import type { Executor, Row, Store } from '../../database.js';
+import { DomainError } from '../../errors.js';
 import type { CalendarResource, CalendarTransport } from './caldav.js';
 import {
   createEventData,

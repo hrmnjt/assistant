@@ -1,5 +1,5 @@
 import { DAVClient, type DAVCalendar } from 'tsdav';
-import { DomainError } from './domain.js';
+import { DomainError } from '../../errors.js';
 
 export type CalendarResource = { url: string; etag: string; data: string };
 export interface CalendarTransport {

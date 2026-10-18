@@ -4,12 +4,13 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { rmSync } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
-import { CalendarOutcomeError, CalendarService } from '../../server/calendar.js';
+import { CalendarOutcomeError, CalendarService } from '../../server/plugins/calendar/service.js';
+import { CalendarPlugin } from '../../server/plugins/calendar/index.js';
 import { handle } from '../../server/api.js';
 import { openHousehold } from '../../server/runtime.js';
 import { securityHeaders } from '../../server/http.js';
-import { updateEventData } from '../../server/icalendar.js';
-import type { CalendarResource, CalendarTransport } from '../../server/caldav.js';
+import { updateEventData } from '../../server/plugins/calendar/icalendar.js';
+import type { CalendarResource, CalendarTransport } from '../../server/plugins/calendar/caldav.js';
 import { directory, openStore } from '../support.js';
 
 if (process.env.HOUSEHOLD_BROWSER_TEST !== '1') throw new Error('Use npm run test:browser.');
@@ -89,7 +90,8 @@ async function reset() {
     etag: '"human"',
     data: updateEventData(old, { ...fields, title: 'Later human calendar edit' }, 'human-edit'),
   };
-  await app.calendar.sync();
+  const calendar = app.plugins.find((plugin) => plugin instanceof CalendarPlugin);
+  await calendar!.service.sync();
 }
 await reset();
 

@@ -3,13 +3,22 @@ import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { DomainError, Household, recurrenceDates } from '../server/domain.js';
+import { DomainError } from '../server/errors.js';
+import { recurrenceDates } from '../server/plugins/tasks.js';
 import { Conversations } from '../server/conversations.js';
 import { openHousehold } from '../server/runtime.js';
 import { handle } from '../server/api.js';
-import { Reminders, validPushEndpoint } from '../server/reminders.js';
+import { validPushEndpoint } from '../server/notices.js';
 import type { Mutation, Task } from '../src/types.js';
-import { client, config, directory, householdStore, openStore, type Row } from './support.js';
+import {
+  client,
+  config,
+  directory,
+  householdParts,
+  householdStore,
+  openStore,
+  type Row,
+} from './support.js';
 
 const task = (overrides = {}) => ({
   title: 'Water the plants',
@@ -24,67 +33,67 @@ async function fixture() {
   const db = await householdStore();
   let now = new Date('2026-10-14T07:00:00Z');
   return {
-    db,
-    household: new Household(db, () => now),
+    ...householdParts(db, { clock: () => now }),
     time: (value: string) => {
       now = new Date(value);
     },
   };
 }
-async function apply(household: Household, mutation: Mutation, user = 'owner') {
-  const preview = await household.preview(user, mutation);
-  return await household.confirm(user, preview.id);
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+async function apply(f: Pick<Fixture, 'changes'>, mutation: Mutation, user = 'owner') {
+  const preview = await f.changes.preview(user, mutation);
+  return await f.changes.confirm(user, preview.id);
 }
 
 test('a task is never changed by previewing, and cancellation makes confirmation impossible', async () => {
   const f = await fixture();
-  const preview = await f.household.preview('owner', { kind: 'task.create', task: task() });
-  assert.equal((await f.household.tasks()).length, 0);
-  await f.household.cancel('owner', preview.id);
-  await assert.rejects(async () => await f.household.confirm('owner', preview.id), DomainError);
-  assert.equal((await f.household.tasks()).length, 0);
+  const preview = await f.changes.preview('owner', { kind: 'task.create', task: task() });
+  assert.equal((await f.tasks.list()).length, 0);
+  await f.changes.cancel('owner', preview.id);
+  await assert.rejects(async () => await f.changes.confirm('owner', preview.id), DomainError);
+  assert.equal((await f.tasks.list()).length, 0);
   await f.db.close();
 });
 test('confirmation is bound to its actor and retrying does not duplicate tasks', async () => {
   const f = await fixture();
-  const preview = await f.household.preview('owner', { kind: 'task.create', task: task() });
-  await assert.rejects(async () => await f.household.confirm('partner', preview.id), DomainError);
-  const first = await f.household.confirm('owner', preview.id);
-  assert.deepEqual(await f.household.confirm('owner', preview.id), first);
-  assert.equal((await f.household.tasks()).length, 1);
+  const preview = await f.changes.preview('owner', { kind: 'task.create', task: task() });
+  await assert.rejects(async () => await f.changes.confirm('partner', preview.id), DomainError);
+  const first = await f.changes.confirm('owner', preview.id);
+  assert.deepEqual(await f.changes.confirm('owner', preview.id), first);
+  assert.equal((await f.tasks.list()).length, 1);
   await f.db.close();
 });
 test('either spouse can complete a task, and an older concurrent preview cannot overwrite it', async () => {
   const f = await fixture();
-  const created = await apply(f.household, { kind: 'task.create', task: task() });
-  const first = await f.household.preview('owner', {
+  const created = await apply(f, { kind: 'task.create', task: task() });
+  const first = await f.changes.preview('owner', {
     kind: 'task.update',
     id: created.targetId,
     revision: 1,
     task: task({ title: 'Old edit' }),
   });
-  const complete = await f.household.preview('partner', {
+  const complete = await f.changes.preview('partner', {
     kind: 'task.complete',
     id: created.targetId,
     revision: 1,
   });
-  assert.equal((await f.household.task(created.targetId)).status, 'open');
-  await f.household.confirm('partner', complete.id);
+  assert.equal((await f.tasks.get(created.targetId)).status, 'open');
+  await f.changes.confirm('partner', complete.id);
   await assert.rejects(
-    async () => await f.household.confirm('owner', first.id),
+    async () => await f.changes.confirm('owner', first.id),
     (error: unknown) => error instanceof DomainError && error.status === 409,
   );
-  const saved = await f.household.task(created.targetId);
+  const saved = await f.tasks.get(created.targetId);
   assert.equal(saved.title, 'Water the plants');
   assert.equal(saved.completedBy, 'partner');
   await f.db.close();
 });
 test('expired previews cannot write and revisions reject stale settings', async () => {
   const f = await fixture();
-  const preview = await f.household.preview('owner', { kind: 'task.create', task: task() });
+  const preview = await f.changes.preview('owner', { kind: 'task.create', task: task() });
   f.time('2026-10-14T07:11:00Z');
-  await assert.rejects(async () => await f.household.confirm('owner', preview.id), DomainError);
-  await apply(f.household, {
+  await assert.rejects(async () => await f.changes.confirm('owner', preview.id), DomainError);
+  await apply(f, {
     kind: 'preferences.update',
     revision: 1,
     preferences: {
@@ -98,7 +107,7 @@ test('expired previews cannot write and revisions reject stale settings', async 
   assert.equal((await f.household.preferences('partner')).evening.time, '18:00');
   await assert.rejects(
     async () =>
-      await f.household.preview('owner', {
+      await f.changes.preview('owner', {
         kind: 'preferences.update',
         revision: 1,
         preferences: {
@@ -113,22 +122,18 @@ test('expired previews cannot write and revisions reject stale settings', async 
 });
 test('recurring chores retain each missed date after a partner completes the current occurrence', async () => {
   const f = await fixture();
-  const created = await apply(f.household, {
+  const created = await apply(f, {
     kind: 'task.create',
     task: task({
       dueAt: '2026-10-11T06:00:00.000Z',
       schedule: { frequency: 'daily', timezone: 'Asia/Dubai' },
     }),
   });
-  const before = await f.household.task(created.targetId);
+  const before = await f.tasks.get(created.targetId);
   assert.equal(before.missedDates.length, 3);
   assert.equal(before.dueAt, '2026-10-11T06:00:00.000Z');
-  await apply(
-    f.household,
-    { kind: 'task.complete', id: before.id, revision: before.revision },
-    'partner',
-  );
-  const after = await f.household.task(before.id);
+  await apply(f, { kind: 'task.complete', id: before.id, revision: before.revision }, 'partner');
+  const after = await f.tasks.get(before.id);
   assert.equal(after.missedDates.length, 3);
   assert.equal(after.status, 'open');
   assert.equal(after.dueAt, '2026-10-15T06:00:00.000Z');
@@ -141,20 +146,20 @@ test('recurring chores retain each missed date after a partner completes the cur
 });
 test('editing an overdue recurring schedule preserves prior missed history', async () => {
   const f = await fixture();
-  const created = await apply(f.household, {
+  const created = await apply(f, {
     kind: 'task.create',
     task: task({
       dueAt: '2026-10-11T06:00:00.000Z',
       schedule: { frequency: 'daily', timezone: 'Asia/Dubai' },
     }),
   });
-  await apply(f.household, {
+  await apply(f, {
     kind: 'task.update',
     id: created.targetId,
     revision: 1,
     task: task({ dueAt: '2026-10-20T06:00:00.000Z' }),
   });
-  assert.equal((await f.household.task(created.targetId)).missedDates.length, 3);
+  assert.equal((await f.tasks.get(created.targetId)).missedDates.length, 3);
   await f.db.close();
 });
 test('daily recurrence preserves its local time across a daylight-saving transition', async () => {
@@ -175,18 +180,18 @@ test('invalid owners, time zones, and recurring tasks without dates cannot be pr
     task({ schedule: { frequency: 'daily', timezone: 'Mars/Olympus' } }),
   ]) {
     await assert.rejects(
-      async () => await f.household.preview('owner', { kind: 'task.create', task: value }),
+      async () => await f.changes.preview('owner', { kind: 'task.create', task: value }),
       DomainError,
     );
   }
-  assert.equal((await f.household.tasks()).length, 0);
+  assert.equal((await f.tasks.list()).length, 0);
   await f.db.close();
 });
 test('summary toggles are per person, and retries do not duplicate notices', async () => {
   const f = await fixture();
   const path = directory();
   try {
-    await apply(f.household, {
+    await apply(f, {
       kind: 'preferences.update',
       revision: 1,
       preferences: {
@@ -195,14 +200,13 @@ test('summary toggles are per person, and retries do not duplicate notices', asy
         evening: { enabled: true, time: '18:00' },
       },
     });
-    const reminders = new Reminders(f.db, f.household, { contact: 'mailto:test@example.com' });
-    await reminders.plan(new Date('2026-10-14T04:00:00Z'));
-    await reminders.plan(new Date('2026-10-14T04:00:30Z'));
+    await f.plan(new Date('2026-10-14T04:00:00Z'));
+    await f.plan(new Date('2026-10-14T04:00:30Z'));
     const rows = await f.db.all<Row>('SELECT user_id FROM notices');
     assert.equal(rows.length, 1);
     assert.equal(rows[0].user_id, 'partner');
-    await reminders.plan(new Date('2026-10-14T14:00:00Z'));
-    await reminders.plan(new Date('2026-10-14T14:00:30Z'));
+    await f.plan(new Date('2026-10-14T14:00:00Z'));
+    await f.plan(new Date('2026-10-14T14:00:30Z'));
     assert.equal((await f.db.all<Row>('SELECT id FROM notices')).length, 3);
   } finally {
     await f.db.close();
@@ -223,8 +227,7 @@ test('topic messages persist in Pi Durable after reopening, and request retries 
   let db = await householdStore(file);
   let conversations: Conversations | undefined;
   try {
-    const household = new Household(db);
-    const { targetId } = await apply(household, {
+    const { targetId } = await apply(householdParts(db), {
       kind: 'thread.create',
       title: 'Weekend',
       category: 'household',
@@ -269,7 +272,7 @@ test('HTTP authentication, origin checks, and task preview/confirm work together
     const response = await owner.call('/api/previews', { kind: 'task.create', task: task() });
     assert.equal(response.status, 201);
     const preview = (await response.json()) as { id: string };
-    assert.equal((await app.household.tasks()).length, 0);
+    assert.equal((await app.db.all<Row>('SELECT id FROM household_tasks')).length, 0);
     assert.equal((await owner.call(`/api/previews/${preview.id}/confirm`, {})).status, 200);
     const state = (await (await owner.call('/api/state')).json()) as { tasks: Task[] };
     assert.equal(state.tasks.length, 1);
@@ -327,10 +330,10 @@ test('each login has a separate ready assistant while shared channels and tasks 
 test('only confirmed task changes notify the other spouse, with an exact link and no duplicates on retry', async () => {
   const f = await fixture();
   try {
-    const preview = await f.household.preview('owner', { kind: 'task.create', task: task() });
+    const preview = await f.changes.preview('owner', { kind: 'task.create', task: task() });
     assert.equal((await f.db.all<Row>('SELECT id FROM notices')).length, 0);
-    const created = await f.household.confirm('owner', preview.id);
-    await f.household.confirm('owner', preview.id);
+    const created = await f.changes.confirm('owner', preview.id);
+    await f.changes.confirm('owner', preview.id);
     const notices = await f.db.all<Row>('SELECT * FROM notices');
     assert.equal(notices.length, 1);
     assert.equal(notices[0].user_id, 'partner');
@@ -339,19 +342,19 @@ test('only confirmed task changes notify the other spouse, with an exact link an
       (await f.db.get<Row>('SELECT target_id FROM notice_targets'))?.target_id,
       created.targetId,
     );
-    const cancelled = await f.household.preview('partner', {
+    const cancelled = await f.changes.preview('partner', {
       kind: 'task.delete',
       id: created.targetId,
       revision: 1,
     });
-    await f.household.cancel('partner', cancelled.id);
+    await f.changes.cancel('partner', cancelled.id);
     assert.equal((await f.db.all<Row>('SELECT id FROM notices')).length, 1);
-    const done = await f.household.preview('partner', {
+    const done = await f.changes.preview('partner', {
       kind: 'task.complete',
       id: created.targetId,
       revision: 1,
     });
-    await f.household.confirm('partner', done.id);
+    await f.changes.confirm('partner', done.id);
     const back = await f.db.all<Row>("SELECT * FROM notices WHERE user_id='owner'");
     assert.equal(back.length, 1);
     assert.match(String(back[0].title), /Sam completed a task/);

@@ -30,9 +30,11 @@ avoid Pi's unprefixed names (tasks live in `household_tasks`). Alarm writes go
 through the same queue, so an open transaction cannot roll them back.
 
 One alarm drives all background work. Each run arms a recovery wakeup a minute
-ahead, refreshes the calendar every five minutes, plans and delivers reminders
-and summaries, waits up to 25 seconds for unfinished assistant work, then sets
-the alarm for the next due item. A write request also brings the alarm forward
+ahead, runs each plugin's background work in order (the calendar refreshes every
+five minutes and plans appointment reminders, tasks plan deadline notices, the
+dashboard plans summaries), delivers notices, waits up to 25 seconds for
+unfinished assistant work, then sets the alarm for the earliest time the core
+or any plugin reports. A write request also brings the alarm forward
 when it creates earlier work, and a read refreshes a calendar older than a
 minute. Pending assistant work resumes on the next wakeup after an eviction.
 

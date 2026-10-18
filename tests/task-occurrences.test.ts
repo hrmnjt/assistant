@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { householdStore, type Row } from './support.js';
-import { DomainError, Household } from '../server/domain.js';
+import { householdParts, householdStore, type Row } from './support.js';
+import { DomainError } from '../server/errors.js';
 import type { Mutation, Schedule } from '../src/types.js';
 
 const daily: Schedule = { frequency: 'daily', timezone: 'Asia/Dubai' };
@@ -17,15 +17,14 @@ const task = (overrides = {}) => ({
 async function fixture(start = '2026-10-14T07:00:00Z') {
   const db = await householdStore();
   let now = new Date(start);
-  const household = new Household(db, () => now);
+  const parts = householdParts(db, { clock: () => now });
   return {
-    db,
-    household,
+    ...parts,
     time: (value: string) => {
       now = new Date(value);
     },
     apply: async (mutation: Mutation, user = 'owner') =>
-      await household.confirm(user, (await household.preview(user, mutation)).id),
+      await parts.changes.confirm(user, (await parts.changes.preview(user, mutation)).id),
     history: async (taskId: string) =>
       (
         await db.all<Row>(
@@ -41,10 +40,10 @@ test('rescheduling a recurring task back onto its completed occurrence is reject
   const f = await fixture();
   const { targetId } = await f.apply({ kind: 'task.create', task: task() });
   await f.apply({ kind: 'task.complete', id: targetId, revision: 1 });
-  assert.equal((await f.household.task(targetId)).dueAt, '2026-10-15T06:00:00.000Z');
+  assert.equal((await f.tasks.get(targetId)).dueAt, '2026-10-15T06:00:00.000Z');
   await assert.rejects(
     async () =>
-      await f.household.preview('owner', {
+      await f.changes.preview('owner', {
         kind: 'task.update',
         id: targetId,
         revision: 2,
@@ -79,7 +78,7 @@ test('a schedule that would later reach a completed occurrence is rejected', asy
     revision: 2,
     task: task({ dueAt: '2026-10-13T06:00:00.000Z' }),
   };
-  await assert.rejects(async () => await f.household.preview('owner', earlier), conflict);
+  await assert.rejects(async () => await f.changes.preview('owner', earlier), conflict);
   await f.db.close();
 });
 
@@ -94,7 +93,7 @@ test('an elapsed completed date keeps its outcome after a schedule moves before 
     revision: 2,
     task: task({ dueAt: '2026-10-13T06:00:00.000Z' }),
   });
-  const moved = await f.household.task(targetId);
+  const moved = await f.tasks.get(targetId);
   assert.deepEqual(moved.missedDates, ['2026-10-13T06:00:00.000Z', '2026-10-15T06:00:00.000Z']);
   await f.apply({ kind: 'task.complete', id: targetId, revision: moved.revision });
   assert.deepEqual(await f.history(targetId), [
@@ -103,7 +102,7 @@ test('an elapsed completed date keeps its outcome after a schedule moves before 
     '2026-10-15T06:00:00.000Z missed',
     '2026-10-16T06:00:00.000Z completed',
   ]);
-  assert.equal((await f.household.task(targetId)).dueAt, '2026-10-17T06:00:00.000Z');
+  assert.equal((await f.tasks.get(targetId)).dueAt, '2026-10-17T06:00:00.000Z');
   await f.db.close();
 });
 
@@ -115,7 +114,7 @@ test('changing frequency cannot reactivate a date the same update records as mis
   });
   await assert.rejects(
     async () =>
-      await f.household.preview('owner', {
+      await f.changes.preview('owner', {
         kind: 'task.update',
         id: targetId,
         revision: 1,
@@ -133,7 +132,7 @@ test('changing frequency cannot reactivate a date the same update records as mis
     revision: 1,
     task: task({ title: 'Water all plants', dueAt: '2026-10-11T06:00:00.000Z' }),
   });
-  const edited = await f.household.task(targetId);
+  const edited = await f.tasks.get(targetId);
   assert.equal(edited.dueAt, '2026-10-11T06:00:00.000Z');
   assert.equal(edited.missedDates.length, 3);
   await f.db.close();
@@ -142,7 +141,7 @@ test('changing frequency cannot reactivate a date the same update records as mis
 test('a previously stored colliding occurrence gives a domain error instead of a storage error', async () => {
   const f = await fixture();
   const { targetId } = await f.apply({ kind: 'task.create', task: task() });
-  const pending = await f.household.preview('partner', {
+  const pending = await f.changes.preview('partner', {
     kind: 'task.complete',
     id: targetId,
     revision: 1,
@@ -159,10 +158,10 @@ test('a previously stored colliding occurrence gives a domain error instead of a
   );
   await assert.rejects(
     async () =>
-      await f.household.preview('owner', { kind: 'task.complete', id: targetId, revision: 3 }),
+      await f.changes.preview('owner', { kind: 'task.complete', id: targetId, revision: 3 }),
     conflict,
   );
-  await assert.rejects(async () => await f.household.confirm('partner', pending.id), conflict);
+  await assert.rejects(async () => await f.changes.confirm('partner', pending.id), conflict);
   assert.deepEqual(await f.history(targetId), ['2026-10-14T06:00:00.000Z completed']);
   await f.db.close();
 });
@@ -171,7 +170,7 @@ test('time-zone edits and repeated confirmation keep a valid recurring schedule'
   const f = await fixture();
   const { targetId } = await f.apply({ kind: 'task.create', task: task() });
   await f.apply({ kind: 'task.complete', id: targetId, revision: 1 });
-  const preview = await f.household.preview('owner', {
+  const preview = await f.changes.preview('owner', {
     kind: 'task.update',
     id: targetId,
     revision: 2,
@@ -180,9 +179,9 @@ test('time-zone edits and repeated confirmation keep a valid recurring schedule'
       schedule: { frequency: 'daily', timezone: 'Europe/London' },
     }),
   });
-  const first = await f.household.confirm('owner', preview.id);
-  assert.deepEqual(await f.household.confirm('owner', preview.id), first);
-  const saved = await f.household.task(targetId);
+  const first = await f.changes.confirm('owner', preview.id);
+  assert.deepEqual(await f.changes.confirm('owner', preview.id), first);
+  const saved = await f.tasks.get(targetId);
   assert.equal(saved.revision, 3);
   assert.equal(saved.schedule?.timezone, 'Europe/London');
   assert.deepEqual(saved.missedDates, []);
@@ -207,7 +206,7 @@ test('history records the actor and actual time of early, on-time, and late comp
     revision: 4,
     task: task({ title: 'Water the balcony', dueAt: '2026-10-18T14:00:00.000Z' }),
   });
-  assert.deepEqual(await f.household.history(targetId), [
+  assert.deepEqual(await f.tasks.history(targetId), [
     {
       dueAt: '2026-10-17T06:00:00.000Z',
       outcome: 'completed',
@@ -238,13 +237,13 @@ test('history includes elapsed unrecorded misses and one-off completions', async
     task: task({ dueAt: '2026-10-12T06:00:00.000Z' }),
   });
   assert.deepEqual(
-    (await f.household.history(recurring.targetId)).map((item) => `${item.dueAt} ${item.outcome}`),
+    (await f.tasks.history(recurring.targetId)).map((item) => `${item.dueAt} ${item.outcome}`),
     ['2026-10-13T06:00:00.000Z missed', '2026-10-12T06:00:00.000Z missed'],
   );
   const once = await f.apply({ kind: 'task.create', task: task({ schedule: null }) });
-  assert.deepEqual(await f.household.history(once.targetId), []);
+  assert.deepEqual(await f.tasks.history(once.targetId), []);
   await f.apply({ kind: 'task.complete', id: once.targetId, revision: 1 }, 'partner');
-  assert.deepEqual(await f.household.history(once.targetId), [
+  assert.deepEqual(await f.tasks.history(once.targetId), [
     {
       dueAt: '2026-10-14T06:00:00.000Z',
       outcome: 'completed',

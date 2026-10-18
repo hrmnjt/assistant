@@ -4,16 +4,17 @@ import {
   createRegistry,
   Harness,
   type ConversationId,
+  type Extension,
   type ModelRef,
 } from '@earendil-works/pi-durable';
 import { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite';
 import { z } from 'zod';
 import type { Row, Store } from './database.js';
-import { DomainError, type Household } from './domain.js';
-import type { CalendarService } from './calendar.js';
+import { DomainError } from './errors.js';
+import type { Household } from './household.js';
 import type { ChatStatus, Message, Preview } from '../src/types.js';
 import { recoverablePreviews } from './preview-recovery.js';
-import { boundedModels, householdExtension } from './assistant-tools.js';
+import { boundedModels } from './assistant-tools.js';
 
 const messageSchema = z.object({
   id: z.string().uuid(),
@@ -26,7 +27,8 @@ type Options = {
   models?: Models;
   model?: ModelRef;
   household?: Household;
-  calendar?: CalendarService;
+  /** The core assistant and each plugin's tools and instructions, installed in order. */
+  extensions?: readonly Extension[];
 };
 const ctx = BACKGROUND_CONTEXT;
 export class Conversations {
@@ -55,8 +57,7 @@ export class Conversations {
   /** Pi shares the household store, so its commits and household writes use one queue. */
   static async open(db: Store, options: Options = {}) {
     const registry = createRegistry();
-    if (options.household)
-      registry.install(householdExtension(db, options.household, options.calendar));
+    for (const extension of options.extensions ?? []) registry.install(extension);
     const harness = await Harness.open(
       await SqliteStorage.open(db),
       {

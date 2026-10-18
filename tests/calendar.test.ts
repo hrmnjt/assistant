@@ -2,15 +2,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { migrate } from '../server/database.js';
-import { openStore, type Row } from './support.js';
-import { Household, DomainError } from '../server/domain.js';
-import { CalendarOutcomeError, CalendarService } from '../server/calendar.js';
-import type { CalendarResource, CalendarTransport } from '../server/caldav.js';
-import { createEventData, parseEvents, updateEventData } from '../server/icalendar.js';
+import { householdParts, openStore, type Row } from './support.js';
+import { DomainError } from '../server/errors.js';
+import { CalendarOutcomeError, CalendarService } from '../server/plugins/calendar/service.js';
+import type { CalendarResource, CalendarTransport } from '../server/plugins/calendar/caldav.js';
+import {
+  createEventData,
+  parseEvents,
+  updateEventData,
+} from '../server/plugins/calendar/icalendar.js';
 import type { CalendarFields } from '../src/types.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { Reminders } from '../server/reminders.js';
 
 const fields: CalendarFields = {
   title: 'Dinner together',
@@ -405,14 +408,12 @@ test('appointment reminders are planned once for each person, without removing n
       await f.db.run('INSERT INTO preferences VALUES (?,?,1)', id, JSON.stringify(preferences));
     const url = f.transport.seed();
     await f.service.sync();
-    const reminders = new Reminders(
-      f.db,
-      new Household(f.db),
-      { contact: 'mailto:test@example.com' },
-      () => f.service.snapshot(),
-    );
-    await reminders.plan(new Date('2026-10-15T14:30:00Z'));
-    await reminders.plan(new Date('2026-10-15T14:30:30Z'));
+    const parts = householdParts(f.db, {
+      push: { contact: 'mailto:test@example.com' },
+      calendar: f.service,
+    });
+    await parts.plan(new Date('2026-10-15T14:30:00Z'));
+    await parts.plan(new Date('2026-10-15T14:30:30Z'));
     const rows = await f.db.all<Row>(
       "SELECT user_id FROM notices WHERE id LIKE 'appointment:%' ORDER BY user_id",
     );
@@ -423,7 +424,7 @@ test('appointment reminders are planned once for each person, without removing n
     assert(f.transport.resources.get(url)!.data.includes('BEGIN:VALARM'));
     f.transport.resources.delete(url);
     await f.service.sync();
-    await reminders.deliver();
+    await parts.notices.deliver();
     assert.equal(
       (await f.db.all<Row>("SELECT id FROM notices WHERE delivery='pending'")).length,
       0,
