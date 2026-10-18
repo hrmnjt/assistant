@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { DurableObjectSqliteDatabase } from '@earendil-works/pi-durable/storage/sqlite/cloudflare';
 import { handle } from '../server/api.js';
-import { json } from '../server/http.js';
+import { drain, json } from '../server/http.js';
 import { openHousehold, type Config, type Runtime } from '../server/runtime.js';
 
 export interface Env extends Config {
@@ -58,6 +58,7 @@ export class Household extends DurableObject<Env> {
       request,
       request.headers.get('cf-connecting-ip') ?? '',
     );
+    await drain(request);
     // A change can bring the next reminder, retry, or assistant step closer.
     if (request.method !== 'GET') this.ctx.waitUntil(this.schedule());
     else this.ctx.waitUntil(this.runtime.refreshIfStale());

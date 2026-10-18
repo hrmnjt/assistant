@@ -58,6 +58,9 @@ export async function provision(db: Store, accounts: Account[]) {
   });
 }
 
+const loopback = (hostname: string) => ['localhost', '127.0.0.1', '[::1]'].includes(hostname);
+const tunnel = (hostname: string) => /^[a-z0-9-]+\.trycloudflare\.com$/.test(hostname);
+
 const sessionAge = 30 * 86_400_000;
 const attemptWindow = 900_000;
 const attemptLimit = 10;
@@ -115,11 +118,41 @@ export class Auth {
     if (!row || !account || row.credential !== this.fingerprint(account)) return null;
     return { id: account.id, username: account.username, name: account.name };
   }
-  /** Writes need the app's own header and, when sent, the exact configured origin. */
+  /**
+   * The origin this request was served at, or null if the app does not answer
+   * there. A deployment answers only at its configured origin, so a rebinding
+   * hostname cannot reach it. Local development (a loopback origin) also
+   * answers at the other loopback names on the same port and at the
+   * `*.trycloudflare.com` tunnels `wrangler dev` opens for phones; Cloudflare
+   * controls those names, so they cannot be rebound to this Mac.
+   */
+  served(request: Request): string | null {
+    const url = new URL(request.url);
+    if (url.origin === this.origin) return this.origin;
+    const configured = new URL(this.origin);
+    if (!loopback(configured.hostname)) return null;
+    if (
+      (loopback(url.hostname) &&
+        url.protocol === configured.protocol &&
+        url.port === configured.port) ||
+      tunnel(url.hostname)
+    )
+      return url.origin;
+    return null;
+  }
+  /** Writes need the app's own header and, when sent, the origin the request was served at. */
   writeAllowed(request: Request) {
     if (['GET', 'HEAD', 'OPTIONS'].includes(request.method)) return true;
     const origin = request.headers.get('origin');
-    return request.headers.get('x-household-client') === '1' && (!origin || origin === this.origin);
+    const served = this.served(request);
+    // A tunnel ends TLS and forwards plain HTTP; `wrangler dev` may or may not
+    // rewrite the browser's HTTPS origin to match.
+    const sameOrigin =
+      origin === served ||
+      (!!served &&
+        tunnel(new URL(served).hostname) &&
+        origin === served.replace(/^http:/, 'https:'));
+    return request.headers.get('x-household-client') === '1' && (!origin || sameOrigin);
   }
   /** Reserve an attempt for this client before checking, so parallel guesses share the limit. */
   private async admit(client: string) {

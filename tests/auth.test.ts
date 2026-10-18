@@ -118,3 +118,35 @@ test('signing out ends only that session, and cookies are secure over HTTPS', as
   assert.match(await auth.logout(req), /Max-Age=0/);
   assert.equal(await auth.current(req), null);
 });
+
+test('a deployment answers only at its origin; local development also at loopback names and tunnels', async () => {
+  const db = await householdStore();
+  const write = (url: string, origin?: string) =>
+    new Request(url, {
+      method: 'POST',
+      headers: { 'X-Household-Client': '1', ...(origin ? { Origin: origin } : {}) },
+    });
+  const deployed = new Auth(db, accounts, 'https://household.example');
+  assert.equal(
+    deployed.served(write('https://household.example/api/state')),
+    'https://household.example',
+  );
+  for (const url of ['http://localhost:8787/api/state', 'https://abc.trycloudflare.com/api/state'])
+    assert.equal(deployed.served(write(url)), null);
+
+  const local = new Auth(db, accounts, 'http://localhost:8787');
+  for (const url of ['http://127.0.0.1:8787/api/login', 'http://[::1]:8787/api/login']) {
+    assert.equal(local.served(write(url)), new URL(url).origin);
+    assert.equal(local.writeAllowed(write(url, new URL(url).origin)), true);
+  }
+  for (const url of ['http://127.0.0.1:9999/api/login', 'http://evil.example/api/login'])
+    assert.equal(local.served(write(url)), null);
+  // Wrangler forwards a tunnel as plain HTTP; the browser's origin is HTTPS.
+  const tunnel = 'http://abc-def.trycloudflare.com/api/login';
+  assert.equal(local.served(write(tunnel)), 'http://abc-def.trycloudflare.com');
+  assert.equal(local.writeAllowed(write(tunnel, 'https://abc-def.trycloudflare.com')), true);
+  assert.equal(local.writeAllowed(write(tunnel, 'http://abc-def.trycloudflare.com')), true);
+  for (const origin of ['https://other.trycloudflare.com', 'http://localhost:8787'])
+    assert.equal(local.writeAllowed(write(tunnel, origin)), false);
+  assert.equal(local.served(write('http://a.b.trycloudflare.com/api/login')), null);
+});

@@ -25,8 +25,7 @@ export async function handle(app: App, request: Request, client = ''): Promise<R
   const { auth } = app;
   try {
     const url = new URL(request.url);
-    // Only the configured origin is served, so a rebinding hostname cannot reach the API.
-    if (url.origin !== auth.origin) throw new RequestError('Request origin is not allowed.', 403);
+    if (!auth.served(request)) throw new RequestError(`Open the app at ${auth.origin}.`, 403);
     if (url.pathname === '/api/health' && request.method === 'GET')
       return json({ ok: app.conversations.healthy });
     if (!auth.writeAllowed(request)) throw new RequestError('Request origin is not allowed.', 403);

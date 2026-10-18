@@ -46,3 +46,22 @@ export async function body(request: Request, limit = 65_536) {
     throw new RequestError('Invalid JSON.');
   }
 }
+/**
+ * Read and discard a body the handler left unread, up to `limit` bytes. A
+ * Durable Object that answers before its forwarded body is consumed makes the
+ * runtime fail reading that stream after the response.
+ */
+export async function drain(request: Request, limit = 65_536) {
+  if (!request.body || request.bodyUsed) return;
+  const reader = request.body.getReader();
+  try {
+    for (let length = 0; length <= limit;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      length += value.length;
+    }
+    await reader.cancel();
+  } catch {
+    // The client went away; nothing is left to release.
+  }
+}
