@@ -98,14 +98,23 @@ export async function aiConfig(directory: string): Promise<AIConfig> {
 export async function openAIConnection(directory: string) {
   const credentials = new LocalCredentials(directory);
   const models = chatgptModels(credentials);
-  const config = await aiConfig(directory);
-  const configured = Boolean(
-    (await credentials.read('openai')) &&
-    config.modelId &&
-    models.getModel('openai', config.modelId),
-  );
-  return {
-    models,
-    model: configured ? { provider: 'openai', modelId: config.modelId! } : undefined,
-  };
+  try {
+    const config = await aiConfig(directory);
+    const configured = Boolean(
+      (await credentials.read('openai')) &&
+      config.modelId &&
+      models.getModel('openai', config.modelId),
+    );
+    return {
+      models,
+      model: configured ? { provider: 'openai', modelId: config.modelId! } : undefined,
+    };
+  } catch {
+    // The assistant is optional: unreadable AI files must not stop tasks,
+    // shared messages, calendar sync, or reminders from starting.
+    console.error(
+      'ChatGPT connection files could not be read, so the assistant is unavailable. Everything else keeps working; see "AI access" in README.md to reconnect.',
+    );
+    return { models, model: undefined };
+  }
 }

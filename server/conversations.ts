@@ -34,6 +34,7 @@ export class Conversations {
   private queues = new Map<string, Promise<unknown>>();
   private watching = new Set<string>();
   private closing = false;
+  private failure = false;
   private constructor(
     private db: Database,
     private harness: Harness,
@@ -41,6 +42,16 @@ export class Conversations {
   ) {}
   get configured() {
     return Boolean(this.options.model && this.options.household);
+  }
+  /**
+   * Resolves true if Pi's storage fails, which closes the harness. The host
+   * restarts rather than reopening in place; Pi resumes pending work on open.
+   */
+  get storageFailed() {
+    return this.harness.closed.then((end) => end.reason === 'failed');
+  }
+  get healthy() {
+    return !this.closing && !this.failure;
   }
   static async open(db: Database, path: string, options: Options = {}) {
     const registry = createRegistry();
@@ -64,6 +75,9 @@ export class Conversations {
       ctx,
     );
     const instance = new Conversations(db, harness, options);
+    void instance.storageFailed.then((failed) => {
+      instance.failure = failed;
+    });
     if (instance.configured) {
       // Re-admit the exact persisted request; Pi's request ID resolves an already admitted input.
       for (const row of db.sql.prepare("SELECT * FROM assistant_runs WHERE status='running'").all())

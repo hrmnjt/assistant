@@ -25,7 +25,7 @@ export function validPushEndpoint(endpoint: string) {
 export class Reminders {
   readonly publicKey: string;
   readonly enabled: boolean;
-  private sending = false;
+  private sending?: Promise<void>;
   constructor(
     private db: Database,
     private household: Household,
@@ -189,120 +189,122 @@ export class Reminders {
   }
   async deliver() {
     if (this.sending) return;
-    this.sending = true;
-    try {
-      const now = this.clock().getTime();
-      // Retire expired push work before any dependency check, across the whole
-      // queue rather than just the first batch. Keep its historical inbox row.
-      this.db.sql
-        .prepare("UPDATE notices SET delivery='inbox' WHERE delivery='pending' AND push_until<?")
-        .run(new Date(now).toISOString());
-      // Round-robin recipient/kind lanes. One broken integration or device must
-      // not monopolize all twenty slots while unrelated work is ready.
-      const notices = this.db.sql
-        .prepare(
-          `
-        SELECT * FROM (
-          SELECT n.*,ROW_NUMBER() OVER (PARTITION BY n.user_id,
-            CASE WHEN n.id LIKE 'appointment:%' THEN 'appointment'
-              WHEN n.id LIKE 'task:%' THEN 'task'
-              WHEN n.id LIKE 'summary:%' THEN 'summary'
-              WHEN n.id LIKE 'change:%' THEN 'change' ELSE 'other' END
-            ORDER BY n.created_at,n.rowid) AS lane_position
-          FROM notices n LEFT JOIN notice_retries r ON r.notice_id=n.id
-          WHERE n.delivery='pending' AND COALESCE(r.next_attempt_at,0)<=?
-        ) ORDER BY lane_position,created_at,id LIMIT 20
-      `,
-        )
-        .all(now);
-      for (const notice of notices) {
-        const taskDeadline = String(notice.id).startsWith('task:');
+    this.sending = this.send().finally(() => {
+      this.sending = undefined;
+    });
+    await this.sending;
+  }
+  /** Settles when an in-progress delivery pass has finished. */
+  async idle() {
+    await this.sending?.catch(() => undefined);
+  }
+  private async send() {
+    const now = this.clock().getTime();
+    // Retire expired push work before any dependency check, across the whole
+    // queue rather than just the first batch. Keep its historical inbox row.
+    this.db.sql
+      .prepare("UPDATE notices SET delivery='inbox' WHERE delivery='pending' AND push_until<?")
+      .run(new Date(now).toISOString());
+    // Round-robin recipient/kind lanes. One broken integration or device must
+    // not monopolize all twenty slots while unrelated work is ready.
+    const notices = this.db.sql
+      .prepare(
+        `
+      SELECT * FROM (
+        SELECT n.*,ROW_NUMBER() OVER (PARTITION BY n.user_id,
+          CASE WHEN n.id LIKE 'appointment:%' THEN 'appointment'
+            WHEN n.id LIKE 'task:%' THEN 'task'
+            WHEN n.id LIKE 'summary:%' THEN 'summary'
+            WHEN n.id LIKE 'change:%' THEN 'change' ELSE 'other' END
+          ORDER BY n.created_at,n.rowid) AS lane_position
+        FROM notices n LEFT JOIN notice_retries r ON r.notice_id=n.id
+        WHERE n.delivery='pending' AND COALESCE(r.next_attempt_at,0)<=?
+      ) ORDER BY lane_position,created_at,id LIMIT 20
+    `,
+      )
+      .all(now);
+    for (const notice of notices) {
+      const taskDeadline = String(notice.id).startsWith('task:');
+      if (taskDeadline && !this.taskDeadlineCurrent(String(notice.id), String(notice.user_id))) {
+        this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
+        continue;
+      }
+      if (String(notice.id).startsWith('appointment:')) {
+        const calendar = this.calendar?.();
+        if (calendar?.status !== 'connected') {
+          this.defer(String(notice.id), 'calendar-unavailable');
+          continue;
+        }
+        if (
+          !calendar.events.some(
+            (event) => this.appointmentId(event, String(notice.user_id)) === notice.id,
+          )
+        ) {
+          this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
+          continue;
+        }
+      }
+      const subscriptions = this.db.sql
+        .prepare('SELECT * FROM push_subscriptions WHERE user_id=?')
+        .all(notice.user_id);
+      if (!subscriptions.length || !this.enabled) {
+        this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
+        continue;
+      }
+      // Persist each device result so a retry does not resend successful deliveries.
+      let obsolete = false;
+      for (const subscription of subscriptions) {
+        // Recheck after each awaited device delivery: the task can change while
+        // the previous device's push request is in flight.
         if (taskDeadline && !this.taskDeadlineCurrent(String(notice.id), String(notice.user_id))) {
           this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
-          continue;
+          obsolete = true;
+          break;
         }
-        if (String(notice.id).startsWith('appointment:')) {
-          const calendar = this.calendar?.();
-          if (calendar?.status !== 'connected') {
-            this.defer(String(notice.id), 'calendar-unavailable');
-            continue;
-          }
-          if (
-            !calendar.events.some(
-              (event) => this.appointmentId(event, String(notice.user_id)) === notice.id,
-            )
-          ) {
-            this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
-            continue;
-          }
-        }
-        const subscriptions = this.db.sql
-          .prepare('SELECT * FROM push_subscriptions WHERE user_id=?')
-          .all(notice.user_id);
-        if (!subscriptions.length || !this.enabled) {
-          this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
-          continue;
-        }
-        // Persist each device result so a retry does not resend successful deliveries.
-        let obsolete = false;
-        for (const subscription of subscriptions) {
-          // Recheck after each awaited device delivery: the task can change while
-          // the previous device's push request is in flight.
-          if (
-            taskDeadline &&
-            !this.taskDeadlineCurrent(String(notice.id), String(notice.user_id))
-          ) {
-            this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
-            obsolete = true;
-            break;
-          }
-          const deliveryId = `${notice.id}:${String(subscription.endpoint)}`;
-          const sent = this.db.sql
-            .prepare('SELECT id FROM push_deliveries WHERE id=?')
-            .get(deliveryId);
-          if (sent) continue;
-          if (this.pushExpired(notice)) continue;
-          try {
-            await webpush.sendNotification(
-              JSON.parse(String(subscription.value)),
-              JSON.stringify({
-                title: notice.title,
-                body: notice.body,
-                tag: String(notice.id),
-                url: '/?updates=1',
-              }),
-              { TTL: 3600, timeout: 10_000 },
-            );
-            this.db.sql.prepare('INSERT OR IGNORE INTO push_deliveries VALUES (?)').run(deliveryId);
-          } catch (error) {
-            if (
-              typeof error === 'object' &&
-              error &&
-              'statusCode' in error &&
-              [404, 410].includes(Number(error.statusCode))
-            ) {
-              this.db.sql
-                .prepare('DELETE FROM push_subscriptions WHERE endpoint=?')
-                .run(subscription.endpoint);
-            }
-          }
-        }
-        if (obsolete) continue;
-        const remaining = this.db.sql
-          .prepare('SELECT endpoint FROM push_subscriptions WHERE user_id=?')
-          .all(notice.user_id)
-          .some(
-            (subscription) =>
-              !this.db.sql
-                .prepare('SELECT id FROM push_deliveries WHERE id=?')
-                .get(`${notice.id}:${String(subscription.endpoint)}`),
+        const deliveryId = `${notice.id}:${String(subscription.endpoint)}`;
+        const sent = this.db.sql
+          .prepare('SELECT id FROM push_deliveries WHERE id=?')
+          .get(deliveryId);
+        if (sent) continue;
+        if (this.pushExpired(notice)) continue;
+        try {
+          await webpush.sendNotification(
+            JSON.parse(String(subscription.value)),
+            JSON.stringify({
+              title: notice.title,
+              body: notice.body,
+              tag: String(notice.id),
+              url: '/?updates=1',
+            }),
+            { TTL: 3600, timeout: 10_000 },
           );
-        if (!remaining || this.pushExpired(notice))
-          this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
-        else this.defer(String(notice.id), 'push-transient');
+          this.db.sql.prepare('INSERT OR IGNORE INTO push_deliveries VALUES (?)').run(deliveryId);
+        } catch (error) {
+          if (
+            typeof error === 'object' &&
+            error &&
+            'statusCode' in error &&
+            [404, 410].includes(Number(error.statusCode))
+          ) {
+            this.db.sql
+              .prepare('DELETE FROM push_subscriptions WHERE endpoint=?')
+              .run(subscription.endpoint);
+          }
+        }
       }
-    } finally {
-      this.sending = false;
+      if (obsolete) continue;
+      const remaining = this.db.sql
+        .prepare('SELECT endpoint FROM push_subscriptions WHERE user_id=?')
+        .all(notice.user_id)
+        .some(
+          (subscription) =>
+            !this.db.sql
+              .prepare('SELECT id FROM push_deliveries WHERE id=?')
+              .get(`${notice.id}:${String(subscription.endpoint)}`),
+        );
+      if (!remaining || this.pushExpired(notice))
+        this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
+      else this.defer(String(notice.id), 'push-transient');
     }
   }
 }

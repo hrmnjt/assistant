@@ -11,6 +11,7 @@ import { createApp } from './app.js';
 import { ICloudTransport } from './caldav.js';
 import { CalendarService } from './calendar.js';
 import { openAIConnection } from './ai.js';
+import { shutdown } from './lifecycle.js';
 
 process.umask(0o077);
 const project = process.cwd();
@@ -79,15 +80,22 @@ const timer = setInterval(tick, 30_000);
 const server = app.listen(Number(process.env.PORT || 3000), '127.0.0.1', () =>
   console.log(`Household server: http://127.0.0.1:${process.env.PORT || 3000}`),
 );
-let closing = false;
-async function close() {
-  if (closing) return;
-  closing = true;
-  clearInterval(timer);
-  clearInterval(calendarTimer);
-  server.close();
-  await conversations.close();
-  db.close();
-}
+const close = shutdown({
+  server,
+  timers: [timer, calendarTimer],
+  idle: () => [calendar.idle(), reminders.idle()],
+  async close() {
+    await conversations.close();
+    db.close();
+  },
+});
 process.on('SIGINT', () => void close());
 process.on('SIGTERM', () => void close());
+// A failed Pi store closes its harness. Exit non-zero so a supervisor restarts
+// the host, which resumes pending assistant work from committed state.
+void conversations.storageFailed.then((failed) => {
+  if (!failed) return;
+  console.error('Assistant storage failed; stopping so the household server can restart.');
+  process.exitCode = 1;
+  void close();
+});
