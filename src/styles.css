@@ -251,10 +251,12 @@
   .disclosure-trigger {
     @apply h-auto min-h-11 justify-between whitespace-normal text-left text-sm;
   }
-  .missed {
+  .missed,
+  .task-history {
     @apply px-2 text-sm text-muted-foreground;
   }
-  .missed ul {
+  .missed ul,
+  .task-history ul {
     @apply list-disc space-y-1 pl-5 pb-3;
   }
   .completed-section {

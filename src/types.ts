@@ -15,6 +15,13 @@ export type Task = {
   completedAt: string | null;
   missedDates: string[];
 };
+export type TaskOccurrence = {
+  dueAt: string | null;
+  outcome: 'completed' | 'missed';
+  completedBy: string | null;
+  /** Null for misses and for completions recorded before completion times were stored. */
+  completedAt: string | null;
+};
 export type SummarySetting = { enabled: boolean; time: string };
 export type Preferences = {
   timezone: string;

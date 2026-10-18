@@ -80,6 +80,9 @@ export function createApp(
     };
     res.json(state);
   });
+  app.get('/api/tasks/:id/history', (req, res) => {
+    res.json(household.history(String(req.params.id)));
+  });
   app.get('/api/previews', (_req, res) => {
     res.json(recoverablePreviews(db, res.locals.me.id, household.clock()));
   });

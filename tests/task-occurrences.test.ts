@@ -188,3 +188,69 @@ test('time-zone edits and repeated confirmation keep a valid recurring schedule'
   assert.deepEqual(saved.missedDates, []);
   f.db.close();
 });
+
+test('history records the actor and actual time of early, on-time, and late completions', () => {
+  const f = fixture('2026-10-14T05:00:00Z');
+  const { targetId } = f.apply({ kind: 'task.create', task: task() });
+  // Early: before the 10:00 Dubai deadline.
+  f.apply({ kind: 'task.complete', id: targetId, revision: 1 }, 'partner');
+  // On time: at the next deadline.
+  f.time('2026-10-15T06:00:00Z');
+  f.apply({ kind: 'task.complete', id: targetId, revision: 2 });
+  // Late: two days after the following deadline, leaving one miss.
+  f.time('2026-10-17T09:30:00Z');
+  f.apply({ kind: 'task.complete', id: targetId, revision: 3 }, 'partner');
+  // A later schedule edit keeps every recorded outcome.
+  f.apply({
+    kind: 'task.update',
+    id: targetId,
+    revision: 4,
+    task: task({ title: 'Water the balcony', dueAt: '2026-10-18T14:00:00.000Z' }),
+  });
+  assert.deepEqual(f.household.history(targetId), [
+    {
+      dueAt: '2026-10-17T06:00:00.000Z',
+      outcome: 'completed',
+      completedBy: 'partner',
+      completedAt: '2026-10-17T09:30:00.000Z',
+    },
+    { dueAt: '2026-10-16T06:00:00.000Z', outcome: 'missed', completedBy: null, completedAt: null },
+    {
+      dueAt: '2026-10-15T06:00:00.000Z',
+      outcome: 'completed',
+      completedBy: 'owner',
+      completedAt: '2026-10-15T06:00:00.000Z',
+    },
+    {
+      dueAt: '2026-10-14T06:00:00.000Z',
+      outcome: 'completed',
+      completedBy: 'partner',
+      completedAt: '2026-10-14T05:00:00.000Z',
+    },
+  ]);
+  f.db.close();
+});
+
+test('history includes elapsed unrecorded misses and one-off completions', () => {
+  const f = fixture();
+  const recurring = f.apply({
+    kind: 'task.create',
+    task: task({ dueAt: '2026-10-12T06:00:00.000Z' }),
+  });
+  assert.deepEqual(
+    f.household.history(recurring.targetId).map((item) => `${item.dueAt} ${item.outcome}`),
+    ['2026-10-13T06:00:00.000Z missed', '2026-10-12T06:00:00.000Z missed'],
+  );
+  const once = f.apply({ kind: 'task.create', task: task({ schedule: null }) });
+  assert.deepEqual(f.household.history(once.targetId), []);
+  f.apply({ kind: 'task.complete', id: once.targetId, revision: 1 }, 'partner');
+  assert.deepEqual(f.household.history(once.targetId), [
+    {
+      dueAt: '2026-10-14T06:00:00.000Z',
+      outcome: 'completed',
+      completedBy: 'partner',
+      completedAt: '2026-10-14T07:00:00.000Z',
+    },
+  ]);
+  f.db.close();
+});

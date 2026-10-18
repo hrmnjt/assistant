@@ -14,7 +14,7 @@ import { DomainError, type Household } from './domain.js';
 import type { CalendarService } from './calendar.js';
 import type { ChatStatus, Message, Preview } from '../src/types.js';
 import { recoverablePreviews } from './preview-recovery.js';
-import { assistantTables, boundedModels, householdExtension } from './assistant-tools.js';
+import { boundedModels, householdExtension } from './assistant-tools.js';
 
 const messageSchema = z.object({
   id: z.string().uuid(),
@@ -43,10 +43,6 @@ export class Conversations {
     return Boolean(this.options.model && this.options.household);
   }
   static async open(db: Database, path: string, options: Options = {}) {
-    db.sql.exec(
-      'CREATE TABLE IF NOT EXISTS pi_conversations(thread_id TEXT PRIMARY KEY REFERENCES threads(id), conversation_id TEXT NOT NULL UNIQUE)',
-    );
-    assistantTables(db);
     const registry = createRegistry();
     if (options.household)
       registry.install(householdExtension(db, options.household, options.calendar));

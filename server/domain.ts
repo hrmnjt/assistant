@@ -10,6 +10,7 @@ import type {
   Preview,
   Schedule,
   Task,
+  TaskOccurrence,
   Thread,
 } from '../src/types.js';
 
@@ -150,6 +151,45 @@ export class Household {
     const row = this.db.sql.prepare('SELECT value FROM tasks WHERE id=?').get(taskId);
     if (!row) throw new DomainError('This task no longer exists.', 404);
     return this.decorate(JSON.parse(String(row.value)));
+  }
+  /** Occurrence outcomes, newest first, including elapsed misses not yet recorded. */
+  history(taskId: string): TaskOccurrence[] {
+    const task = this.task(taskId);
+    const recorded = this.db.sql
+      .prepare(
+        'SELECT due_at, outcome, completed_by, completed_at FROM task_history WHERE task_id=?',
+      )
+      .all(taskId)
+      .map((row): TaskOccurrence => ({
+        dueAt: String(row.due_at),
+        outcome: row.outcome === 'completed' ? 'completed' : 'missed',
+        completedBy: row.completed_by === null ? null : String(row.completed_by),
+        completedAt: row.completed_at === null ? null : String(row.completed_at),
+      }));
+    const known = new Set(recorded.map((row) => Date.parse(row.dueAt!)));
+    const pending = task.missedDates
+      .filter((dueAt) => !known.has(Date.parse(dueAt)))
+      .map((dueAt): TaskOccurrence => ({
+        dueAt,
+        outcome: 'missed',
+        completedBy: null,
+        completedAt: null,
+      }));
+    // A one-off task records its single completion on the task itself.
+    const once: TaskOccurrence[] =
+      task.status === 'completed'
+        ? [
+            {
+              dueAt: task.dueAt,
+              outcome: 'completed',
+              completedBy: task.completedBy,
+              completedAt: task.completedAt,
+            },
+          ]
+        : [];
+    const at = (occurrence: TaskOccurrence) =>
+      Date.parse(occurrence.dueAt ?? occurrence.completedAt!);
+    return [...recorded, ...pending, ...once].sort((a, b) => at(b) - at(a));
   }
   private recorded(taskId: string) {
     return this.db.sql
@@ -365,8 +405,10 @@ export class Household {
           if (task.schedule && task.dueAt) {
             for (const dueAt of recurrenceDates(task.dueAt, task.schedule, this.clock()).missed) {
               this.db.sql
-                .prepare('INSERT OR IGNORE INTO task_history VALUES (?, ?, ?, NULL)')
-                .run(task.id, dueAt, 'missed');
+                .prepare(
+                  "INSERT OR IGNORE INTO task_history(task_id, due_at, outcome) VALUES (?, ?, 'missed')",
+                )
+                .run(task.id, dueAt);
             }
           }
           Object.assign(task, mutation.task, {
@@ -382,11 +424,15 @@ export class Household {
           }
           for (const dueAt of dates.missed)
             this.db.sql
-              .prepare('INSERT OR IGNORE INTO task_history VALUES (?, ?, ?, NULL)')
-              .run(task.id, dueAt, 'missed');
+              .prepare(
+                "INSERT OR IGNORE INTO task_history(task_id, due_at, outcome) VALUES (?, ?, 'missed')",
+              )
+              .run(task.id, dueAt);
           this.db.sql
-            .prepare('INSERT INTO task_history VALUES (?, ?, ?, ?)')
-            .run(task.id, dates.current, 'completed', actorId);
+            .prepare(
+              "INSERT INTO task_history(task_id, due_at, outcome, completed_by, completed_at) VALUES (?, ?, 'completed', ?, ?)",
+            )
+            .run(task.id, dates.current, actorId, this.clock().toISOString());
           task.dueAt = dates.next;
           task.completedAt = null;
           task.completedBy = null;
