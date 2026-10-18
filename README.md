@@ -31,7 +31,11 @@ npm run dev
 
 Open `http://localhost:5173`. The local `.env` file contains the generated
 `owner` and `partner` passwords; edit names there before the first start.
-Existing accounts are preserved in `data/`. For a built app, use `npm run build`
+Existing accounts are preserved in `data/`: `.env` passwords only create the
+first two accounts. Afterwards, `npm run accounts -- password <owner|partner>`
+changes one password without echoing it and signs that account out everywhere;
+`npm run accounts -- signout <owner|partner|all>` ends sessions and
+`npm run accounts -- list` shows the accounts. For a built app, use `npm run build`
 and `npm start`, set `APP_ORIGIN` to its actual address, and route Cloudflare
 Tunnel to the local server on port 3000. Use a stable HTTPS hostname for phones.
 Set `PUSH_CONTACT` to a real `mailto:` address or use the HTTPS app origin for
@@ -57,7 +61,20 @@ the design-system/browser checks against fixture API responses. Run
 Express/SQLite/Pi test server with a synthetic calendar. Neither suite loads
 production credentials or calls live providers. Browser binaries, reports,
 screenshots, temporary profiles, and test data stay in `.cache/`; household data
-and push keys stay in `data/`.
+and push keys stay in `data/`. GitHub Actions runs `npm test`, `npm run build`,
+`npm run cloudflare:check`, and both browser suites on pull requests, without
+secrets.
+
+The household database records its schema version and applies ordered
+migrations at startup; a database written by a newer app version is refused.
+Stopping the server (Ctrl-C or SIGTERM) lets in-flight requests, a calendar
+refresh, and a notification pass finish before storage closes, waiting at most
+ten seconds. `GET /api/health` reports readiness without signing in. The Node
+host has no built-in supervisor: if Pi storage fails it exits non-zero, and a
+restart (manual, or a supervisor such as launchd `KeepAlive`) resumes pending
+assistant work. Sign-in allows ten attempts per client address per 15 minutes,
+held in memory and cleared on restart; behind the local tunnel the forwarded
+client address counts.
 
 ## Cloudflare compatibility prototype
 
@@ -145,7 +162,8 @@ wider content and a visible channel rail; mobile drives the design. The interact
 - Each login has its own ready assistant chat; no conversation creation is needed.
   These separate histories reduce clutter rather than enforce secrecy.
 - Shared channels sit in a drawer on mobile. Messages go to the two humans;
-  mention `@assistant` or enable “Ask Our day” to involve the assistant.
+  mention `@assistant` anywhere in a message or enable “Ask Our day” to involve
+  the assistant. The composer shows when Our day will reply.
   Existing topics become channels without losing messages.
 - Ordinary human channel messages get per-person unread badges only, not phone
   push. Count the other spouse's messages, not one's own or internal model/tool
@@ -234,7 +252,13 @@ unsuitable or self-hosting the calendar becomes preferable.
 
 - Separate ownership from category and visibility.
 - One completion finishes the task for the household, regardless of who completes it.
-- Record who completed a task and when.
+- Record who completed a task and when. Recurring history keeps each
+  occurrence's outcome, completing person, and completion time; completions
+  recorded before completion times were stored keep their person with an
+  unknown time. The task editor's History lists them.
+- A recurring task cannot be rescheduled so that an occurrence already in its
+  history becomes active again; the preview asks for a later due date. An
+  elapsed date that was completed stays completed rather than missed.
 - Keep unfinished tasks overdue with their original deadline until explicitly
   completed or rescheduled. Do not silently move deadlines.
 - Support fixed recurring schedules initially. Recurrence after completion has
@@ -265,8 +289,8 @@ unsuitable or self-hosting the calendar becomes preferable.
   hours late; deliver appointment reminders up to two hours after their trigger
   only while the event has not ended. Partner-change push expires two hours
   after the change. Never emit a backlog of old summary/recurring pushes.
-  These policies are selected requirements; enforcement/boundary tests remain
-  tracked in #15 (task catch-up currently uses notice-creation time).
+  Each notice stores the push deadline these rules give it; its Updates record
+  remains after the deadline passes.
 - Task time-blocking is deferred. The user wants room for spontaneity before
   deciding whether activities should reserve explicit time.
 
@@ -279,7 +303,9 @@ details before presenting the preview. Cancelled previews have no effect.
 
 Before applying a confirmed change, check whether its target has changed since
 the preview. If the preview is stale, show the updated proposal rather than
-silently applying an outdated change. Prevent duplicate writes if confirmation
+silently applying an outdated change. An app editor whose task or appointment
+changed or was deleted reloads the current version and keeps the person's
+edits, so the next review compares them with the latest saved version. Prevent duplicate writes if confirmation
 is retried, and report success only after the authoritative system accepts it.
 
 Read-only questions do not require confirmation. Agreed reminder delivery and
@@ -370,10 +396,17 @@ messages while it works. Queued requests retain their authors and survive restar
 Pi persists the input, model/tool turns, and outstanding work; startup resumes
 pending inputs with the same request ID. Model calls are capped at eight per
 request, with a 90-second timeout per call and no automatic provider retries.
+Pi compaction summaries serve a whole topic rather than one request, so they
+are metered separately: at most six per topic per rolling day. Other model
+entry points are refused so no inference goes unmetered.
 Assistant tools can read household data or prepare a preview, never confirm it.
 The requesting spouse must use the app dialog; a reply of “yes” cannot apply a
 change. Cancelled and expired proposals cannot apply changes. A failed request
-keeps its message and any surviving proposals visible for review.
+keeps its message and any surviving proposals visible for review. While AI
+is unavailable, unfinished requests stay paused and new assistant requests in
+that conversation are refused, but ordinary messages are still saved; the
+paused request resumes once after reconnecting. If the ChatGPT files cannot be
+read, the app starts without the assistant.
 
 Verified against [OpenAI's local-app flow](https://developers.openai.com/siwc/token-sharing-open-source)
 and [model/inference requirements](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
