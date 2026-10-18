@@ -40,12 +40,20 @@ npm run configure
 npm run dev
 ```
 
-Open `http://localhost:8787`. `npm run configure` creates the private
-`cloudflare/.dev.vars` with generated `owner` and `partner` passwords and a push
-keypair; it never overwrites the file. Edit names there and restart `npm run dev`.
-`npm run dev` runs `wrangler dev` with the client rebuilt on each change (reload
-the page to see it). Local state lives in `data/cloudflare/` and survives
-restarts; delete that folder to start over. The local app stops with its process.
+Open `http://localhost:8787` (or `http://127.0.0.1:8787`) and sign in as `owner`
+or `partner` with the `OWNER_PASSWORD` or `PARTNER_PASSWORD` from
+`cloudflare/.dev.vars`. `npm run configure` creates that private file with
+generated passwords and a push keypair; it never overwrites it. Edit names there
+and restart `npm run dev`. `npm run dev` runs `wrangler dev` with the client
+rebuilt on each change (reload the page to see it). Local state lives in
+`data/cloudflare/` and survives restarts; delete that folder to start over. The
+local app stops with its process.
+
+To try it on a phone during development, press `t` in the `npm run dev` terminal
+for a temporary `https://….trycloudflare.com` tunnel and open that address.
+Anyone with the link reaches the sign-in page, and it changes on every restart,
+so close it (`t` again) when done. Installing the app and phone push need the
+stable address of a deployment.
 
 ### Deploy to Cloudflare
 
@@ -70,8 +78,10 @@ Accounts come from `OWNER_*` and `PARTNER_*` settings, with distinct passwords
 of at least 12 characters. Changing a password and restarting (`npm run dev`) or
 redeploying signs that account out everywhere; changing a name or username
 keeps the account's records. Sessions last 30 days. Sign-in allows ten attempts
-per client address per 15 minutes. The app only answers at `APP_ORIGIN`; use a
-stable HTTPS origin for phones, which the service worker and push require.
+per client address per 15 minutes. A deployment only answers at `APP_ORIGIN`;
+local development also answers at the other localhost names on its port and at
+Wrangler's tunnels. Use a stable HTTPS origin for phones, which the service
+worker and push require.
 
 Set `PUSH_CONTACT` to a real `mailto:` address, or the HTTPS app origin is used.
 Keep the generated VAPID keys: changing them breaks existing phone subscriptions.
