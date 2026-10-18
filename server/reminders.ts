@@ -2,7 +2,7 @@ import { DateTime } from 'luxon';
 import webpush from 'web-push';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Household } from './domain.js';
+import { DomainError, type Household } from './domain.js';
 import type { Database } from './database.js';
 import type { CalendarSnapshot, CalendarEvent } from '../src/types.js';
 
@@ -32,6 +32,7 @@ export class Reminders {
     dataDir: string,
     contact?: string,
     private calendar?: () => CalendarSnapshot,
+    private clock: () => Date = () => new Date(),
   ) {
     const path = resolve(dataDir, 'push-keys.json');
     const keys = existsSync(path)
@@ -42,7 +43,7 @@ export class Reminders {
     this.enabled = Boolean(contact);
     if (contact) webpush.setVapidDetails(contact, keys.publicKey, keys.privateKey);
   }
-  plan(now = new Date()) {
+  plan(now = this.clock()) {
     const calendar = this.calendar?.();
     for (const user of this.household.people()) {
       const preferences = this.household.preferences(user.id);
@@ -74,13 +75,22 @@ export class Reminders {
       for (const task of tasks) {
         if (task.dueAt && Date.parse(task.dueAt) <= now.getTime()) {
           const due = DateTime.fromISO(task.dueAt).setZone(preferences.timezone);
-          this.insert(
-            `task:${task.id}:${task.dueAt}:${user.id}`,
-            user.id,
-            task.title,
-            `Due ${due.toFormat('d LLL, HH:mm')}${task.missedDates.length ? ` · Missed ${task.missedDates.length} times` : ''}`,
-            now,
-          );
+          this.db.transaction(() => {
+            const noticeId = `task:${task.id}:${task.dueAt}:${user.id}`;
+            this.insert(
+              noticeId,
+              user.id,
+              task.title,
+              `Due ${due.toFormat('d LLL, HH:mm')}${task.missedDates.length ? ` · Missed ${task.missedDates.length} times` : ''}`,
+              now,
+            );
+            this.db.sql
+              .prepare('INSERT OR IGNORE INTO task_notice_deadlines VALUES (?,?,?,?)')
+              .run(noticeId, task.id, task.dueAt, user.id);
+            this.db.sql
+              .prepare("INSERT OR IGNORE INTO notice_targets VALUES (?,'task',?)")
+              .run(noticeId, task.id);
+          });
         }
       }
       for (const kind of ['morning', 'evening'] as const) {
@@ -126,6 +136,26 @@ export class Reminders {
       .prepare('INSERT OR IGNORE INTO notices(id,user_id,title,body,created_at) VALUES (?,?,?,?,?)')
       .run(id, userId, title, body, now.toISOString());
   }
+  private taskDeadlineCurrent(noticeId: string, recipientId: string) {
+    const deadline = this.db.sql
+      .prepare('SELECT * FROM task_notice_deadlines WHERE notice_id=?')
+      .get(noticeId);
+    // Legacy notices lack reliable occurrence metadata: retain the inbox record,
+    // but fail closed instead of guessing a task/deadline by parsing its label.
+    if (!deadline || deadline.owner_id !== recipientId) return false;
+    try {
+      const task = this.household.task(String(deadline.task_id));
+      return (
+        task.status === 'open' &&
+        task.ownerId === recipientId &&
+        task.dueAt === deadline.due_at &&
+        Date.parse(task.dueAt!) <= this.clock().getTime()
+      );
+    } catch (error) {
+      if (error instanceof DomainError && error.status === 404) return false;
+      throw error;
+    }
+  }
   async deliver() {
     if (this.sending) return;
     this.sending = true;
@@ -134,6 +164,11 @@ export class Reminders {
         .prepare("SELECT * FROM notices WHERE delivery='pending' ORDER BY created_at LIMIT 20")
         .all();
       for (const notice of notices) {
+        const taskDeadline = String(notice.id).startsWith('task:');
+        if (taskDeadline && !this.taskDeadlineCurrent(String(notice.id), String(notice.user_id))) {
+          this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
+          continue;
+        }
         if (String(notice.id).startsWith('appointment:')) {
           const calendar = this.calendar?.();
           if (calendar?.status !== 'connected') continue;
@@ -155,12 +190,21 @@ export class Reminders {
         }
         // Persist each device result so a retry does not resend successful deliveries.
         for (const subscription of subscriptions) {
+          // Recheck after each awaited device delivery: the task can change while
+          // the previous device's push request is in flight.
+          if (
+            taskDeadline &&
+            !this.taskDeadlineCurrent(String(notice.id), String(notice.user_id))
+          ) {
+            this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
+            break;
+          }
           const deliveryId = `${notice.id}:${String(subscription.endpoint)}`;
           const sent = this.db.sql
             .prepare('SELECT id FROM push_deliveries WHERE id=?')
             .get(deliveryId);
           if (sent) continue;
-          if (Date.now() - Date.parse(String(notice.created_at)) > 7200_000) continue;
+          if (this.clock().getTime() - Date.parse(String(notice.created_at)) > 7200_000) continue;
           try {
             await webpush.sendNotification(
               JSON.parse(String(subscription.value)),
@@ -195,7 +239,7 @@ export class Reminders {
                 .prepare('SELECT id FROM push_deliveries WHERE id=?')
                 .get(`${notice.id}:${String(subscription.endpoint)}`),
           );
-        if (!remaining || Date.now() - Date.parse(String(notice.created_at)) > 7200_000)
+        if (!remaining || this.clock().getTime() - Date.parse(String(notice.created_at)) > 7200_000)
           this.db.sql.prepare("UPDATE notices SET delivery='inbox' WHERE id=?").run(notice.id);
       }
     } finally {

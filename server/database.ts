@@ -35,6 +35,8 @@ export class Database {
         title TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, delivery TEXT NOT NULL DEFAULT 'pending');
       CREATE TABLE IF NOT EXISTS notice_targets (notice_id TEXT PRIMARY KEY REFERENCES notices(id) ON DELETE CASCADE,
         kind TEXT NOT NULL,target_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS task_notice_deadlines (notice_id TEXT PRIMARY KEY REFERENCES notices(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL, due_at TEXT NOT NULL, owner_id TEXT NOT NULL REFERENCES users(id));
       CREATE TABLE IF NOT EXISTS notice_reads (notice_id TEXT PRIMARY KEY REFERENCES notices(id) ON DELETE CASCADE,
         read_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint TEXT PRIMARY KEY,
