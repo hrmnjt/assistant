@@ -37,6 +37,9 @@ export class Database {
         kind TEXT NOT NULL,target_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_notice_deadlines (notice_id TEXT PRIMARY KEY REFERENCES notices(id) ON DELETE CASCADE,
         task_id TEXT NOT NULL, due_at TEXT NOT NULL, owner_id TEXT NOT NULL REFERENCES users(id));
+      CREATE TABLE IF NOT EXISTS notice_retries (notice_id TEXT PRIMARY KEY REFERENCES notices(id) ON DELETE CASCADE,
+        next_attempt_at INTEGER NOT NULL, attempts INTEGER NOT NULL, failure TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS notice_retry_due ON notice_retries(next_attempt_at);
       CREATE TABLE IF NOT EXISTS notice_reads (notice_id TEXT PRIMARY KEY REFERENCES notices(id) ON DELETE CASCADE,
         read_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint TEXT PRIMARY KEY,
