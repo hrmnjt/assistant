@@ -1,11 +1,7 @@
 import { mkdir } from 'node:fs/promises';
-import { test, expect } from './household-fixture';
+import { test, expect, navigate } from './household-fixture';
 import type { Page, TestInfo } from '@playwright/test';
 
-const nav = (page: Page, name: string) =>
-  page
-    .getByRole('navigation', { name: 'Main navigation' })
-    .getByRole('button', { name, exact: true });
 async function shot(page: Page, info: TestInfo, name: string) {
   await mkdir('.cache/ui-screenshots', { recursive: true });
   const path = `.cache/ui-screenshots/${info.project.name}-${name}.png`;
@@ -76,7 +72,7 @@ test('chat: suggestions, saved messages, shared history, presence, and channel s
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(page.getByRole('log')).toContainText('What’s on today?');
   await expect(composer).toHaveValue('');
-  const channels = page.getByRole('button', { name: 'Open channels' });
+  const channels = page.getByRole('button', { name: 'Open menu' });
   if (await channels.isVisible()) await channels.click();
   await page.getByRole('button', { name: /Weekend plans/ }).click();
   await expect(page.getByRole('log')).toContainText('Shall we make time for a walk?');
@@ -100,7 +96,7 @@ test('tasks: tabs, missed history, form draft, cancel, explicit confirmation, me
   household,
 }, info) => {
   await page.goto('/');
-  await nav(page, 'Tasks').click();
+  await navigate(page, 'Tasks');
   await page.getByRole('tab', { name: 'For me' }).focus();
   await page.keyboard.press('ArrowRight');
   await expect(page.getByRole('tab', { name: 'Household' })).toBeFocused();
@@ -145,7 +141,7 @@ test('confirmation: stale errors cannot be retried; cancel preserves the form; f
 }) => {
   household.confirmationError = 'This task changed. Review a fresh preview.';
   await page.goto('/');
-  await nav(page, 'Tasks').click();
+  await navigate(page, 'Tasks');
   const add = page.getByRole('button', { name: 'Add task' });
   await add.click();
   await expect(page.getByLabel('What needs doing?')).toBeFocused();
@@ -176,7 +172,7 @@ test('calendar: month bounds, event details, all-day form and reminders', async 
   household,
 }, info) => {
   await page.goto('/');
-  await nav(page, 'Calendar').click();
+  await navigate(page, 'Calendar');
   await page.getByRole('button', { name: /19:00.*Dinner together/ }).click();
   await expect(page.getByLabel('Appointment', { exact: true })).toHaveValue('Dinner together');
   await page.getByRole('switch').check();
@@ -208,7 +204,7 @@ test('settings: independent switches, disabled time, preferences preview; Update
   household,
 }, info) => {
   await page.goto('/');
-  await nav(page, 'Settings').click();
+  await navigate(page, 'Settings');
   await expect(page.getByRole('button', { name: 'Review settings' })).toBeDisabled();
   await page.getByRole('switch', { name: 'Enable morning summary' }).uncheck();
   await expect(page.getByLabel('morning summary time', { exact: true })).toBeDisabled();
@@ -234,10 +230,10 @@ test('Today and disconnected/empty states remain readable and safe', async ({
   household.state.calendar.status = 'not-connected';
   household.state.calendar.events = [];
   await page.goto('/');
-  await nav(page, 'Today').click();
+  await navigate(page, 'Today');
   await expect(page.getByText('A little breathing room')).toBeVisible();
   await shot(page, info, 'today-empty');
-  await nav(page, 'Calendar').click();
+  await navigate(page, 'Calendar');
   await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeDisabled();
   await expect(page.getByText('Connect your shared calendar')).toBeVisible();
   await page.getByRole('button', { name: 'Open updates' }).click();
@@ -247,7 +243,7 @@ test('Today and disconnected/empty states remain readable and safe', async ({
   await expect(page.getByRole('status').filter({ hasText: 'Connection lost' })).toBeVisible({
     timeout: 8000,
   });
-  await nav(page, 'Tasks').click();
+  await navigate(page, 'Tasks');
   await expect(page.getByRole('button', { name: 'Add task' })).toBeDisabled();
   await noHorizontalOverflow(page);
 });

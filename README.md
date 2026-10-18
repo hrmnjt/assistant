@@ -3,7 +3,9 @@
 Updated: 2026-10-18. Status: one Cloudflare application. The same Worker and
 household Durable Object run locally through Wrangler on the Mac for development
 and on Cloudflare when deployed. There is no separate Node server. The app
-starts fresh, with no data imported.
+starts fresh, with no data imported. Direction (decided 18 October 2026): chat
+drives the whole app, and tasks, calendar and the dashboard become plugins; see
+[Chat-driven assistant](#chat-driven-assistant) for what is built and what is next.
 
 ## Purpose
 
@@ -132,8 +134,18 @@ Durable Object restarts and resumes pending assistant work from committed state.
 - Start with an iPhone-focused SPA, installable as a web app. Native iOS comes later.
 - Permit access away from home through the deployed Cloudflare HTTPS app.
 - Use text chat, with the iPhone keyboard's dictation for speech input.
-- Show a preview and require confirmation before changes from either chat or
-  direct task/calendar controls.
+- Every change needs explicit confirmation. Decided: a one-tap Confirm card in
+  the conversation, replacing the separate review dialog (planned; today's app
+  still opens the review dialog).
+- Chat is the driver: the app opens into the conversation with no tab bar, and
+  tasks, appointments and summaries are the result of the assistant's actions.
+- Build features as plugins on Pi's extension model: chat is the core; tasks,
+  calendar and the dashboard are the first plugins, and later features are added
+  the same way.
+- Without the assistant (ChatGPT not connected or unavailable), quick taps on
+  cards (complete, snooze, delete) still work; new requests wait for it (planned).
+- Reminders and morning/evening summaries arrive as assistant messages in each
+  person's own chat, plus a phone notification (planned).
 - Let the spouses own and directly edit their shared calendar. The assistant
   helps manage it rather than maintaining a separate calendar of its own.
 - Direct calendar edits and conversational edits must affect the same event.
@@ -165,10 +177,14 @@ Durable Object restarts and resumes pending assistant work from committed state.
 
 ## Product experience
 
-Prioritize the iPhone SPA. The opening screen is a continuous assistant chat,
-with a compact activity header, a bottom composer, suggestions for an empty
-chat, and inline change previews. The laptop keeps the same experience with
-wider content and a visible channel rail; mobile drives the design. The interaction pattern takes inspiration from
+Prioritize the iPhone SPA. The app is the conversation: it opens full screen
+into the person's assistant chat with a compact header, grouped message bubbles
+(the assistant's replies as plain text), a pill composer at the bottom,
+suggestions for an empty chat, and inline change previews. There is no tab bar.
+The menu (a sidebar on laptops) lists the views (Today, Tasks, Calendar and
+Settings), the assistant and shared channels; the header's calendar button opens
+the day's view. Views open over the chat on phones and beside it on laptops.
+Mobile drives the design. The interaction pattern takes inspiration from
 [Muse’s design](https://introducing.muse.ai/).
 
 - Today: appointments, due tasks, and overdue work relevant to the signed-in user.
@@ -179,7 +195,7 @@ wider content and a visible channel rail; mobile drives the design. The interact
 - Two individual sign-ins identify who is acting and who receives reminders.
 - Each login has its own ready assistant chat; no conversation creation is needed.
   These separate histories reduce clutter rather than enforce secrecy.
-- Shared channels sit in a drawer on mobile. Messages go to the two humans;
+- Shared channels sit in the menu on mobile. Messages go to the two humans;
   mention `@assistant` anywhere in a message or enable “Ask Our day” to involve
   the assistant. The composer shows when Our day will reply.
   Existing topics become channels without losing messages.
@@ -232,6 +248,23 @@ plus WebKit at 390px. It checks loading, empty, error, disabled, and confirmatio
 states, keyboard/focus behavior, and a simulated reduced keyboard viewport.
 Physical iPhone installation, safe areas, keyboard/dictation, and push delivery
 still need device verification. Native iOS remains deferred.
+
+## Chat-driven assistant
+
+Decided with the user on 18 October 2026, delivered as stacked pull requests:
+
+1. **Chat-first shell** (built): the conversation is the whole screen, views open
+   from the menu or header, and the chat feels native on phones and laptops.
+2. **Plugins** (next): the server splits into a core (sign-in, conversations and
+   channels, the confirmation pipeline, one scheduler, the shell) and plugins.
+   A plugin is a Pi extension (tools and prompt section for the assistant) plus
+   its own tables, background jobs, read model, and the cards and optional view
+   it renders in the app. Tasks, Calendar and Dashboard are the first plugins.
+   Assistant changes appear in the transcript as one-tap Confirm cards.
+3. **Proactive messages**: reminders and summaries posted in each person's chat
+   with push, with quick taps that work without the assistant.
+4. **Glance views**: views become read-mostly; adding and editing go through the
+   chat, and the standalone forms are retired.
 
 ## Calendar integration
 

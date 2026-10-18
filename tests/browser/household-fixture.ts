@@ -288,3 +288,22 @@ export const test = base.extend<{ household: HouseholdFixture }>({
   ],
 });
 export { expect };
+
+/** Open a view the way a person would: the panel's tabs, else the sidebar (or the phone menu). */
+export async function navigate(page: Page, name: 'Today' | 'Tasks' | 'Calendar' | 'Settings') {
+  const tabs = page.getByRole('group', { name: 'Views' });
+  const nav = page.getByRole('navigation', { name: 'Main navigation' });
+  const menu = page.getByRole('button', { name: 'Open menu' });
+  const back = page.getByRole('button', { name: 'Back to chat' });
+  // Wait for the app to show one of its ways in.
+  await expect(nav.or(menu).or(tabs).or(back).first()).toBeVisible();
+  if (name !== 'Settings' && (await tabs.isVisible())) {
+    await tabs.getByRole('button', { name, exact: true }).click();
+    return;
+  }
+  if (!(await nav.isVisible())) {
+    if (await back.isVisible()) await back.click();
+    await menu.click();
+  }
+  await nav.getByRole('button', { name, exact: true }).click();
+}
