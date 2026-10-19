@@ -26,7 +26,7 @@ const connectionInput = z
   .strict();
 const onlySetUpBy = (me: Person) => {
   if (me.id !== 'owner')
-    throw new DomainError('Only the person who set up the household manages the calendar.', 403);
+    throw new DomainError('Only the person who set up the assistant manages the calendar.', 403);
 };
 
 const syncInterval = 5 * 60_000;

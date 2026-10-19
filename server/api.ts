@@ -14,7 +14,7 @@ import { body, json, RequestError } from './http.js';
 import { Settings } from './settings.js';
 import type { Person, Snapshot } from '../src/types.js';
 
-/** The household application behind `/api`: one instance per household runtime. */
+/** The assistant behind `/api`: one instance per runtime. */
 export type App = {
   db: Store;
   auth: Auth;
@@ -40,7 +40,7 @@ export async function handle(app: App, request: Request): Promise<Response> {
     const caller = await auth.caller(request);
     if (!caller)
       throw new RequestError(
-        'Sign in through Cloudflare Access with one of the two email addresses set up for this household.',
+        'Sign in through Cloudflare Access with one of the two email addresses set up for this assistant.',
         401,
       );
     if ('setup' in caller) return await setUp(app, request, caller.setup.email);
@@ -99,7 +99,7 @@ async function setUp(app: App, request: Request, signedIn: string | null) {
     return json({ ok: true });
   }
   return json(
-    { error: 'Set up the household first.', setup: { email: signedIn, development } },
+    { error: 'Set up the assistant first.', setup: { email: signedIn, development } },
     428,
   );
 }
@@ -108,7 +108,7 @@ function routes(app: App): ApiRoute[] {
   const { db, auth, household, conversations, assistantModel, notices, plugins } = app;
   const onlySetUpBy = (me: Person) => {
     if (me.id !== 'owner')
-      throw new DomainError('Only the person who set up the household manages this.', 403);
+      throw new DomainError('Only the person who set up the assistant manages this.', 403);
   };
   const id = '([^/]+)';
   const owners = [household.changes, ...plugins.flatMap((plugin) => plugin.changes ?? [])];

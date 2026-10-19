@@ -136,7 +136,7 @@ test('a development server has no sign-in, answers only on this computer, and se
 test('writes need the app header and the origin the app was served at', async () => {
   await withApp(deployment, async (app) => {
     await setUp(app.household);
-    const owner = client(app, 'owner', 'https://household-assistant.example.workers.dev');
+    const owner = client(app, 'owner', 'https://assistant.example.workers.dev');
     const presence = { threadId: null, clientId: crypto.randomUUID(), typing: false };
     assert.equal((await owner.call('/api/presence', presence)).status, 200);
     const refusals: Record<string, string>[] = [

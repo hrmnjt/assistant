@@ -118,7 +118,7 @@ function setFields(
 export function createEventData(uid: string, fields: CalendarFields, operationId: string) {
   const calendar = new ICAL.Component('vcalendar');
   calendar.addPropertyWithValue('version', '2.0');
-  calendar.addPropertyWithValue('prodid', '-//Our day//Household assistant//EN');
+  calendar.addPropertyWithValue('prodid', '-//Our day//Assistant//EN');
   const event = new ICAL.Component('vevent');
   event.addPropertyWithValue('uid', uid);
   setFields(event, fields, operationId);

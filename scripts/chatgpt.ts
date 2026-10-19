@@ -55,7 +55,7 @@ if (process.argv.includes('--remove')) {
   const terminal = createInterface({ input: stdin, output: stdout });
   try {
     console.log(
-      'Connect the household app to your ChatGPT plan. Eligible requests use its limits. No API-key fallback is used.',
+      'Connect the assistant to your ChatGPT plan. Eligible requests use its limits. No API-key fallback is used.',
     );
     await models.login(
       'openai',
@@ -69,7 +69,7 @@ if (process.argv.includes('--remove')) {
           else if ('message' in event) console.log(event.message);
         },
       },
-      { getDeviceId: () => hostId, agentName: 'Our day household assistant' },
+      { getDeviceId: () => hostId, agentName: 'Our day assistant' },
     );
     if (!credential) throw new Error('No OAuth credential was returned.');
     save({ CHATGPT_HOST_ID: hostId, CHATGPT_CREDENTIAL_JSON: JSON.stringify(credential) });

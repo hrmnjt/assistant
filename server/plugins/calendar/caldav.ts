@@ -128,7 +128,7 @@ export class ICloudTransport implements CalendarTransport {
       ) ||
       target.search
     ) {
-      throw new DomainError('The appointment is outside the selected household calendar.', 403);
+      throw new DomainError('The appointment is outside the selected shared calendar.', 403);
     }
     return target.href;
   }
@@ -169,7 +169,7 @@ export class ICloudTransport implements CalendarTransport {
     for (const response of responses) {
       if (!response.ok || response.status >= 400)
         throw new DomainError(
-          'iCloud could not return the household calendar. Previously loaded appointments have been retained.',
+          'iCloud could not return the shared calendar. Previously loaded appointments have been retained.',
           503,
         );
       const data = text(response.props?.calendarData);

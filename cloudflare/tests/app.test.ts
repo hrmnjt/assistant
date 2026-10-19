@@ -14,7 +14,7 @@ import { identityHeader } from '../../server/auth.js';
 import worker, { type Env, type Household } from '../worker.js';
 
 const bindings = env as unknown as Env;
-const origin = 'https://household-assistant.example.workers.dev';
+const origin = 'https://assistant.example.workers.dev';
 const stub = () => bindings.HOUSEHOLD.getByName('household');
 const runtime = (instance: Household) => (instance as unknown as { runtime: Runtime }).runtime;
 /**

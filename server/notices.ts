@@ -72,7 +72,7 @@ export class Notices {
   private async contact() {
     const row = await this.db.get<Row>("SELECT value FROM settings WHERE key='origin'");
     const origin = row ? String(JSON.parse(String(row.value))) : '';
-    return origin.startsWith('https://') ? origin : 'mailto:household@localhost';
+    return origin.startsWith('https://') ? origin : 'mailto:assistant@localhost';
   }
   /** The plugins whose notices this delivers; partner-change notices are the core's own. */
   use(plugins: readonly Plugin[]) {

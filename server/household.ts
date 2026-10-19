@@ -133,7 +133,7 @@ export class Household {
     if (owner.email && owner.email === partner.email)
       throw new DomainError('Use a different email address for each of you.');
     await this.db.transaction(async (tx) => {
-      if (await this.setUpAt(tx)) throw new DomainError('This household is already set up.', 409);
+      if (await this.setUpAt(tx)) throw new DomainError('The assistant is already set up.', 409);
       for (const [id, member] of [
         ['owner', owner],
         ['partner', partner],

@@ -1,7 +1,7 @@
-# Household assistant
+# Assistant
 
-Updated: 2026-10-18. Status: one Cloudflare application. The same Worker and
-household Durable Object run locally through Wrangler on the Mac for development
+Updated: 2026-10-19. Status: one Cloudflare application, the `assistant`
+Worker. The same Worker and its Durable Object run locally through Wrangler on the Mac for development
 and on Cloudflare when deployed. There is no separate Node server. The app
 starts fresh, with no data imported. Direction (decided 18 October 2026): chat
 drives the whole app, and tasks, calendar and the dashboard become plugins; see
@@ -58,17 +58,17 @@ local app stops with its process. Phones use the deployment.
 
 Cloudflare Access signs the two people in; the app has no passwords of its own.
 With Access enabled on the Worker, Cloudflare gives it the verified email of
-each request (`ctx.access`); the Worker passes that on to the household, which
+each request (`ctx.access`); the Worker passes that on to the app, which
 recognizes only the two emails it was set up with. A deployment without Access
 refuses every request.
 
 1. Deploy the Worker: `npm run wrangler -- login`, then `npm run deploy` (or
    let [continuous deployment](#continuous-deployment) do it). It appears as
-   `household-assistant.<subdomain>.workers.dev`.
+   `assistant.<subdomain>.workers.dev`.
 2. In the Cloudflare dashboard, open the Worker's Settings → Domains & Routes
    and enable Cloudflare Access for workers.dev. In Zero Trust → Access, edit
    the Worker's policy so it allows exactly the two email addresses.
-3. Open the app and sign in. The first person to sign in sets up the household:
+3. Open the app and sign in. The first person to sign in sets up the assistant:
    both names and the other person's email. After that only those two emails
    get in.
 4. In Settings, that person connects the iCloud calendar (an Apple ID and an
@@ -100,10 +100,10 @@ deploy twice or to a second Worker.
 
 ### Accounts and settings
 
-The two people's names and emails live only in the household's own storage on
+The two people's names and emails live only in the app's own storage on
 Cloudflare: never in the repository, configuration files, or deployment
 settings. The first sign-in sets them up; afterwards each person can change
-their own name in Settings, and whoever set up the household can correct the
+their own name in Settings, and whoever set up the assistant can correct the
 other person's email (Access must allow it too) and manages the connections:
 the calendar and the assistant's model.
 Changing a name or email keeps the person's records. Email addresses are not
@@ -118,7 +118,7 @@ permission, reminders stay available in the app's Updates.
 
 To connect the calendar, create and share the iCloud calendar in Apple
 Calendar, then in Settings sign in with an Apple ID and an Apple app-specific
-password and pick the calendar. The password is stored in the household's
+password and pick the calendar. The password is stored in the app's
 storage, sent once and never shown again; the other person sees only the
 connection's status. Disconnecting removes it and the cached appointments.
 The app refreshes complete months (previous month through two months ahead,
@@ -164,10 +164,12 @@ Durable Object restarts and resumes pending assistant work from committed state.
 - Sign in through Cloudflare Access in front of the deployment, with no
   passwords or sessions in the app; development needs no sign-in (decided 18
   October 2026).
-- The app is for this one household and speaks of the two people by name. Their
+- The app is an assistant for the two of us and speaks of us by name. Our
   names and emails are entered in the app at its first sign-in and stay in its
   storage, never in the repository or any configuration (decided 18 October
-  2026). Whoever sets the household up manages its connections.
+  2026). Whoever sets the assistant up manages its connections.
+- The application is named `assistant`, deployed as the `assistant` Worker
+  (decided 19 October 2026). "Household" is only one of its task categories.
 - Use text chat, with the iPhone keyboard's dictation for speech input.
 - Every change needs explicit confirmation. Decided: a one-tap Confirm card in
   the conversation, replacing the separate review dialog (planned; today's app
@@ -417,8 +419,8 @@ after retries should still be prevented.
 
 ## Development and hosting
 
-**Target:** Cloudflare Worker routing/assets and one SQLite-backed Durable
-Object for the household, owning shared records, independent Pi conversations,
+**Target:** the `assistant` Cloudflare Worker for routing/assets and one
+SQLite-backed Durable Object, owning shared records, independent Pi conversations,
 and alarm-driven jobs. The same application runs locally through Wrangler on the
 Mac, which is for development and testing, not long-term hosting: the local app
 stops with its process. Storage goes through Pi's `SqliteDatabase` interface,
