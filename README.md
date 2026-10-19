@@ -34,7 +34,17 @@ channels, the change pipeline, notices and push, the API router) and
 `server/plugins/` the features built on it; `cloudflare/worker.ts` is the only
 host, and `src/` is the client.
 
-### Run on the Mac
+### How we work
+
+Everything happens from the phone. Features are requested in a Claude Code chat,
+which opens pull requests on GitHub; they are reviewed and merged ("Rebase and
+merge") in the GitHub app; GitHub Actions tests each merge to `main` and deploys
+it to the `assistant` Worker; the app is used in Safari and installed on each
+Home Screen, behind Cloudflare Access. Running locally is optional, for
+checking something specific. The one step that still needs a computer is
+connecting ChatGPT (see [AI access](#ai-access)).
+
+### Run locally (optional)
 
 Use Node.js 24 or newer. All project data, caches, and scripts stay in this repo.
 
@@ -153,7 +163,10 @@ Durable Object restarts and resumes pending assistant work from committed state.
 ## Confirmed requirements
 
 - Build on Pi Durable and run the assistant on user-controlled infrastructure.
-- Use the user's Mac for local development/testing, not long-term service hosting.
+- Work from the phone: changes arrive as pull requests from Claude Code, are
+  merged in the GitHub app, and deploy automatically from `main` (decided 19
+  October 2026). Running on the Mac is optional, for development and testing,
+  never long-term hosting.
 - Deploy to Cloudflare. Run the same Worker + Durable Object application locally
   through Wrangler and in deployment; do not maintain a second host or feature
   implementation.
