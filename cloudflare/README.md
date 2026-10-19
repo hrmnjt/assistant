@@ -4,7 +4,7 @@
 client from `dist/` (single-page fallback, headers from `public/_headers`) and
 sends `/api/*` to one SQLite-backed Durable Object named `household`. There are
 no caller-chosen object names and no public registration. Setup, deployment and
-settings are in the [README](../README.md#run-on-the-mac).
+settings are in the [README](../README.md#how-we-work).
 
 ## Files
 

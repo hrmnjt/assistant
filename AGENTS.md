@@ -11,13 +11,19 @@
 - Keep documentation concise and grounded in the implementation. Native iOS,
   offline use, task time-blocking, and documentation features are deferred.
 - Cloudflare is the deployment target: one Worker (`assistant`) and one Durable
-  Object. Develop and test on the user's Mac with Wrangler running that same
-  application; do not add a second host or a parallel implementation.
+  Object; do not add a second host or a parallel implementation.
+- The user works from the phone: changes come from this chat as pull requests,
+  the user merges them in the GitHub app, and `main` deploys automatically.
+  Running the same application locally with Wrangler (`npm run dev`) is
+  optional, for checking something specific.
 
 ## Pull request workflow
 
 - Deliver repository changes through pull requests. For stacked work, target
   the preceding PR's branch; the bottom PR targets `main`.
+- The repository merges with "Rebase and merge" only. Keep each branch a linear
+  series of commits on its base, with no merge commits. After a parent PR
+  merges, rebase its child onto `main` and retarget it before it is merged.
 - Keep dependent PRs stacked and describe their order. Retarget a child after
   its parent is merged, without merging either PR on the user's behalf.
 - Use a focused branch named `<type>/<area>/<short-slug>` (for example
