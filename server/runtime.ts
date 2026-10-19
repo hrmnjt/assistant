@@ -48,7 +48,7 @@ export type Runtime = App & {
 const fallbackWake = 15 * 60_000;
 const assistantRecovery = 30_000;
 
-/** Open the household application on one store; the same code runs in a Durable Object and in tests. */
+/** Open the assistant on one store; the same code runs in a Durable Object and in tests. */
 export async function openHousehold(
   db: Store,
   config: Config,

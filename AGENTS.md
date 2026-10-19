@@ -10,7 +10,7 @@
   behavior when it matters, and capture decisions as implementation evolves.
 - Keep documentation concise and grounded in the implementation. Native iOS,
   offline use, task time-blocking, and documentation features are deferred.
-- Cloudflare is the deployment target: one Worker and one household Durable
+- Cloudflare is the deployment target: one Worker (`assistant`) and one Durable
   Object. Develop and test on the user's Mac with Wrangler running that same
   application; do not add a second host or a parallel implementation.
 

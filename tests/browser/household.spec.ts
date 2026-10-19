@@ -34,7 +34,7 @@ test('signed out: loading, then the reason and a way back through Cloudflare Acc
   await expect(page.getByRole('status')).toHaveText('Finding our place…');
   release();
   await expect(page.getByRole('alert')).toHaveText(
-    'Sign in through Cloudflare Access with one of the two email addresses set up for this household.',
+    'Sign in through Cloudflare Access with one of the two email addresses set up for this assistant.',
   );
   await expect(page.getByRole('link', { name: 'Use a different email' })).toHaveAttribute(
     'href',
@@ -73,19 +73,19 @@ test('first sign-in: name both people and add the other email, then the app open
 }, info) => {
   household.setup = { email: 'alex@example.com', development: false };
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Set up your household.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Set up your assistant.' })).toBeVisible();
   await expect(page.getByText('You’re signed in as alex@example.com.')).toBeVisible();
   await page.getByLabel('Your name').fill('Alex');
   await page.getByLabel('The other person’s name').fill('Sam');
   await page.getByLabel('Their email address').fill('alex@example.com');
-  await page.getByRole('button', { name: 'Set up our household' }).click();
+  await page.getByRole('button', { name: 'Set up our assistant' }).click();
   await expect(page.getByRole('alert')).toHaveText(
     'Use a different email address for each of you.',
   );
   await noHorizontalOverflow(page);
   await shot(page, info, 'setup');
   await page.getByLabel('Their email address').fill('sam@example.com');
-  await page.getByRole('button', { name: 'Set up our household' }).click();
+  await page.getByRole('button', { name: 'Set up our assistant' }).click();
   await expect(page.getByLabel('Message', { exact: true })).toBeVisible();
   expect(household.calls.findLast((call) => call.path === '/setup')?.body).toEqual({
     name: 'Alex',
@@ -162,7 +162,7 @@ test('settings: whoever set up connects iCloud and chooses the model; the other 
     .getByRole('dialog', { name: 'Using the connected ChatGPT plan' })
     .getByRole('button', { name: 'Got it' })
     .click();
-  await expect(page.getByText('Eligible AI requests use the household’s')).toBeVisible();
+  await expect(page.getByText('Eligible AI requests use the connected ChatGPT plan')).toBeVisible();
   expect(household.model).toBe('gpt-6.1-mini');
   await noHorizontalOverflow(page);
   await shot(page, info, 'settings-connections');

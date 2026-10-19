@@ -37,7 +37,7 @@ export type ApiRoute = {
 };
 
 /**
- * A feature of the household assistant. The conversation is the core; tasks,
+ * A feature of the assistant. The conversation is the core; tasks,
  * the shared calendar, the dashboard and later features are plugins. Each one
  * brings its own Pi extension (the assistant's tools and instructions), the
  * changes it owns, its part of the app's data, and its background work.

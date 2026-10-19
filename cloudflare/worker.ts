@@ -50,7 +50,7 @@ export class Household extends DurableObject<Env> {
         this.failure =
           error instanceof Error && /^Configure /.test(error.message)
             ? error.message
-            : 'The household app could not start. Check its configuration.';
+            : 'The assistant could not start. Check its configuration.';
         console.error('Household startup failed.');
       }
     });

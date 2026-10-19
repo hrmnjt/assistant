@@ -98,7 +98,7 @@ async function api<T>(
         value.error ||
           (response.status === 401
             ? 'Your sign-in has ended. Sign in again to continue.'
-            : 'Unable to reach the household app.'),
+            : 'Unable to reach the assistant.'),
       ),
       {
         status: response.status,
@@ -117,7 +117,7 @@ function App() {
   const [setup, setSetup] = useState<SetupNeeded | null>(null);
   const [signedOut, setSignedOut] = useState({
     status: 0,
-    message: 'The household app can’t be reached right now. Try again in a moment.',
+    message: 'The assistant can’t be reached right now. Try again in a moment.',
   });
   const [busy, setBusy] = useState(false);
   const [page, setPage] = useState<'today' | 'tasks' | 'calendar' | 'chat' | 'settings'>('chat');
@@ -1355,16 +1355,16 @@ function App() {
                 <AppearanceSettings />
                 <Card className="settings-card">
                   <h2>
-                    <MessageCircle size={19} /> Household assistant
+                    <MessageCircle size={19} /> Assistant
                   </h2>
                   <p className="muted">
                     {state.integrations.ai === 'configured'
-                      ? 'Eligible AI requests use the household’s connected ChatGPT plan. Messages in this topic and the household tasks, settings, and appointments the assistant reads are sent to OpenAI. Every proposed change still needs your confirmation.'
+                      ? 'Eligible AI requests use the connected ChatGPT plan. Messages in this topic and the tasks, settings, and appointments the assistant reads are sent to OpenAI. Every proposed change still needs your confirmation.'
                       : state.integrations.ai === 'needs-model'
-                        ? `ChatGPT is connected. ${state.me.id === 'owner' ? 'Choose' : `${setUpBy?.name ?? 'Whoever set up the household'} still chooses`} the model the assistant uses.`
+                        ? `ChatGPT is connected. ${state.me.id === 'owner' ? 'Choose' : `${setUpBy?.name ?? 'Whoever set up the assistant'} still chooses`} the model the assistant uses.`
                         : state.me.id === 'owner'
                           ? 'Connect ChatGPT from your Mac: run npm run ai:connect -- --production, then npm run secrets. You can keep using shared messages, tasks, and the calendar meanwhile.'
-                          : `${setUpBy?.name ?? 'Whoever set up the household'} can connect ChatGPT. You can keep using shared messages, tasks, and the calendar meanwhile.`}
+                          : `${setUpBy?.name ?? 'Whoever set up the assistant'} can connect ChatGPT. You can keep using shared messages, tasks, and the calendar meanwhile.`}
                   </p>
                   {state.me.id === 'owner' && state.integrations.ai !== 'not-connected' && (
                     <ModelChooser onSaved={refresh} />
@@ -1441,7 +1441,7 @@ function App() {
               ? 'You can keep messaging. New requests wait their turn in this chat.'
               : 'Ask about your day, update a task, or plan an appointment.'}
           </p>
-          <p>{chatStatus.previews.length} changes waiting for your household to review.</p>
+          <p>{chatStatus.previews.length} changes waiting for your review.</p>
           <p className="small muted">
             {state.integrations.ai === 'configured'
               ? 'Using the connected ChatGPT plan.'
@@ -1488,9 +1488,9 @@ function App() {
           }}
         >
           <p>
-            Eligible assistant requests use the ChatGPT plan {setUpBy?.name ?? 'the household'}{' '}
-            connected and share its usage limits. Messages in this topic and the household
-            information the assistant reads are sent to OpenAI.
+            Eligible assistant requests use the ChatGPT plan{setUpBy ? ` ${setUpBy.name}` : ''}{' '}
+            connected and share its usage limits. Messages in this topic and the information the
+            assistant reads are sent to OpenAI.
           </p>
           <p>Task and calendar changes always need a separate confirmation preview.</p>
           <p>
@@ -1816,14 +1816,14 @@ function Welcome({ children }: { children: React.ReactNode }) {
             </div>
           </div>
         </div>
-        <span className="small">Made for your household.</span>
+        <span className="small">Made for the two of you.</span>
       </div>
       <section className="login-form">
         <div className="mobile-brand brand">
           <Leaf size={26} /> our day.
         </div>
         {children}
-        <p className="small muted login-footnote">Your own view. Your shared household.</p>
+        <p className="small muted login-footnote">Your own view. Shared between you.</p>
       </section>
     </div>
   );
@@ -1864,7 +1864,7 @@ function HouseholdSetup({ setup, onDone }: { setup: SetupNeeded; onDone: () => v
   return (
     <Welcome>
       <div className="eyebrow">FIRST, THE TWO OF YOU</div>
-      <h2>Set up your household.</h2>
+      <h2>Set up your assistant.</h2>
       <p className="muted">
         {setup.email
           ? `You’re signed in as ${setup.email}. Only you and the person you add here can use the app.`
@@ -1915,7 +1915,7 @@ function HouseholdSetup({ setup, onDone }: { setup: SetupNeeded; onDone: () => v
           </p>
         )}
         <Button type="submit" disabled={busy}>
-          {busy ? 'Setting up…' : 'Set up our household'}
+          {busy ? 'Setting up…' : 'Set up our assistant'}
           <ArrowRight size={17} />
         </Button>
       </form>
@@ -1958,8 +1958,8 @@ function CalendarConnection({
       {!manages ? (
         <p className="muted">
           {state.integrations.calendar === 'not-connected'
-            ? `${setUpBy ?? 'Whoever set up the household'} can connect the shared iCloud calendar.`
-            : `Connected to ${state.calendar.name}. ${setUpBy ?? 'Whoever set up the household'} manages the connection.`}
+            ? `${setUpBy ?? 'Whoever set up the assistant'} can connect the shared iCloud calendar.`
+            : `Connected to ${state.calendar.name}. ${setUpBy ?? 'Whoever set up the assistant'} manages the connection.`}
         </p>
       ) : state.calendarAccount ? (
         <>
@@ -2005,7 +2005,7 @@ function CalendarConnection({
           }}
         >
           <p className="muted">
-            Sign in with the Apple ID that shares the household calendar and an{' '}
+            Sign in with the Apple ID that shares your calendar and an{' '}
             <a href="https://account.apple.com/account/manage" target="_blank" rel="noreferrer">
               app-specific password
             </a>

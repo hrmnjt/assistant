@@ -148,7 +148,7 @@ export class HouseholdFixture {
         this.state.people = [this.state.me, { ...this.state.people[1], name: body.partner.name }];
         return json({ ok: true });
       }
-      if (this.setup) return json({ error: 'Set up the household first.', setup: this.setup }, 428);
+      if (this.setup) return json({ error: 'Set up the assistant first.', setup: this.setup }, 428);
       if (path === '/state')
         return this.offline
           ? json({ error: 'Offline' }, 503)
@@ -157,7 +157,7 @@ export class HouseholdFixture {
             : json(
                 {
                   error:
-                    'Sign in through Cloudflare Access with one of the two email addresses set up for this household.',
+                    'Sign in through Cloudflare Access with one of the two email addresses set up for this assistant.',
                 },
                 401,
               );

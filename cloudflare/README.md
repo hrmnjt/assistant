@@ -1,6 +1,6 @@
 # Cloudflare runtime
 
-`worker.ts` is the only host for the household app. The Worker serves the built
+`worker.ts` is the only host for the assistant. The Worker serves the built
 client from `dist/` (single-page fallback, headers from `public/_headers`) and
 sends `/api/*` to one SQLite-backed Durable Object named `household`. There are
 no caller-chosen object names and no public registration. Setup, deployment and
