@@ -1,6 +1,6 @@
-# Runs the repository's own checks with fixture data only. After they pass on
-# main, the deploy job ships the Worker to Cloudflare; it is the only job that
-# uses secrets, and pull requests never reach it.
+# Runs the repository's own checks with fixture data only, without secrets.
+# Cloudflare's Workers Builds deploys main; require these checks on main so
+# only a green pull request is merged.
 name: CI
 
 on:
@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # A newer push supersedes a pull request's run; runs on main finish, so each deploys.
+  # A newer push supersedes a pull request's run; runs on main finish.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .node-version
       - uses: actions/cache@v4
         with:
           path: .cache/npm
@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .node-version
       - uses: actions/cache@v4
         with:
           path: .cache/npm
@@ -61,36 +61,3 @@ jobs:
             .cache/ui-report
             .cache/tests/browser-results
           retention-days: 7
-
-  deploy:
-    name: Deploy to Cloudflare
-    needs: [checks, browser]
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: production
-    # One deploy at a time, in push order.
-    concurrency:
-      group: deploy-production
-      cancel-in-progress: false
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-    steps:
-      - name: Check deployment secrets
-        run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "::error::Add the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets (see the README's Continuous deployment section)."
-            exit 1
-          fi
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: actions/cache@v4
-        with:
-          path: .cache/npm
-          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - run: npm ci --cache ./.cache/npm --ignore-scripts
-      # Code only: the Worker's secrets (npm run secrets) and dashboard variables are kept.
-      - run: npm run deploy
