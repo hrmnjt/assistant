@@ -13,7 +13,6 @@
     "test": "node scripts/run.mjs test && node scripts/cloudflare.mjs test",
     "test:ui": "node scripts/browser.mjs test",
     "test:ui:install": "node scripts/browser.mjs install chromium webkit",
-    "test:browser": "npm run build && node scripts/browser.mjs test --config tests/browser/playwright.config.ts",
     "deploy": "npm run build && node scripts/cloudflare.mjs deploy",
     "wrangler": "node scripts/cloudflare.mjs wrangler"
   },

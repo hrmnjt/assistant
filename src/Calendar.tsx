@@ -14,7 +14,10 @@ import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 
-const MonthCalendar = lazy(() => import('./MonthCalendar'));
+// Lazy for Suspense, but fetched at once so the month grid doesn't arrive late and shift the page.
+const loadMonth = () => import('./MonthCalendar');
+const MonthCalendar = lazy(loadMonth);
+void loadMonth();
 
 export function CalendarCard({
   calendar,

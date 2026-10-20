@@ -9,7 +9,7 @@ import type {
   CalendarOutcome,
 } from '../../src/types';
 
-export function snapshot(): Snapshot {
+function snapshot(): Snapshot {
   const date = DateTime.now().setZone('Asia/Dubai');
   return {
     me: { id: 'owner', name: 'Alex', username: 'alex@example.com' },
@@ -38,7 +38,7 @@ export function snapshot(): Snapshot {
         status: 'open',
         completedAt: null,
         completedBy: null,
-        missedDates: [date.minus({ days: 2 }).toISO()!, date.minus({ days: 3 }).toISO()!],
+        missedDates: [],
       },
       {
         id: 'task-2',
@@ -65,7 +65,7 @@ export function snapshot(): Snapshot {
       },
       { id: 'shared', title: 'Weekend plans', category: 'household', createdAt: date.toISO()! },
     ],
-    presence: [{ userId: 'partner', threadId: 'shared', typing: true }],
+    presence: [],
     notices: [
       {
         id: 'notice',
@@ -106,18 +106,14 @@ export function snapshot(): Snapshot {
   };
 }
 
+/** The API, stubbed in the page: what the app reads, and every call it makes. */
 export class HouseholdFixture {
   state = snapshot();
   signedIn = true;
-  offline = false;
-  /** Before the admin has added the two people. */
-  notSetUp = false;
   /** The admin page's side: its sign-in and the settings the admin makes. */
   admin = {
     token: 'fixture-admin-token-0123456789-abcdefgh',
     signedIn: false,
-    development: false,
-    unavailable: null as string | null,
     access: 'alex@example.com' as string | null,
     accessToken: true,
     people: [
@@ -128,13 +124,12 @@ export class HouseholdFixture {
       status: 'not-connected',
       name: null as string | null,
       account: null as string | null,
-      error: null as string | null,
+      error: null,
     },
-    ai: { connected: true, model: null as string | null },
+    ai: { connected: false, model: null as string | null },
   };
-  confirmationError = '';
-  confirmationStatus = 409;
-  calendarOutcome?: CalendarOutcome;
+  /** When set, confirming a preview meets this calendar conflict. */
+  calendarConflict?: CalendarOutcome;
   status: ChatStatus = { running: false, error: null, previews: [] };
   messages: Record<string, Message[]> = {
     'assistant-owner': [],
@@ -159,26 +154,10 @@ export class HouseholdFixture {
       this.calls.push({ path, body, method: request.method() });
       const json = (value: unknown, status = 200) => route.fulfill({ status, json: value });
       if (path.startsWith('/admin/')) return this.adminRoute(path, request.method(), body, json);
-      if (this.notSetUp)
-        return json(
-          {
-            error:
-              'The assistant isn’t set up yet: the admin adds the two of you on the admin page.',
-          },
-          503,
-        );
       if (path === '/state')
-        return this.offline
-          ? json({ error: 'Offline' }, 503)
-          : this.signedIn
-            ? json(this.state)
-            : json(
-                {
-                  error:
-                    'Sign in through Cloudflare Access with one of the two emails set for this assistant. If Cloudflare didn’t ask for your email first, turn on Access for the Worker on Cloudflare (Settings → Domains & Routes).',
-                },
-                401,
-              );
+        return this.signedIn
+          ? json(this.state)
+          : json({ error: 'Sign in through Cloudflare Access.' }, 401);
       if (path === '/presence' || path === '/notices/read') return json({ ok: true });
       if (path.endsWith('/assistant')) return json(this.status);
       if (path.endsWith('/messages')) {
@@ -194,56 +173,19 @@ export class HouseholdFixture {
         return json(this.messages[threadId] ?? []);
       }
       if (path.startsWith('/tasks/') && path.endsWith('/history')) return json([]);
+      if (path === '/calendar/refresh') return json(this.state.calendar);
       if (path === '/previews') {
-        if (request.method() === 'GET') return json(this.state.previews);
-        // Like the server, reject proposals built from an outdated record.
-        if (body.kind === 'task.update' || body.kind === 'task.delete') {
-          const task = this.state.tasks.find((item) => item.id === body.id);
-          if (!task) return json({ error: 'This task no longer exists.' }, 404);
-          if (task.revision !== body.revision)
-            return json({ error: 'This task changed. Refresh it and review a new preview.' }, 409);
-        }
-        if (body.kind === 'calendar.update' || body.kind === 'calendar.delete') {
-          const event = this.state.calendar.events.find((item) => item.id === body.id);
-          if (!event || event.etag !== body.etag)
-            return json(
-              { error: 'This appointment changed in iCloud. Refresh and review a new preview.' },
-              409,
-            );
-        }
+        // Like the server, reject an appointment preview built from an outdated ETag.
+        const event = this.state.calendar.events.find((item) => item.id === body.id);
+        if (body.kind === 'calendar.update' && event?.etag !== body.etag)
+          return json({ error: 'This appointment changed in iCloud.' }, 409);
         const id = crypto.randomUUID();
         this.proposals.set(id, body);
         const preview: Preview = {
           id,
           title: 'Review household change',
           expiresAt: new Date(Date.now() + 60000).toISOString(),
-          details: Object.entries(
-            body.task ?? body.event ?? body.preferences ?? { Change: body.kind },
-          )
-            .filter(([, v]) => v !== '')
-            .map(([key, value]) => ({
-              label:
-                (
-                  {
-                    title: 'Task',
-                    notes: 'Notes',
-                    ownerId: 'Who follows up',
-                    category: 'Space',
-                    dueAt: 'Due',
-                    schedule: 'Repeat',
-                  } as Record<string, string>
-                )[key] ?? key,
-              after:
-                value === null
-                  ? key === 'schedule'
-                    ? 'Just this once'
-                    : 'Not set'
-                  : key === 'ownerId'
-                    ? (this.state.people.find((p) => p.id === value)?.name ?? String(value))
-                    : typeof value === 'object'
-                      ? JSON.stringify(value)
-                      : String(value),
-            })),
+          details: [{ label: 'Change', after: body.kind }],
         };
         this.state.previews.push(preview);
         return json(preview);
@@ -251,24 +193,14 @@ export class HouseholdFixture {
       if (path.startsWith('/previews/')) {
         const id = path.split('/')[2],
           mutation = this.proposals.get(id)!;
-        if (request.method() === 'DELETE') {
-          this.state.previews = this.state.previews.filter((preview) => preview.id !== id);
-          this.proposals.delete(id);
-          return json({ ok: true });
-        }
-        if (path.endsWith('/dismiss')) {
-          this.state.previews = this.state.previews.filter((preview) => preview.id !== id);
-          this.proposals.delete(id);
-          return json({ ok: true });
-        }
-        if (this.confirmationError) {
-          const pending = this.state.previews.find((preview) => preview.id === id);
-          if (pending && this.calendarOutcome) pending.calendarOutcome = this.calendarOutcome;
+        if (path.endsWith('/confirm') && this.calendarConflict)
           return json(
-            { error: this.confirmationError, calendarOutcome: this.calendarOutcome },
-            this.confirmationStatus,
+            { error: 'Appointment changed', calendarOutcome: this.calendarConflict },
+            409,
           );
-        }
+        // Go back (DELETE), Dismiss result and Confirm all settle the preview.
+        this.state.previews = this.state.previews.filter((preview) => preview.id !== id);
+        if (!path.endsWith('/confirm')) return json({ ok: true });
         if (mutation.kind === 'task.create')
           this.state.tasks.push({
             ...mutation.task,
@@ -281,11 +213,6 @@ export class HouseholdFixture {
           });
         if (mutation.kind === 'task.complete')
           this.state.tasks.find((t) => t.id === mutation.id)!.status = 'completed';
-        if (mutation.kind === 'preferences.update')
-          this.state.preferences = {
-            ...mutation.preferences,
-            revision: this.state.preferences.revision + 1,
-          };
         if (mutation.kind === 'thread.create')
           this.state.threads.push({
             id,
@@ -293,10 +220,8 @@ export class HouseholdFixture {
             category: mutation.category,
             createdAt: new Date().toISOString(),
           });
-        this.state.previews = this.state.previews.filter((preview) => preview.id !== id);
         return json({ ok: true, targetId: id });
       }
-      if (path === '/calendar/refresh') return json(this.state.calendar);
       return json({ error: 'Unhandled fixture request: ' + path }, 500);
     });
   }
@@ -309,21 +234,10 @@ export class HouseholdFixture {
   ) {
     const admin = this.admin;
     if (path === '/admin/session') {
-      if (method === 'GET')
-        return json({
-          signedIn: admin.signedIn,
-          development: admin.development,
-          unavailable: admin.unavailable,
-        });
-      if (method === 'DELETE') {
-        admin.signedIn = false;
-        return json({ ok: true });
-      }
-      if (body.token !== admin.token) return json({ error: 'That admin token is not right.' }, 401);
-      admin.signedIn = true;
+      if (method === 'GET') return json({ signedIn: admin.signedIn });
+      admin.signedIn = method === 'POST' && body.token === admin.token;
       return json({ ok: true });
     }
-    if (!admin.signedIn) return json({ error: 'Sign in as the admin first.' }, 401);
     if (path === '/admin/state')
       return json({
         people: admin.people,
@@ -333,25 +247,10 @@ export class HouseholdFixture {
         calendar: admin.calendar,
       });
     if (path === '/admin/people') {
-      const [first, second] = body.people;
-      if (first.email === second.email)
-        return json({ error: 'Use a different email for each person.' }, 400);
       admin.people = admin.people.map((person, index) => ({ ...person, ...body.people[index] }));
       return json({ ok: true });
     }
-    if (path === '/admin/calendar' && method === 'DELETE') {
-      admin.calendar = { status: 'not-connected', name: null, account: null, error: null };
-      return json({ ok: true });
-    }
     if (path === '/admin/calendar') {
-      if (body.password !== 'abcd-efgh-ijkl-mnop')
-        return json(
-          {
-            error:
-              'iCloud did not accept that Apple ID and app-specific password, or could not be reached. Check them and try again.',
-          },
-          400,
-        );
       const calendars = [
         { name: 'Personal', url: 'https://caldav.icloud.com/1/calendars/mine/' },
         { name: 'Household', url: 'https://caldav.icloud.com/1/calendars/home/' },
@@ -371,16 +270,7 @@ export class HouseholdFixture {
         url: 'https://auth.openai.com/api/accounts/authorize?client_id=dynamic_agent_client&state=fixture-state',
       });
     if (path === '/admin/chatgpt/finish') {
-      if (!body.address.includes('state=fixture-state'))
-        return json(
-          { error: 'That address is not from this sign-in. Start again to try once more.' },
-          400,
-        );
-      admin.ai = { connected: true, model: null };
-      return json({ ok: true });
-    }
-    if (path === '/admin/chatgpt' && method === 'DELETE') {
-      admin.ai = { connected: false, model: null };
+      admin.ai.connected = body.address.includes('state=fixture-state');
       return json({ ok: true });
     }
     if (path === '/admin/models')
@@ -415,14 +305,14 @@ export const test = base.extend<{ household: HouseholdFixture }>({
 export { expect };
 
 /** Open a view the way a person would: the panel's tabs, else the sidebar (or the phone menu). */
-export async function navigate(page: Page, name: 'Today' | 'Tasks' | 'Calendar' | 'Settings') {
+export async function navigate(page: Page, name: 'Tasks' | 'Calendar') {
   const tabs = page.getByRole('group', { name: 'Views' });
   const nav = page.getByRole('navigation', { name: 'Main navigation' });
   const menu = page.getByRole('button', { name: 'Open menu' });
   const back = page.getByRole('button', { name: 'Back to chat' });
   // Wait for the app to show one of its ways in.
   await expect(nav.or(menu).or(tabs).or(back).first()).toBeVisible();
-  if (name !== 'Settings' && (await tabs.isVisible())) {
+  if (await tabs.isVisible()) {
     await tabs.getByRole('button', { name, exact: true }).click();
     return;
   }
