@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>assistant</title>
+    <meta name="theme-color" content="#f7f7f2" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#121411" media="(prefers-color-scheme: dark)" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body class="chat">
+    <header>
+      <h1>assistant</h1>
+      <a href="/admin">Admin</a>
+    </header>
+    <main id="messages"></main>
+    <p id="problem" class="error" role="alert" hidden></p>
+    <form id="composer">
+      <textarea name="text" rows="1" placeholder="Message" aria-label="Message" required></textarea>
+      <button>Send</button>
+    </form>
+  </body>
+</html>
