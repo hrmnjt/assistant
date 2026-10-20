@@ -12,8 +12,10 @@ import {
 } from './chatgpt';
 import type { Env } from './worker';
 
+type Thread = { id: number; title: string; at: number; updated: number };
 type Message = {
   id: number;
+  thread: number;
   role: 'user' | 'assistant';
   text: string;
   reasoning: string;
@@ -21,11 +23,16 @@ type Message = {
   at: number;
 };
 
-/** How many recent messages the model sees. */
+/** How many recent messages of a thread the model sees. */
 const historyLimit = 50;
 const signInLifetime = 10 * 60_000;
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
+/** A thread is titled with its first message, shortened. */
+const titleOf = (text: string) => {
+  const line = text.replace(/\s+/g, ' ').trim();
+  return line.length > 60 ? `${line.slice(0, 59)}…` : line;
+};
 
 /** A reply in progress, streamed to every page following it as lines of JSON. */
 class Reply {
@@ -33,6 +40,7 @@ class Reply {
   text = '';
   private listeners = new Set<WritableStreamDefaultWriter<Uint8Array>>();
   private encoder = new TextEncoder();
+  constructor(readonly thread: number) {}
   send(event: object, to: Iterable<WritableStreamDefaultWriter<Uint8Array>> = this.listeners) {
     const line = this.encoder.encode(`${JSON.stringify(event)}\n`);
     // A page that went away just stops listening; the reply carries on.
@@ -42,7 +50,8 @@ class Reply {
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
     this.listeners.add(writer);
-    this.send({ type: 'snapshot', reasoning: this.reasoning, text: this.text }, [writer]);
+    const snapshot = { thread: this.thread, reasoning: this.reasoning, text: this.text };
+    this.send({ type: 'snapshot', ...snapshot }, [writer]);
     return new Response(readable, {
       headers: { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' },
     });
@@ -53,36 +62,69 @@ class Reply {
   }
 }
 
-/** The one chat: its messages, the ChatGPT sign-in and the chosen model. */
+/** The chats: their threads and messages, the ChatGPT sign-in and the chosen model. */
 export class Chat extends DurableObject<Env> {
   private sql = this.ctx.storage.sql;
-  private reply?: Reply;
+  /** Replies in progress, at most one per thread. */
+  private replies = new Map<number, Reply>();
   private refreshing?: Promise<Credential>;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS threads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      updated INTEGER NOT NULL
+    )`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread INTEGER,
       role TEXT NOT NULL,
       text TEXT NOT NULL,
       reasoning TEXT NOT NULL DEFAULT '',
       error TEXT,
       at INTEGER NOT NULL
     )`);
+    // The first version kept a single conversation; it becomes the first thread.
+    const columns = this.sql.exec<{ name: string }>(`SELECT name FROM pragma_table_info('messages')`);
+    if (!columns.toArray().some((column) => column.name === 'thread'))
+      ctx.storage.transactionSync(() => {
+        this.sql.exec('ALTER TABLE messages ADD COLUMN thread INTEGER');
+        const [first] = this.sql
+          .exec<Message>(`SELECT * FROM messages WHERE role = 'user' ORDER BY id LIMIT 1`)
+          .toArray();
+        if (first) this.sql.exec('UPDATE messages SET thread = ?', this.newThread(first.text));
+      });
   }
 
   async fetch(request: Request) {
-    const route = `${request.method} ${new URL(request.url).pathname}`;
+    const { pathname } = new URL(request.url);
+    const id = Number(pathname.match(/^\/api\/threads\/(\d+)/)?.[1]);
+    const route = `${request.method} ${pathname.replace(/^\/api\/threads\/\d+/, '/api/threads/:id')}`;
     try {
       switch (route) {
-        case 'GET /api/chat':
-          return json({ messages: this.messages(), replying: Boolean(this.reply) });
-        case 'POST /api/chat':
-          return await this.send(request);
-        case 'POST /api/chat/retry':
-          return this.retry();
-        case 'GET /api/chat/stream':
-          return this.reply?.follow() ?? new Response(null, { status: 204 });
+        case 'GET /api/threads':
+          return json({ threads: this.threads() });
+        case 'POST /api/threads':
+          return await this.start(request);
+        case 'GET /api/threads/:id':
+          return json({
+            ...this.thread(id),
+            messages: this.sql
+              .exec<Message>('SELECT * FROM messages WHERE thread = ? ORDER BY id', id)
+              .toArray(),
+            replying: this.replies.has(id),
+          });
+        case 'DELETE /api/threads/:id':
+          this.remove(id);
+          return json({ ok: true });
+        case 'POST /api/threads/:id/messages':
+          return await this.send(id, request);
+        case 'POST /api/threads/:id/retry':
+          return this.retry(id);
+        case 'GET /api/threads/:id/stream':
+          return this.replies.get(id)?.follow() ?? new Response(null, { status: 204 });
         case 'GET /api/admin':
           return json({
             connected: Boolean(await this.ctx.storage.get('chatgpt')),
@@ -108,38 +150,90 @@ export class Chat extends DurableObject<Env> {
     }
   }
 
-  private messages() {
-    return this.sql.exec<Message>('SELECT * FROM messages ORDER BY id').toArray();
+  /** The threads, most recently active first. */
+  private threads() {
+    return this.sql
+      .exec<Thread>('SELECT * FROM threads ORDER BY updated DESC')
+      .toArray()
+      .map((thread) => ({ ...thread, replying: this.replies.has(thread.id) }));
   }
 
-  private async send(request: Request) {
+  private thread(id: number) {
+    const [thread] = this.sql.exec<Thread>('SELECT * FROM threads WHERE id = ?', id).toArray();
+    if (!thread) throw new Error('That chat no longer exists.');
+    return thread;
+  }
+
+  private newThread(firstMessage: string) {
+    const now = Date.now();
+    return this.sql
+      .exec<{ id: number }>(
+        'INSERT INTO threads (title, at, updated) VALUES (?, ?, ?) RETURNING id',
+        titleOf(firstMessage),
+        now,
+        now,
+      )
+      .one().id;
+  }
+
+  private remove(id: number) {
+    this.thread(id);
+    if (this.replies.has(id)) throw new Error('Wait for the reply to finish, then delete the chat.');
+    this.sql.exec('DELETE FROM messages WHERE thread = ?', id);
+    this.sql.exec('DELETE FROM threads WHERE id = ?', id);
+  }
+
+  private async text(request: Request) {
     const { text } = await request.json<{ text?: unknown }>();
     if (typeof text !== 'string' || !text.trim()) throw new Error('Write a message first.');
-    if (this.reply) return json({ error: 'Wait for the current reply.' }, 409);
-    this.sql.exec(
-      'INSERT INTO messages (role, text, at) VALUES (?, ?, ?)',
-      'user',
-      text.trim(),
-      Date.now(),
-    );
-    return this.answer();
+    return text.trim();
   }
 
-  /** Answer the last message again, replacing a failed reply. */
-  private retry() {
-    if (this.reply) return json({ error: 'Wait for the current reply.' }, 409);
+  private addMessage(thread: number, text: string) {
+    const now = Date.now();
+    this.sql.exec(
+      'INSERT INTO messages (thread, role, text, at) VALUES (?, ?, ?, ?)',
+      thread,
+      'user',
+      text,
+      now,
+    );
+    this.sql.exec('UPDATE threads SET updated = ? WHERE id = ?', now, thread);
+  }
+
+  /** Start a thread with its first message. */
+  private async start(request: Request) {
+    const text = await this.text(request);
+    const thread = this.newThread(text);
+    this.addMessage(thread, text);
+    return this.answer(thread);
+  }
+
+  private async send(thread: number, request: Request) {
+    const text = await this.text(request);
+    this.thread(thread);
+    if (this.replies.has(thread)) return json({ error: 'Wait for the current reply.' }, 409);
+    this.addMessage(thread, text);
+    return this.answer(thread);
+  }
+
+  /** Answer a thread's last message again, replacing a failed reply. */
+  private retry(thread: number) {
+    this.thread(thread);
+    if (this.replies.has(thread)) return json({ error: 'Wait for the current reply.' }, 409);
     const [last] = this.sql
-      .exec<Message>('SELECT * FROM messages ORDER BY id DESC LIMIT 1')
+      .exec<Message>('SELECT * FROM messages WHERE thread = ? ORDER BY id DESC LIMIT 1', thread)
       .toArray();
     if (last?.role === 'assistant' && last.error)
       this.sql.exec('DELETE FROM messages WHERE id = ?', last.id);
     else if (last?.role !== 'user') throw new Error('There is nothing to retry.');
-    return this.answer();
+    return this.answer(thread);
   }
 
   /** Start a reply and follow it; it finishes and is saved even if the page goes away. */
-  private answer() {
-    const reply = (this.reply = new Reply());
+  private answer(thread: number) {
+    const reply = new Reply(thread);
+    this.replies.set(thread, reply);
     const response = reply.follow();
     this.ctx.waitUntil(this.run(reply));
     return response;
@@ -152,7 +246,9 @@ export class Chat extends DurableObject<Env> {
       if (!model) throw new Error('Choose a model on the admin page.');
       const turns = this.sql
         .exec<Message>(
-          `SELECT * FROM messages WHERE error IS NULL AND text != '' ORDER BY id DESC LIMIT ?`,
+          `SELECT * FROM messages WHERE thread = ? AND error IS NULL AND text != ''
+           ORDER BY id DESC LIMIT ?`,
+          reply.thread,
           historyLimit,
         )
         .toArray()
@@ -166,17 +262,21 @@ export class Chat extends DurableObject<Env> {
     } catch (failure) {
       error = failure instanceof Error ? failure.message : 'ChatGPT couldn’t answer.';
     }
+    const now = Date.now();
     const message = this.sql
       .exec<Message>(
-        'INSERT INTO messages (role, text, reasoning, error, at) VALUES (?, ?, ?, ?, ?) RETURNING *',
+        `INSERT INTO messages (thread, role, text, reasoning, error, at)
+         VALUES (?, ?, ?, ?, ?, ?) RETURNING *`,
+        reply.thread,
         'assistant',
         reply.text,
         reply.reasoning.trim(),
         error,
-        Date.now(),
+        now,
       )
       .one();
-    this.reply = undefined;
+    this.sql.exec('UPDATE threads SET updated = ? WHERE id = ?', now, reply.thread);
+    this.replies.delete(reply.thread);
     reply.send({ type: 'done', message });
     reply.end();
   }
