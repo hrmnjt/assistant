@@ -38,8 +38,9 @@ host, and `src/` is the client.
 
 Everything happens from the phone. Features are requested in a Claude Code chat,
 which opens pull requests on GitHub; they are reviewed and merged ("Rebase and
-merge") in the GitHub app; GitHub Actions tests each merge to `main` and deploys
-it to the `assistant` Worker; the app is used in Safari and installed on each
+merge") in the GitHub app once GitHub Actions has tested them; Cloudflare builds
+each merge to `main` and deploys it to the `assistant` Worker; the app is used
+in Safari and installed on each
 Home Screen, behind Cloudflare Access. Running locally is optional, for
 checking something specific. Nothing needs a computer: settings, ChatGPT
 included, are made on the app's admin page.
@@ -100,16 +101,23 @@ There is no export or backup command yet.
 
 ### Continuous deployment
 
-After the checks pass on `main`, GitHub Actions deploys the Worker (code only;
-the Worker's variables and secrets are kept). It needs two repository secrets
-(Settings → Secrets and variables → Actions): `CLOUDFLARE_ACCOUNT_ID`, the
-account ID from the Cloudflare dashboard, and `CLOUDFLARE_API_TOKEN`, a token
-made from the "Edit Cloudflare Workers" template for that account. The deploy
-job runs in the `production` environment, one deploy at a time; add a required
-reviewer there to approve each deploy. Run the CI workflow manually to redeploy
-`main`. Use this as the only deployment path: if the repository is also
-connected to Cloudflare's own Git builds, disconnect them, so a push does not
-deploy twice or to a second Worker.
+Cloudflare's Workers Builds deploys `main`: the `assistant` Worker is connected
+to this repository, and each push to `main` is built and deployed by Cloudflare,
+code only (the Worker's variables and secrets are kept). No Cloudflare
+credentials live on GitHub. To connect it, open the Worker's Settings → Build,
+connect the GitHub repository and set:
+
+- Branch: `main`
+- Build command: `npm ci --cache ./.cache/npm --ignore-scripts`
+- Deploy command: `npm run deploy`
+- Root directory: the repository root; leave builds for other branches off.
+
+`.node-version` pins the build's Node.js version. Workers Builds does not wait
+for GitHub Actions, so protect `main` on GitHub (Settings → Branches) by
+requiring the "Typecheck, Worker bundle, and tests" and "Browser checks" status
+checks: then only a green pull request can be merged. To redeploy, retry the
+latest build on the Worker's Deployments page. Use this as the only deployment
+path, to the one `assistant` Worker.
 
 ### Accounts and settings
 
@@ -156,7 +164,7 @@ responses, and `npm run test:browser` for preview recovery against the built UI
 and the real API handler, as a development server, with a synthetic calendar. No suite loads
 `cloudflare/.dev.vars` values or calls live providers. Browser binaries, reports,
 and test data stay in `.cache/`. GitHub Actions runs these checks on pull
-requests and `main`, without secrets; on `main` a deploy follows.
+requests and `main`, without secrets; Cloudflare deploys `main`.
 
 The household database records its schema version and applies ordered
 migrations at startup; a database written by a newer app version is refused.
@@ -451,8 +459,8 @@ does not imply public registration or access to household data. Use a stable HTT
 installable app's service worker and push features. Enable notifications after
 installing on each iPhone Home Screen and obtaining permission. The app keeps its
 push keys stable itself. Integrations are connected once per deployment, in the
-app; local tests use isolated fixture credentials/data, not implicit copies of
-production secrets.
+Worker's variables and secrets; local tests use isolated fixture
+credentials/data, not implicit copies of production secrets.
 
 Live iCloud, ChatGPT eligibility/inference, and device acceptance remain pending
 user configuration and validation (#24, #36). Hosted ChatGPT eligibility is not
