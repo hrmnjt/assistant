@@ -36,6 +36,7 @@ const commands = {
       '--outdir',
       resolve('.cache/cloudflare/bundle'),
     ],
+    ['scripts/bundle-check.mjs'],
   ],
   dev: [
     [

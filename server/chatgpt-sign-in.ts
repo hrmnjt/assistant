@@ -1,4 +1,4 @@
-import type { Credential } from '@earendil-works/pi-ai';
+import type { OAuthCredential } from '@earendil-works/pi-ai';
 import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { DomainError } from './errors.js';
@@ -62,32 +62,25 @@ export function returnedCode(address: string, pending: PendingSignIn) {
 const tokens = z.object({
   access_token: z.string().min(1),
   refresh_token: z.string().min(1),
-  id_token: z.string().min(1),
   scope: z.string(),
   expires_in: z.number().positive(),
 });
 
-/** Exchange the returned code for tokens, server to server; the verifier never left the server. */
-export async function finishSignIn(
-  returned: { code: string; clientId: string },
-  pending: PendingSignIn,
+/** Ask OpenAI for tokens, server to server, and keep them as the credential. */
+async function requestTokens(
+  grant: Record<string, string>,
+  clientId: string,
   now: number,
-): Promise<Credential> {
+  signal: AbortSignal,
+): Promise<OAuthCredential> {
   const response = await fetch(tokenUrl, {
     method: 'POST',
     headers: {
       accept: 'application/json',
       'content-type': 'application/x-www-form-urlencoded',
     },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      client_id: returned.clientId,
-      code: returned.code,
-      code_verifier: pending.verifier,
-      redirect_uri: redirectUri,
-      resource,
-    }),
-    signal: AbortSignal.timeout(15_000),
+    body: new URLSearchParams({ ...grant, client_id: clientId, resource }),
+    signal,
   }).catch(() => undefined);
   const parsed = tokens.safeParse(response?.ok ? await response.json().catch(() => null) : null);
   // Never pass on OpenAI's own error text, which can echo request details.
@@ -104,7 +97,38 @@ export async function finishSignIn(
     access: parsed.data.access_token,
     refresh: parsed.data.refresh_token,
     expires: now + parsed.data.expires_in * 1000 - expiryMargin,
-    clientId: returned.clientId,
+    clientId,
     scopes,
   };
+}
+
+/** Exchange the returned code for tokens; the verifier never left the server. */
+export function finishSignIn(
+  returned: { code: string; clientId: string },
+  pending: PendingSignIn,
+  now: number,
+) {
+  return requestTokens(
+    {
+      grant_type: 'authorization_code',
+      code: returned.code,
+      code_verifier: pending.verifier,
+      redirect_uri: redirectUri,
+    },
+    returned.clientId,
+    now,
+    AbortSignal.timeout(15_000),
+  );
+}
+
+/** Exchange the refresh token for fresh tokens, as pi-ai's OpenAI OAuth does. */
+export function refreshSignIn(credential: OAuthCredential, signal: AbortSignal) {
+  const clientId = typeof credential.clientId === 'string' ? credential.clientId : '';
+  if (!clientId) throw new DomainError('Connect ChatGPT again on the admin page.', 409);
+  return requestTokens(
+    { grant_type: 'refresh_token', refresh_token: credential.refresh },
+    clientId,
+    Date.now(),
+    signal,
+  );
 }
