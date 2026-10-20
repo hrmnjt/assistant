@@ -16,6 +16,11 @@
   the user merges them in the GitHub app, and `main` deploys automatically.
   Running the same application locally with Wrangler (`npm run dev`) is
   optional, for checking something specific.
+- Expose no more than the app needs. Never commit names, emails, addresses,
+  account identifiers or secrets; they belong in the Worker's variables and
+  secrets. Do not add review reports, vulnerability write-ups or reproduction
+  notes to the repository; fix the problem, and track open work in issues
+  without exploit details.
 
 ## Pull request workflow
 
