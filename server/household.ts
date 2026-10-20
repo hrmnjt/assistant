@@ -46,33 +46,21 @@ const defaultPreferences = {
   morning: { enabled: true, time: '08:00' },
   evening: { enabled: true, time: '18:00' },
 };
-/** One of the two people; a development server has no sign-in, so no emails. */
+/** One of the two people; a development server has no sign-in, so emails are optional. */
 export type Member = { name: string; email?: string };
 
-/**
- * Both people from the Worker's variables (cloudflare/.dev.vars for `npm run
- * dev`). A deployment needs both names and emails; a development server only
- * the names. Missing or invalid values stop the app with a message naming them.
- */
-export function configuredPeople(
-  vars: Partial<Record<string, string>>,
-  development: boolean,
-): [Member, Member] {
-  const missing: string[] = [];
-  const members = ([1, 2] as const).map((n): Member => {
-    const name = personName.safeParse(vars[`PERSON_${n}_NAME`] ?? '');
-    const address = email.safeParse(vars[`PERSON_${n}_EMAIL`] ?? '');
-    if (!name.success) missing.push(`PERSON_${n}_NAME`);
-    if (!development && !address.success) missing.push(`PERSON_${n}_EMAIL`);
-    return { name: name.data ?? '', email: development ? undefined : address.data };
-  });
-  const where = development
-    ? 'in cloudflare/.dev.vars'
-    : 'in the Worker’s Settings → Variables and Secrets on Cloudflare';
-  if (missing.length) throw new Error(`Configure ${missing.join(', ')} ${where}.`);
-  if (members[0].email && members[0].email === members[1].email)
-    throw new Error(`Configure a different email for each person ${where}.`);
-  return [members[0], members[1]];
+/** Both people as the admin enters them; a deployment needs both emails, all different. */
+export function peopleInput(development: boolean) {
+  const member = z
+    .object({ name: personName, email: development ? email.optional() : email })
+    .strict();
+  return z
+    .object({ people: z.tuple([member, member]) })
+    .strict()
+    .refine(
+      ({ people: [first, second] }) => !first.email || first.email !== second.email,
+      'Use a different email for each person.',
+    );
 }
 
 /**
@@ -140,17 +128,17 @@ export class Household {
       },
     });
   }
-  /** The two people: `owner` is person 1 in the Worker's variables, `partner` person 2. */
+  /** The two people, once the admin has added them: `owner` is the first, `partner` the second. */
   async people(q: Executor = this.db): Promise<Person[]> {
     return q.all<Person>(
       "SELECT id, username, name FROM users WHERE id IN ('owner','partner') ORDER BY id",
     );
   }
   /**
-   * Apply both people from the Worker's variables at every start, with their
-   * settings and assistant chats. Each keeps their id, so a changed name or
-   * email keeps their records. Names and emails are never in the repository;
-   * only these two emails are recognized.
+   * Save both people as the admin entered them, with their settings and
+   * assistant chats. Each keeps their id, so a changed name or email keeps
+   * their records. Names and emails live only in this database; only these
+   * two emails are recognized.
    */
   async configure([owner, partner]: readonly [Member, Member]) {
     await this.db.transaction(async (tx) => {
@@ -174,6 +162,9 @@ export class Household {
       }
       await this.spaces(tx);
     });
+  }
+  async ensureSpaces() {
+    await this.db.transaction((tx) => this.spaces(tx));
   }
   private async spaces(tx: Executor) {
     for (const person of await this.people(tx))

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Row, Store } from './database.js';
-import type { Auth } from './auth.js';
+import { identityHeader, type Auth } from './auth.js';
+import { handleAdmin, type AdminAuth } from './admin.js';
 import { previewOwner } from './changes.js';
 import { DomainError } from './errors.js';
 import type { Household } from './household.js';
@@ -11,7 +12,7 @@ import type { ApiRoute, Plugin } from './plugin.js';
 import { CalendarOutcomeError } from './plugins/calendar/service.js';
 import { recoverablePreviews } from './preview-recovery.js';
 import { body, json, RequestError } from './http.js';
-import { Settings } from './settings.js';
+import type { Settings } from './settings.js';
 import type { Snapshot } from '../src/types.js';
 
 /** The assistant behind `/api`: one instance per runtime. */
@@ -20,8 +21,12 @@ export type App = {
   auth: Auth;
   household: Household;
   conversations: Conversations;
-  /** The assistant's model, set in the Worker's variables. */
+  /** The assistant's model, chosen by the admin. */
   assistantModel: AssistantModel;
+  /** The admin's sign-in, separate from the two people's. */
+  admin: AdminAuth;
+  /** Settings the admin makes, kept in the app's storage. */
+  settings: Settings;
   notices: Notices;
   /** Features beyond the conversation: tasks, the calendar, the dashboard. */
   plugins: readonly Plugin[];
@@ -37,7 +42,16 @@ export async function handle(app: App, request: Request): Promise<Response> {
     if (url.pathname === '/api/health' && request.method === 'GET')
       return json({ ok: app.conversations.healthy });
     if (!auth.writeAllowed(request)) throw new RequestError('Request origin is not allowed.', 403);
+    if (url.pathname === '/api/admin' || url.pathname.startsWith('/api/admin/'))
+      return await handleAdmin(app, request);
     const me = await auth.caller(request);
+    // Someone Access signed in (or anyone, in development), before the admin added the two people.
+    const signedIn = auth.mode === 'development' || request.headers.has(identityHeader);
+    if (!me && signedIn && !(await app.household.people()).length)
+      throw new RequestError(
+        'The assistant isn’t set up yet: the admin adds the two of you on the admin page.',
+        503,
+      );
     if (!me)
       throw new RequestError(
         'Sign in through Cloudflare Access with one of the two emails set for this assistant. If Cloudflare didn’t ask for your email first, turn on Access for the Worker on Cloudflare (Settings → Domains & Routes).',
@@ -129,8 +143,6 @@ function routes(app: App): ApiRoute[] {
       }
       return json(state);
     }),
-    // The account's models, to pick one for CHATGPT_MODEL.
-    route('GET', /^\/api\/assistant\/models$/, async () => json(await assistantModel.catalog())),
     route('GET', /^\/api\/previews$/, async (_request, me) =>
       json(await recoverablePreviews(db, me.id, household.clock())),
     ),
@@ -245,7 +257,7 @@ function routes(app: App): ApiRoute[] {
         JSON.stringify(value),
       );
       // The app's own address, as Web Push's contact.
-      await new Settings(db).set('origin', auth.served(request));
+      await app.settings.set('origin', auth.served(request));
       return json({ ok: true });
     }),
     route('DELETE', /^\/api\/push\/subscription$/, async (request, me) => {

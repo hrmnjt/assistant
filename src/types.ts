@@ -148,7 +148,7 @@ export type Snapshot = {
   notices: Notice[];
   integrations: {
     calendar: CalendarSnapshot['status'];
-    /** `needs-model`: ChatGPT is connected, but CHATGPT_MODEL is missing or unsupported. */
+    /** `needs-model`: ChatGPT is connected and the admin still chooses a model. */
     ai: 'not-connected' | 'needs-model' | 'configured';
   };
   calendar: CalendarSnapshot;

@@ -12,7 +12,6 @@ import type {
 } from '../../../src/types.js';
 import type { Executor, Row, Store } from '../../database.js';
 import { DomainError } from '../../errors.js';
-import { Settings } from '../../settings.js';
 import type { CalendarResource, CalendarTransport } from './caldav.js';
 import {
   createEventData,
@@ -101,19 +100,8 @@ export class CalendarService {
     private transport?: CalendarTransport,
     private clock: () => Date = () => new Date(),
   ) {}
-  /**
-   * Show the last cached calendar until the first refresh completes. Given
-   * which calendar the Worker's variables name, a different one (or none) than
-   * last time drops the previous calendar's cached appointments instead.
-   */
-  async load(calendar?: string) {
-    const settings = new Settings(this.db);
-    if (calendar !== undefined && (await settings.get<string>('calendar')) !== calendar)
-      await this.db.transaction(async (tx) => {
-        await tx.run('DELETE FROM calendar_cache');
-        await tx.run('DELETE FROM calendar_state');
-        await settings.set('calendar', calendar, tx);
-      });
+  /** Show the last cached calendar until the first refresh completes. */
+  async load() {
     const saved = await this.db.get<Row>('SELECT * FROM calendar_state WHERE id=1');
     if (saved && this.transport)
       this.state = {
@@ -127,6 +115,26 @@ export class CalendarService {
   }
   get connected() {
     return Boolean(this.transport);
+  }
+  /**
+   * Switch to another calendar connection, or to none. The previous
+   * calendar's cached appointments are cleared; a new one is read right away.
+   */
+  async connect(transport?: CalendarTransport) {
+    await this.idle();
+    this.transport = transport;
+    await this.db.transaction(async (tx) => {
+      await tx.run('DELETE FROM calendar_cache');
+      await tx.run('DELETE FROM calendar_state');
+    });
+    this.state = {
+      status: 'not-connected',
+      name: 'Household',
+      syncedAt: null,
+      error: null,
+      events: [],
+    };
+    await this.sync();
   }
   snapshot(): CalendarSnapshot {
     const base = DateTime.fromISO(this.state.syncedAt ?? this.clock().toISOString(), {

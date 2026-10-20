@@ -23,13 +23,27 @@ function allowedICloudUrl(value: string) {
   return url;
 }
 
+/** An iCloud account: the Apple ID and an app-specific password, never the account password. */
+export type CalendarAccount = { username: string; password: string };
+/** One of the account's calendars that holds events. */
+export type CalendarChoice = { name: string; url: string };
+/** Opens calendar connections; tests can supply a stand-in for iCloud. */
+export type CalendarConnector = {
+  calendars(account: CalendarAccount): Promise<CalendarChoice[]>;
+  open(account: CalendarAccount & { calendarUrl: string }): CalendarTransport;
+};
+export const iCloud: CalendarConnector = {
+  calendars: (account) => new ICloudTransport({ ...account, calendarUrl: '' }).calendars(),
+  open: (account) => new ICloudTransport(account),
+};
+
 export class ICloudTransport implements CalendarTransport {
   private client: DAVClient;
   private selected?: DAVCalendar;
   private connecting?: Promise<DAVCalendar>;
   private authorization: string;
-  /** An Apple ID, an app-specific password (never the account password), and a calendar's name. */
-  constructor(private config: { username: string; password: string; calendarName: string }) {
+  /** An Apple ID, an app-specific password (never the account password), and the chosen calendar. */
+  constructor(private config: CalendarAccount & { calendarUrl: string }) {
     this.authorization = `Basic ${Buffer.from(`${config.username}:${config.password}`).toString('base64')}`;
     const safeFetch: typeof fetch = async (input, init) => {
       let target = allowedICloudUrl(input instanceof Request ? input.url : String(input));
@@ -58,21 +72,28 @@ export class ICloudTransport implements CalendarTransport {
     this.fetch = safeFetch;
   }
   private fetch: typeof fetch;
+  /** The account's calendars that hold events, to choose one. */
+  async calendars(): Promise<CalendarChoice[]> {
+    await this.client.login({ loadCollections: false, loadObjects: false });
+    return (await this.client.fetchCalendars())
+      .filter((calendar) => !calendar.components || calendar.components.includes('VEVENT'))
+      .map((calendar) => {
+        allowedICloudUrl(calendar.url);
+        // The exact URL, as connecting later matches it.
+        return { name: String(calendar.displayName), url: calendar.url };
+      });
+  }
   private async calendar() {
     if (this.selected) return this.selected;
     if (!this.connecting)
       this.connecting = (async () => {
         await this.client.login({ loadCollections: false, loadObjects: false });
-        const all = (await this.client.fetchCalendars()).filter(
-          (calendar) => !calendar.components || calendar.components.includes('VEVENT'),
+        const matches = (await this.client.fetchCalendars()).filter(
+          (calendar) => calendar.url === this.config.calendarUrl,
         );
-        const name = this.config.calendarName;
-        const matches = all.filter((calendar) => String(calendar.displayName) === name);
         if (matches.length !== 1)
           throw new DomainError(
-            matches.length
-              ? `More than one iCloud calendar is named ${name}. Rename one in Apple Calendar.`
-              : `Set ICLOUD_CALENDAR to one of your iCloud calendars: ${all.map((calendar) => String(calendar.displayName)).join(', ')}.`,
+            'The chosen iCloud calendar was not found. Connect the calendar again on the admin page.',
             503,
           );
         allowedICloudUrl(matches[0].url);
@@ -193,7 +214,7 @@ export class ICloudTransport implements CalendarTransport {
       );
     if (response.status === 401 || response.status === 403)
       throw new DomainError(
-        'iCloud refused this request. Check ICLOUD_USERNAME and ICLOUD_APP_PASSWORD on the Worker, and that this Apple ID may edit the calendar.',
+        'iCloud refused this request. Check the calendar connection on the admin page, and that its Apple ID may edit the calendar.',
         503,
       );
     throw new DomainError(

@@ -68,44 +68,9 @@ import {
   TaskCollection,
 } from '@/components/app-patterns';
 import { followSystemAppearance, saveAppearance, savedAppearance, type Appearance } from './theme';
+import { api } from './api';
+import { AdminApp } from './Admin';
 import './styles.css';
-
-async function api<T>(
-  path: string,
-  body?: unknown,
-  method = body === undefined ? 'GET' : 'POST',
-  init: RequestInit = {},
-): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    ...init,
-    method,
-    credentials: 'same-origin',
-    // Cloudflare Access redirects requests to its sign-in page once a sign-in ends.
-    redirect: 'manual',
-    headers: { 'Content-Type': 'application/json', 'X-Household-Client': '1' },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
-  if (response.type === 'opaqueredirect')
-    throw Object.assign(new Error('Your sign-in has ended. Sign in again to continue.'), {
-      status: 401,
-    });
-  // An error can come from Cloudflare rather than the app, without a JSON body.
-  const value = response.ok ? await response.json() : await response.json().catch(() => ({}));
-  if (!response.ok)
-    throw Object.assign(
-      new Error(
-        value.error ||
-          (response.status === 401
-            ? 'Your sign-in has ended. Sign in again to continue.'
-            : 'Unable to reach the assistant.'),
-      ),
-      {
-        status: response.status,
-        calendarOutcome: value.calendarOutcome,
-      },
-    );
-  return value;
-}
 
 function App() {
   const [state, setState] = useState<Snapshot | null>(null);
@@ -1356,10 +1321,9 @@ function App() {
                     {state.integrations.ai === 'configured'
                       ? 'Eligible AI requests use the connected ChatGPT plan. Messages in this topic and the tasks, settings, and appointments the assistant reads are sent to OpenAI. Every proposed change still needs your confirmation.'
                       : state.integrations.ai === 'needs-model'
-                        ? 'ChatGPT is connected. Set CHATGPT_MODEL in the Worker’s variables on Cloudflare to one of the account’s models.'
-                        : 'Connect ChatGPT from the Mac: run npm run ai:connect -- --production, then npm run secrets. You can keep using shared messages, tasks, and the calendar meanwhile.'}
+                        ? 'ChatGPT is connected. The admin still chooses its model on the admin page.'
+                        : 'The admin connects ChatGPT on the admin page. You can keep using shared messages, tasks, and the calendar meanwhile.'}
                   </p>
-                  {state.integrations.ai !== 'not-connected' && <ModelList />}
                   <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">
                     Manage ChatGPT usage
                   </a>
@@ -1821,8 +1785,8 @@ function Welcome({ children }: { children: React.ReactNode }) {
 
 /**
  * Cloudflare Access signs people in, so the app shows this only when that
- * sign-in has ended or names another email, when Access is not on, or when a
- * Worker variable the app needs is missing.
+ * sign-in has ended or names another email, when Access is not on, or before
+ * the admin has added the two people.
  */
 function SignedOut({ status, message }: { status: number; message: string }) {
   return (
@@ -1838,15 +1802,13 @@ function SignedOut({ status, message }: { status: number; message: string }) {
           <ArrowRight size={17} />
         </Button>
         {status === 401 && <a href="/cdn-cgi/access/logout">Use a different email</a>}
+        {status === 503 && <a href="/admin">Open the admin page</a>}
       </div>
     </Welcome>
   );
 }
 
-/** Where a Worker variable is set, for the hints below. */
-const workerVariables = 'the Worker’s Settings → Variables and Secrets on Cloudflare';
-
-/** The shared iCloud calendar's status; the account comes from the Worker's variables. */
+/** The shared iCloud calendar's status; the admin connects it. */
 function CalendarSettings({ state }: { state: Snapshot }) {
   return (
     <Card className="settings-card">
@@ -1855,7 +1817,7 @@ function CalendarSettings({ state }: { state: Snapshot }) {
       </h2>
       <p className="muted">
         {state.integrations.calendar === 'not-connected'
-          ? `To connect the shared iCloud calendar, add ICLOUD_USERNAME (the Apple ID), ICLOUD_APP_PASSWORD (an app-specific password, never the Apple ID password) and ICLOUD_CALENDAR (the calendar’s name) in ${workerVariables}.`
+          ? 'The admin connects the shared iCloud calendar on the admin page.'
           : state.integrations.calendar === 'connected'
             ? `Connected to ${state.calendar.name}.`
             : (state.calendar.error ?? 'The shared calendar could not be refreshed.')}
@@ -1864,53 +1826,7 @@ function CalendarSettings({ state }: { state: Snapshot }) {
   );
 }
 
-/** The connected ChatGPT account's models, to copy one into CHATGPT_MODEL. */
-function ModelList() {
-  const [catalog, setCatalog] = useState<{
-    current: string | null;
-    models: { id: string; name: string }[];
-  } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  return (
-    <div className="form">
-      {catalog ? (
-        <ul className="model-list">
-          {catalog.models.map((model) => (
-            <li key={model.id}>
-              {model.name} · <code>{model.id}</code>
-              {model.id === catalog.current && ' (in use)'}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <Button
-          variant="outline"
-          disabled={busy}
-          onClick={() => {
-            setBusy(true);
-            setError('');
-            void api<{ current: string | null; models: { id: string; name: string }[] }>(
-              '/assistant/models',
-            )
-              .then(setCatalog)
-              .catch((problem) => setError((problem as Error).message))
-              .finally(() => setBusy(false));
-          }}
-        >
-          Show the account’s models
-        </Button>
-      )}
-      {error && (
-        <p className="field-error" role="alert">
-          {error}
-        </p>
-      )}
-    </div>
-  );
-}
-
-/** The two people, from the Worker's variables. */
+/** The two people; the admin changes their names and emails. */
 function PeopleSettings({ state }: { state: Snapshot }) {
   return (
     <Card className="settings-card">
@@ -1922,8 +1838,7 @@ function PeopleSettings({ state }: { state: Snapshot }) {
         {state.signIn === 'cloudflare-access' && ` You’re signed in as ${state.me.username}.`}
       </p>
       <p className="small muted">
-        Names and emails are PERSON_1_NAME, PERSON_1_EMAIL, PERSON_2_NAME and PERSON_2_EMAIL in{' '}
-        {workerVariables}. Cloudflare Access must allow both emails.
+        The admin changes names and emails on the <a href="/admin">admin page</a>.
       </p>
     </Card>
   );
@@ -2263,4 +2178,6 @@ function PushSettings({ onError }: { onError: (message: string) => void }) {
 followSystemAppearance();
 if ('serviceWorker' in navigator)
   void navigator.serviceWorker.register('/sw.js').catch(() => undefined);
-createRoot(document.getElementById('root')!).render(<App />);
+// The admin page is its own app at /admin, with its own sign-in.
+const adminPage = location.pathname === '/admin' || location.pathname.startsWith('/admin/');
+createRoot(document.getElementById('root')!).render(adminPage ? <AdminApp /> : <App />);

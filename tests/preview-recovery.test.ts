@@ -6,6 +6,7 @@ import { Auth } from '../server/auth.js';
 import { CalendarService } from '../server/plugins/calendar/service.js';
 import { Conversations } from '../server/conversations.js';
 import { recoverablePreviews } from '../server/preview-recovery.js';
+import { AdminAuth } from '../server/admin.js';
 import { updateEventData } from '../server/plugins/calendar/icalendar.js';
 import type { CalendarResource, CalendarTransport } from '../server/plugins/calendar/caldav.js';
 import type { Preview, Snapshot } from '../src/types.js';
@@ -155,6 +156,8 @@ test('authenticated state/list endpoints restore only the actor previews and nev
     household: parts.household,
     conversations,
     assistantModel: parts.assistantModel,
+    admin: new AdminAuth(f.db, undefined, true),
+    settings: parts.settings,
     notices: parts.notices,
     plugins: parts.plugins,
   };

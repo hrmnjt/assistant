@@ -110,9 +110,27 @@ export class HouseholdFixture {
   state = snapshot();
   signedIn = true;
   offline = false;
-  model: string | null = null;
-  /** A Worker variable the app needs is missing, so it cannot start. */
-  configuration: string | null = null;
+  /** Before the admin has added the two people. */
+  notSetUp = false;
+  /** The admin page's side: its sign-in and the settings the admin makes. */
+  admin = {
+    token: 'fixture-admin-token-0123456789-abcdefgh',
+    signedIn: false,
+    development: false,
+    unavailable: null as string | null,
+    access: 'alex@example.com' as string | null,
+    people: [
+      { id: 'owner', name: 'Alex', email: 'alex@example.com' },
+      { id: 'partner', name: 'Sam', email: 'sam@example.com' },
+    ],
+    calendar: {
+      status: 'not-connected',
+      name: null as string | null,
+      account: null as string | null,
+      error: null as string | null,
+    },
+    ai: { connected: true, model: null as string | null },
+  };
   confirmationError = '';
   confirmationStatus = 409;
   calendarOutcome?: CalendarOutcome;
@@ -139,7 +157,15 @@ export class HouseholdFixture {
       const body = request.postDataJSON();
       this.calls.push({ path, body, method: request.method() });
       const json = (value: unknown, status = 200) => route.fulfill({ status, json: value });
-      if (this.configuration) return json({ error: this.configuration }, 503);
+      if (path.startsWith('/admin/')) return this.adminRoute(path, request.method(), body, json);
+      if (this.notSetUp)
+        return json(
+          {
+            error:
+              'The assistant isn’t set up yet: the admin adds the two of you on the admin page.',
+          },
+          503,
+        );
       if (path === '/state')
         return this.offline
           ? json({ error: 'Offline' }, 503)
@@ -270,16 +296,87 @@ export class HouseholdFixture {
         return json({ ok: true, targetId: id });
       }
       if (path === '/calendar/refresh') return json(this.state.calendar);
-      if (path === '/assistant/models')
-        return json({
-          current: this.model,
-          models: [
-            { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
-            { id: 'gpt-6.1-mini', name: 'GPT-6.1 Mini' },
-          ],
-        });
       return json({ error: 'Unhandled fixture request: ' + path }, 500);
     });
+  }
+
+  private adminRoute(
+    path: string,
+    method: string,
+    body: any,
+    json: (value: unknown, status?: number) => Promise<void>,
+  ) {
+    const admin = this.admin;
+    if (path === '/admin/session') {
+      if (method === 'GET')
+        return json({
+          signedIn: admin.signedIn,
+          development: admin.development,
+          unavailable: admin.unavailable,
+        });
+      if (method === 'DELETE') {
+        admin.signedIn = false;
+        return json({ ok: true });
+      }
+      if (body.token !== admin.token) return json({ error: 'That admin token is not right.' }, 401);
+      admin.signedIn = true;
+      return json({ ok: true });
+    }
+    if (!admin.signedIn) return json({ error: 'Sign in as the admin first.' }, 401);
+    if (path === '/admin/state')
+      return json({
+        people: admin.people,
+        access: admin.access,
+        ai: admin.ai,
+        calendar: admin.calendar,
+      });
+    if (path === '/admin/people') {
+      const [first, second] = body.people;
+      if (first.email === second.email)
+        return json({ error: 'Use a different email for each person.' }, 400);
+      admin.people = admin.people.map((person, index) => ({ ...person, ...body.people[index] }));
+      return json({ ok: true });
+    }
+    if (path === '/admin/calendar' && method === 'DELETE') {
+      admin.calendar = { status: 'not-connected', name: null, account: null, error: null };
+      return json({ ok: true });
+    }
+    if (path === '/admin/calendar') {
+      if (body.password !== 'abcd-efgh-ijkl-mnop')
+        return json(
+          {
+            error:
+              'iCloud did not accept that Apple ID and app-specific password, or could not be reached. Check them and try again.',
+          },
+          400,
+        );
+      const calendars = [
+        { name: 'Personal', url: 'https://caldav.icloud.com/1/calendars/mine/' },
+        { name: 'Household', url: 'https://caldav.icloud.com/1/calendars/home/' },
+      ];
+      if (!body.calendarUrl) return json({ calendars });
+      const chosen = calendars.find((calendar) => calendar.url === body.calendarUrl)!;
+      admin.calendar = {
+        status: 'connected',
+        name: chosen.name,
+        account: body.username,
+        error: null,
+      };
+      return json({ ok: true });
+    }
+    if (path === '/admin/models')
+      return json({
+        current: admin.ai.model,
+        models: [
+          { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
+          { id: 'gpt-6.1-mini', name: 'GPT-6.1 Mini' },
+        ],
+      });
+    if (path === '/admin/model') {
+      admin.ai.model = body.id;
+      return json({ ok: true });
+    }
+    return json({ error: 'Unhandled fixture request: ' + path }, 500);
   }
 }
 

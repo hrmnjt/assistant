@@ -78,6 +78,10 @@ export const migrations: readonly string[] = [
   `CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`,
   // People, iCloud and the model moved to the Worker's variables; drop what Settings saved.
   `DELETE FROM settings WHERE key IN ('setup','icloud','ai_model');`,
+  // The admin's sessions, separate from the two people's Access sign-in.
+  `CREATE TABLE admin_sessions (id_hash TEXT PRIMARY KEY, token_hash TEXT NOT NULL,
+    expires_at INTEGER NOT NULL);
+  DELETE FROM settings WHERE key='calendar';`,
 ];
 
 export async function schemaVersion(db: Executor) {

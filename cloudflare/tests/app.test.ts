@@ -8,7 +8,7 @@ import {
 } from 'cloudflare:test';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createECDH, randomBytes } from 'node:crypto';
-import { ICloudTransport } from '../../server/plugins/calendar/caldav.js';
+import { iCloud, ICloudTransport } from '../../server/plugins/calendar/caldav.js';
 import type { Runtime } from '../../server/runtime.js';
 import { identityHeader } from '../../server/auth.js';
 import worker, { type Env, type Household } from '../worker.js';
@@ -35,10 +35,11 @@ const call = (
   value?: unknown,
   email?: string,
   headers: Record<string, string> = {},
+  method = value === undefined ? 'GET' : 'POST',
 ) =>
   worker.fetch(
     new Request(`${origin}${path}`, {
-      method: value === undefined ? 'GET' : 'POST',
+      method,
       headers: {
         'Content-Type': 'application/json',
         'X-Household-Client': '1',
@@ -50,9 +51,20 @@ const call = (
     bindings,
     context(email),
   );
-// Both people come from the Worker's variables (see cloudflare/vitest.config.ts).
 const alex = 'alex@example.com';
 const sam = 'sam@example.com';
+/** The admin signs in with ADMIN_TOKEN (see vitest.config.ts) and adds Alex and Sam. */
+async function setUp() {
+  const session = await call('/api/admin/session', { token: bindings.ADMIN_TOKEN }, alex);
+  expect(session.status).toBe(200);
+  const cookie = session.headers.get('set-cookie')!.split(';')[0];
+  const people = [
+    { name: 'Alex', email: alex },
+    { name: 'Sam', email: sam },
+  ];
+  const added = await call('/api/admin/people', { people }, alex, { Cookie: cookie }, 'PUT');
+  expect(added.status).toBe(200);
+}
 /** Outbound requests; each test that expects some supplies its own. */
 let network: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 const task = {
@@ -85,6 +97,9 @@ it('serves the app shell and the API from one Worker; Cloudflare Access names wh
   expect((await call('/api/state', undefined, undefined, { [identityHeader]: alex })).status).toBe(
     401,
   );
+  // Until the admin adds the two people, the app says so.
+  expect((await call('/api/state', undefined, alex)).status).toBe(503);
+  await setUp();
   const state = (await (await call('/api/state', undefined, alex)).json()) as any;
   expect([state.me.id, state.me.name, state.signIn]).toEqual([
     'owner',
@@ -99,6 +114,7 @@ it('serves the app shell and the API from one Worker; Cloudflare Access names wh
 });
 
 it('confirms a task for both spouses and keeps it across a Durable Object restart', async () => {
+  await setUp();
   const preview = (await (
     await call('/api/previews', { kind: 'task.create', task }, alex)
   ).json()) as { id: string };
@@ -136,6 +152,7 @@ it('delivers encrypted Web Push from the alarm and removes expired devices', asy
     expect(claims.sub).toBe(origin);
     return new Response(null, { status: pathname === '/phone' ? 201 : 410 });
   };
+  await setUp();
   // The household makes its own push keys; there is no push configuration.
   const key = (await (await call('/api/push/key', undefined, sam)).json()) as { publicKey: string };
   expect(key.publicKey).toMatch(/^[A-Za-z0-9_-]{80,}$/);
@@ -204,8 +221,12 @@ it('runs CalDAV discovery, REPORT and iCalendar parsing in workerd', async () =>
   const transport = new ICloudTransport({
     username: 'test-user',
     password: 'test-app-password',
-    calendarName: 'Household',
+    calendarUrl: 'https://caldav.icloud.com/calendars/home/',
   });
+  // The admin page lists the account's calendars to choose from.
+  expect(await iCloud.calendars({ username: 'test-user', password: 'test-app-password' })).toEqual([
+    { name: 'Household', url: 'https://caldav.icloud.com/calendars/home/' },
+  ]);
   const collection = await transport.collection();
   expect(collection.name).toBe('Household');
   const events = await transport.list('2026-10-01T00:00:00Z', '2026-11-01T00:00:00Z');

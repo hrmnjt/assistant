@@ -4,6 +4,7 @@ import type { Row, Store } from './database.js';
 import type { AssistantKit } from './assistant-tools.js';
 import type { Household } from './household.js';
 import type { Notices } from './notices.js';
+import type { Settings } from './settings.js';
 import type { ConfirmationResult, Person, Preview, Snapshot } from '../src/types.js';
 
 /** Previews and applies the change kinds one plugin owns. Nothing applies without a confirmation. */
@@ -34,6 +35,12 @@ export type ApiRoute = {
   path: RegExp;
   handle(request: Request, me: Person, params: string[]): Promise<Response>;
 };
+/** A route on the admin page, under `/api/admin`, for the signed-in admin only. */
+export type AdminRoute = {
+  method: string;
+  path: RegExp;
+  handle(request: Request, params: string[]): Promise<Response>;
+};
 
 /**
  * A feature of the assistant. The conversation is the core; tasks,
@@ -58,6 +65,11 @@ export interface Plugin {
     status(notice: Row): Promise<NoticeStatus>;
   };
   readonly routes?: readonly ApiRoute[];
+  /** This feature's settings on the admin page, and their state there. */
+  readonly admin?: {
+    readonly routes: readonly AdminRoute[];
+    state(): Promise<Record<string, unknown>>;
+  };
 }
 
 /** What the core gives each plugin. */
@@ -67,4 +79,6 @@ export type PluginHost = {
   household: Household;
   notices: Notices;
   assistant: AssistantKit;
+  /** Settings the admin makes, kept in the app's storage, such as a plugin's connection. */
+  settings: Settings;
 };

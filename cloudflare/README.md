@@ -11,15 +11,16 @@ settings are in the [README](../README.md#how-we-work).
 - `wrangler.jsonc`: Worker name, assets, the `HOUSEHOLD` binding and its SQLite
   class migration. Keep the class, binding and migration history on later
   deploys so they keep addressing the same storage.
-- [.dev.vars.example](.dev.vars.example): every Worker variable and secret.
-  A deployment's are set on the Worker's Settings → Variables and Secrets;
-  `npm run dev` reads them from `.dev.vars`. `npm run ai:connect -- --production`
-  writes the ChatGPT connection to `.prod.vars`, which `npm run secrets`
-  uploads. Git ignores both files. The app keeps only push keys and each
-  person's reminder settings in its own storage.
+- [.dev.vars.example](.dev.vars.example): the Worker's secrets. A deployment's
+  are set on the Worker's Settings → Variables and Secrets; `npm run dev` reads
+  them from `.dev.vars`. `ADMIN_TOKEN` opens the admin page;
+  `npm run ai:connect -- --production` writes the ChatGPT connection to
+  `.prod.vars`, which `npm run secrets` uploads. Git ignores both files. The
+  people, the calendar connection and the model are set on the admin page and
+  kept in the app's own storage.
 - `tests/`: workerd tests of the real Worker; `vitest.config.ts` blanks every
   documented setting, so a developer's `.dev.vars` never reaches them, then
-  names two test people. The
+  sets a test admin token. The
   tests call the Worker as Cloudflare does, with or without an Access identity
   on the request context.
 
