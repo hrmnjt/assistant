@@ -35,21 +35,18 @@ body {
   color: var(--text);
 }
 
-body.chat {
-  display: flex;
-  flex-direction: column;
-  height: 100dvh;
-}
-
 header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: calc(env(safe-area-inset-top) + 10px) 16px 10px;
+  gap: 8px;
+  min-height: 56px;
+  padding: calc(env(safe-area-inset-top) + 6px) 16px 6px;
   border-bottom: 1px solid var(--line);
 }
 
-h1 {
+h1,
+h2 {
   margin: 0;
   font-size: 17px;
   font-weight: 600;
@@ -59,13 +56,114 @@ a {
   color: var(--accent);
 }
 
+/* The chat page: the chats list beside (or, on phones, over) the conversation. */
+
+body.chat {
+  display: flex;
+  height: 100dvh;
+}
+
+#conversation {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#conversation h1 {
+  flex: 1;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#threads {
+  display: none;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+body.threads-open #threads {
+  display: flex;
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+}
+
+#threads > .button {
+  margin: 12px 16px;
+}
+
+#thread-list {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#thread-list li {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+}
+
+#thread-list li.current {
+  background: var(--surface);
+}
+
+#thread-list a {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 16px;
+  color: var(--text);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+#thread-list small {
+  display: block;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+#threads footer {
+  padding: 12px 16px calc(env(safe-area-inset-bottom) + 12px);
+  border-top: 1px solid var(--line);
+}
+
+@media (min-width: 900px) {
+  #threads,
+  body.threads-open #threads {
+    display: flex;
+    position: static;
+    width: 300px;
+    border-right: 1px solid var(--line);
+  }
+
+  #open-threads,
+  #close-threads {
+    display: none;
+  }
+}
+
+/* Messages and the composer keep a readable width on wide screens. */
+#messages,
+#composer,
+#problem {
+  padding-left: max(16px, calc((100% - 760px) / 2));
+  padding-right: max(16px, calc((100% - 760px) / 2));
+}
+
 #messages {
   flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 16px;
+  padding-top: 16px;
+  padding-bottom: 16px;
 }
 
 .message {
@@ -112,8 +210,14 @@ a {
 }
 
 .thinking,
-.note {
+.note,
+.empty {
   color: var(--muted);
+}
+
+.empty {
+  margin: auto;
+  text-align: center;
 }
 
 .error {
@@ -122,14 +226,15 @@ a {
 
 #problem {
   margin: 0;
-  padding: 0 16px 8px;
+  padding-bottom: 8px;
 }
 
 #composer {
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  padding: 8px 16px calc(env(safe-area-inset-bottom) + 8px);
+  padding-top: 8px;
+  padding-bottom: calc(env(safe-area-inset-bottom) + 8px);
   border-top: 1px solid var(--line);
 }
 
@@ -153,7 +258,11 @@ textarea {
   padding: 10px 16px;
 }
 
-button {
+button,
+a.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font: inherit;
   font-weight: 600;
   min-height: 44px;
@@ -162,6 +271,7 @@ button {
   border-radius: 22px;
   background: var(--accent);
   color: var(--on-accent);
+  text-decoration: none;
   cursor: pointer;
 }
 
@@ -174,6 +284,26 @@ button.secondary {
   color: var(--accent);
   border: 1px solid var(--line);
 }
+
+/* Header and list actions: text only, still a comfortable tap target. */
+.plain,
+button.plain {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--accent);
+  font-weight: 400;
+}
+
+#thread-list .plain {
+  color: var(--muted);
+  font-size: 15px;
+  margin-right: 8px;
+}
+
+/* The admin page. */
 
 .page {
   max-width: 560px;

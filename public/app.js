@@ -1,10 +1,14 @@
-// The chat: one ongoing conversation. Replies stream in as lines of JSON.
+// The chat: threads, each with its own context. Replies stream in as lines of JSON.
 
 const list = document.querySelector('#messages');
 const problem = document.querySelector('#problem');
+const title = document.querySelector('#title');
+const threadList = document.querySelector('#thread-list');
 const form = document.querySelector('#composer');
 const input = form.elements.text;
 const sendButton = form.querySelector('button');
+/** The open thread, from the address (`/?t=12`); none for a new chat. */
+let thread = Number(new URLSearchParams(location.search).get('t')) || null;
 let busy = false;
 
 const post = (path, body = {}) =>
@@ -56,7 +60,7 @@ function retryButton() {
     if (busy) return;
     setBusy(true);
     problem.hidden = true;
-    const response = await post('/api/chat/retry');
+    const response = await post(`/api/threads/${thread}/retry`);
     if (!response?.ok) return fail(response);
     button.closest('article').remove();
     await follow(response);
@@ -73,7 +77,7 @@ function show(message) {
   return node;
 }
 
-/** Show a reply as it streams in, then reload the conversation as saved. */
+/** Show a reply as it streams in, then reload the thread as saved. */
 async function follow(response) {
   const node = element('article', 'message assistant');
   const reasoning = reasoningBlock('', true);
@@ -95,7 +99,11 @@ async function follow(response) {
       buffer = lines.pop();
       for (const line of lines.filter(Boolean)) {
         const event = JSON.parse(line);
-        if (event.type === 'snapshot') [reasoningText, replyText] = [event.reasoning, event.text];
+        if (event.type === 'snapshot') {
+          [reasoningText, replyText] = [event.reasoning, event.text];
+          // A new chat has its thread now; keep it in the address.
+          if (!thread) history.replaceState(null, '', `/?t=${(thread = event.thread)}`);
+        }
         if (event.type === 'delta') {
           reasoningText += event.reasoning ?? '';
           replyText += event.text ?? '';
@@ -111,13 +119,18 @@ async function follow(response) {
   } catch {
     // The connection dropped. The reply carries on in the app; reloading picks it up.
   }
-  await load();
+  await Promise.all([load(), showThreads()]);
 }
 
 async function load() {
-  const response = await fetch('/api/chat').catch(() => null);
+  if (!thread) {
+    list.replaceChildren(element('p', 'empty', 'Ask anything. Each chat keeps its own context.'));
+    return setBusy(false);
+  }
+  const response = await fetch(`/api/threads/${thread}`).catch(() => null);
   if (!response?.ok) return fail(response);
-  const { messages, replying } = await response.json();
+  const { title: name, messages, replying } = await response.json();
+  title.textContent = document.title = name;
   list.replaceChildren();
   messages.forEach(show);
   // The last message can be answered again if its reply failed or never came.
@@ -126,11 +139,48 @@ async function load() {
   if (!replying && (last?.role === 'user' || last?.error)) list.lastChild.append(retryButton());
   list.scrollTop = list.scrollHeight;
   if (replying) {
-    const stream = await fetch('/api/chat/stream').catch(() => null);
+    const stream = await fetch(`/api/threads/${thread}/stream`).catch(() => null);
     if (stream?.status === 200) return follow(stream);
     if (stream?.status === 204) return load();
   }
   setBusy(false);
+}
+
+/** Today's chats show the time; older ones the date. */
+function when(time) {
+  const date = new Date(time);
+  return date.toDateString() === new Date().toDateString()
+    ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : date.toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
+
+async function showThreads() {
+  const response = await fetch('/api/threads').catch(() => null);
+  // A failure here shows up in the conversation too, so stay quiet.
+  if (!response?.ok) return;
+  const { threads } = await response.json();
+  threadList.replaceChildren(
+    ...threads.map((item) => {
+      const row = element('li', item.id === thread ? 'current' : '');
+      const link = element('a', '', item.title);
+      link.href = `/?t=${item.id}`;
+      link.append(element('small', '', when(item.updated)));
+      const remove = element('button', 'plain', 'Delete');
+      remove.type = 'button';
+      remove.setAttribute('aria-label', `Delete “${item.title}”`);
+      remove.addEventListener('click', () => removeThread(item));
+      row.append(link, remove);
+      return row;
+    }),
+  );
+}
+
+async function removeThread(item) {
+  if (!confirm(`Delete “${item.title}”? This can’t be undone.`)) return;
+  const response = await fetch(`/api/threads/${item.id}`, { method: 'DELETE' }).catch(() => null);
+  if (!response?.ok) return fail(response);
+  if (item.id === thread) location.href = '/';
+  else showThreads();
 }
 
 function resize() {
@@ -144,11 +194,16 @@ form.addEventListener('submit', async (event) => {
   if (!text || busy) return;
   setBusy(true);
   problem.hidden = true;
-  const response = await post('/api/chat', { text });
+  const path = thread ? `/api/threads/${thread}/messages` : '/api/threads';
+  const response = await post(path, { text });
   // On failure the message stays in the box to send again.
   if (!response?.ok) return fail(response);
   input.value = '';
   resize();
+  if (!thread) {
+    list.replaceChildren();
+    title.textContent = document.title = text;
+  }
   keepAtBottom(() => show({ role: 'user', text }));
   await follow(response);
 });
@@ -162,5 +217,10 @@ input.addEventListener('keydown', (event) => {
   form.requestSubmit();
 });
 
+const panel = (open) => document.body.classList.toggle('threads-open', open);
+document.querySelector('#open-threads').addEventListener('click', () => panel(true));
+document.querySelector('#close-threads').addEventListener('click', () => panel(false));
+
 setBusy(true);
 load();
+showThreads();
