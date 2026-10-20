@@ -121,7 +121,10 @@ connect the GitHub repository and set:
 `.node-version` pins the build's Node.js version. Workers Builds does not wait
 for GitHub Actions, so protect `main` on GitHub (Settings → Branches) by
 requiring the "Typecheck, Worker bundle, and tests" and "Browser checks" status
-checks: then only a green pull request can be merged. To redeploy, retry the
+checks: then only a green pull request can be merged. Keep required approvals at
+0 and leave "extra approval for unattributed changes" off: commits from Claude
+Code sessions are signed with a key GitHub doesn't know, and GitHub never lets
+an author approve their own pull request. To redeploy, retry the
 latest build on the Worker's Deployments page. Use this as the only deployment
 path, to the one `assistant` Worker.
 
