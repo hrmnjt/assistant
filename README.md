@@ -6,7 +6,8 @@ connected with Sign in with ChatGPT.
 
 - `/` is the chat. Each thread keeps its own context; **Chats** lists them,
   newest first, and **New** starts one. Replies stream in, with the model's
-  reasoning summary above them.
+  reasoning summary above them. Every open page keeps up: a message sent on
+  one device shows, with its reply streaming, on the others.
 - `/admin` connects ChatGPT and chooses the model.
 
 ## How it works
@@ -16,6 +17,9 @@ Cloudflare serves them as static files; only `/api/*` reaches the Worker.
 `src/worker.ts` checks that each request came through Cloudflare Access and
 passes it to the `Chat` Durable Object (`src/chat.ts`), which keeps the
 threads and their messages, the ChatGPT sign-in and the chosen model.
+Each open chat page holds a WebSocket to it (`/api/events`), which says when a
+thread changes; the page then fetches that thread again. A page that comes back
+to the foreground, or reconnects, fetches again too, in case it missed a change.
 `src/chatgpt.ts` talks to OpenAI. The model sees the last 50 messages of the
 thread it is answering.
 

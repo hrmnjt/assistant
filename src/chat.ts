@@ -71,6 +71,8 @@ export class Chat extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    // Pages ping to keep their WebSocket open; the answer doesn't wake this object.
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
     this.sql.exec(`CREATE TABLE IF NOT EXISTS threads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
@@ -125,6 +127,8 @@ export class Chat extends DurableObject<Env> {
           return this.retry(id);
         case 'GET /api/threads/:id/stream':
           return this.replies.get(id)?.follow() ?? new Response(null, { status: 204 });
+        case 'GET /api/events':
+          return this.listen(request);
         case 'GET /api/admin':
           return json({
             connected: Boolean(await this.ctx.storage.get('chatgpt')),
@@ -181,6 +185,28 @@ export class Chat extends DurableObject<Env> {
     if (this.replies.has(id)) throw new Error('Wait for the reply to finish, then delete the chat.');
     this.sql.exec('DELETE FROM messages WHERE thread = ?', id);
     this.sql.exec('DELETE FROM threads WHERE id = ?', id);
+    this.changed(id);
+  }
+
+  /** A WebSocket that tells a page whenever a thread changes, from any page or device. */
+  private listen(request: Request) {
+    if (request.headers.get('upgrade') !== 'websocket')
+      return json({ error: 'Expected a WebSocket.' }, 426);
+    const [page, socket] = Object.values(new WebSocketPair());
+    // Hibernatable: open sockets don't keep this object awake between changes.
+    this.ctx.acceptWebSocket(socket);
+    return new Response(null, { status: 101, webSocket: page });
+  }
+
+  /** Tell every open page that a thread changed; each fetches it again. */
+  private changed(thread: number) {
+    const event = JSON.stringify({ thread });
+    for (const socket of this.ctx.getWebSockets())
+      try {
+        socket.send(event);
+      } catch {
+        // That page is going away.
+      }
   }
 
   private async text(request: Request) {
@@ -234,6 +260,7 @@ export class Chat extends DurableObject<Env> {
   private answer(thread: number) {
     const reply = new Reply(thread);
     this.replies.set(thread, reply);
+    this.changed(thread);
     const response = reply.follow();
     this.ctx.waitUntil(this.run(reply));
     return response;
@@ -277,6 +304,7 @@ export class Chat extends DurableObject<Env> {
       .one();
     this.sql.exec('UPDATE threads SET updated = ? WHERE id = ?', now, reply.thread);
     this.replies.delete(reply.thread);
+    this.changed(reply.thread);
     reply.send({ type: 'done', message });
     reply.end();
   }

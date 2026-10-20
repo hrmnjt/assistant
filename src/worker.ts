@@ -26,8 +26,11 @@ export default {
       if (!(await fromAccess(request, env.ACCESS_TEAM_DOMAIN, env.ACCESS_AUD)))
         return refuse(403, 'Sign in through Cloudflare Access.');
     }
-    // Changes come only from the app's own pages.
-    if (request.method !== 'GET' && request.headers.get('origin') !== url.origin)
+    // Changes, and the WebSocket that reports them, come only from the app's own pages.
+    if (
+      (request.method !== 'GET' || request.headers.has('upgrade')) &&
+      request.headers.get('origin') !== url.origin
+    )
       return refuse(403, 'Not allowed.');
     return env.CHAT.getByName('chat').fetch(request);
   },
