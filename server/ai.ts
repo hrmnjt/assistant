@@ -92,18 +92,38 @@ export async function aiConnection(db: Store, settings: Settings) {
 
 export type ChatgptModel = { id: string; name: string };
 
+/** An error and its causes, for the Worker's log; pi-ai wraps what went wrong. */
+function reasons(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  return error.cause === undefined ? error.message : `${error.message} ← ${reasons(error.cause)}`;
+}
+
 /** The models this ChatGPT account lists that the assistant supports. */
 export async function chatgptCatalog(models: Models): Promise<ChatgptModel[]> {
+  let failed = false;
   const auth = await models
     .getAuth('openai', { signal: AbortSignal.timeout(15000) })
-    .catch(() => undefined);
+    .catch((error: unknown) => {
+      failed = true;
+      console.error(`The ChatGPT sign-in could not be used: ${reasons(error)}`);
+      return undefined;
+    });
+  if (failed)
+    throw new DomainError(
+      'The ChatGPT sign-in stopped working. Disconnect ChatGPT and connect it again.',
+      409,
+    );
   if (!auth?.auth.apiKey) throw new DomainError('Connect ChatGPT first.', 409);
   const response = await fetch('https://api.openai.com/v1/models', {
     headers: { Authorization: `Bearer ${auth.auth.apiKey}` },
     signal: AbortSignal.timeout(15000),
   }).catch(() => undefined);
-  if (!response?.ok)
+  if (!response?.ok) {
+    console.error(
+      `OpenAI did not list models: ${response ? `status ${response.status}` : 'no response'}.`,
+    );
     throw new DomainError('The ChatGPT model list is unavailable. Try again later.', 503);
+  }
   const body = (await response.json()) as {
     models?: { slug: string; display_name: string; visibility: string }[];
   };

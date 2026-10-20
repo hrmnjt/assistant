@@ -84,11 +84,15 @@ async function requestTokens(
   }).catch(() => undefined);
   const parsed = tokens.safeParse(response?.ok ? await response.json().catch(() => null) : null);
   // Never pass on OpenAI's own error text, which can echo request details.
-  if (!parsed.success)
+  if (!parsed.success) {
+    console.error(
+      `OpenAI did not grant tokens for ${grant.grant_type}: ${response ? `status ${response.status}` : 'no response'}.`,
+    );
     throw new DomainError(
       'OpenAI did not complete the sign-in. Start again to try once more.',
       502,
     );
+  }
   const scopes = parsed.data.scope.split(/\s+/).filter(Boolean);
   if (!scopes.includes(directScope))
     throw new DomainError('This ChatGPT account did not allow the assistant to use its plan.', 502);
