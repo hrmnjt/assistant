@@ -159,16 +159,19 @@ relative reminders are retained.
 
 ### Validation
 
-`npm test` runs the Node suite (the application on Node's SQLite through the
-same storage interface) and the Workers suite in workerd: the real Worker with
-and without a Cloudflare Access identity, assets, Durable Object restart,
-alarm-driven Web Push with keys the app made, and CalDAV discovery and parsing
-with mocked HTTP. `npm run check` typechecks and builds the deployment bundle.
-Install the repository-local browsers once with `npm run test:ui:install`, then
-run `npm run test:ui` for the design-system/browser checks against fixture API
-responses, and `npm run test:browser` for preview recovery against the built UI
-and the real API handler, as a development server, with a synthetic calendar. No suite loads
-`cloudflare/.dev.vars` values or calls live providers. Browser binaries, reports,
+Tests are journeys through the API or the browser, plus integrations; a unit
+test stays only when it guards something a journey can't reach (such as time
+zones). `npm test` runs the Node suite (the application on Node's SQLite
+through the same storage interface) and the Workers suite in workerd: the real
+Worker with and without a Cloudflare Access identity, a task kept across a
+Durable Object restart and then pushed by its alarm with keys the app made, and
+CalDAV discovery and parsing with mocked HTTP. `npm run check` typechecks and
+builds the deployment bundle. Install the repository-local browsers once with
+`npm run test:ui:install`. Then `npm run test:ui` runs five journeys against
+fixture API responses (getting in, chat, tasks, calendar and admin) on an
+iPhone-sized WebKit and a desktop Chromium. It also runs preview recovery on
+the iPhone-sized WebKit against the built UI and the real API handler, with a
+synthetic calendar. No suite calls live providers. Browser binaries, reports
 and test data stay in `.cache/`. GitHub Actions runs these checks on pull
 requests and `main`, without secrets; Cloudflare deploys `main`.
 
