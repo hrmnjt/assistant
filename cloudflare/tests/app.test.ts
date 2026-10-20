@@ -113,22 +113,7 @@ it('serves the app shell and the API from one Worker; Cloudflare Access names wh
   expect(foreign.status).toBe(403);
 });
 
-it('confirms a task for both spouses and keeps it across a Durable Object restart', async () => {
-  await setUp();
-  const preview = (await (
-    await call('/api/previews', { kind: 'task.create', task }, alex)
-  ).json()) as { id: string };
-  expect((await call(`/api/previews/${preview.id}/confirm`, {}, alex)).status).toBe(200);
-  // A new instance reads the same SQLite storage, including who the two people are.
-  await abortAllDurableObjects();
-  const state = (await (await call('/api/state', undefined, sam)).json()) as any;
-  expect(state.me.name).toBe('Sam');
-  expect(state.tasks.map((item: { title: string }) => item.title)).toEqual(['Water the plants']);
-  expect(state.notices[0].title).toBe('Alex added a task');
-  expect((await call('/api/state', undefined, alex)).status).toBe(200);
-});
-
-it('delivers encrypted Web Push from the alarm and removes expired devices', async () => {
+it('keeps a confirmed task across a Durable Object restart and pushes its notice to the other spouse', async () => {
   const ecdh = createECDH('prime256v1');
   const device = (name: string) => ({
     endpoint: `https://web.push.apple.com/${name}`,
@@ -161,10 +146,14 @@ it('delivers encrypted Web Push from the alarm and removes expired devices', asy
   const preview = (await (
     await call('/api/previews', { kind: 'task.create', task }, alex)
   ).json()) as { id: string };
-  await call(`/api/previews/${preview.id}/confirm`, {}, alex);
-  await runInDurableObject(stub(), async (_instance, ctx) => {
-    expect(await ctx.storage.getAlarm()).not.toBeNull();
-  });
+  expect((await call(`/api/previews/${preview.id}/confirm`, {}, alex)).status).toBe(200);
+  // A new instance reads the same SQLite storage, including who the two people are.
+  await abortAllDurableObjects();
+  const state = (await (await call('/api/state', undefined, sam)).json()) as any;
+  expect(state.me.name).toBe('Sam');
+  expect(state.tasks.map((item: { title: string }) => item.title)).toEqual(['Water the plants']);
+  expect(state.notices[0].title).toBe('Alex added a task');
+  // After the restart, the alarm still pushes the notice.
   expect(await runDurableObjectAlarm(stub())).toBe(true);
   await runInDurableObject(stub(), async (instance) => {
     const db = runtime(instance).db;

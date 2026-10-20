@@ -13,7 +13,7 @@ import { updateEventData } from '../../server/plugins/calendar/icalendar.js';
 import type { CalendarResource, CalendarTransport } from '../../server/plugins/calendar/caldav.js';
 import { config, directory, openStore, setUp } from '../support.js';
 
-if (process.env.HOUSEHOLD_BROWSER_TEST !== '1') throw new Error('Use npm run test:browser.');
+if (process.env.HOUSEHOLD_BROWSER_TEST !== '1') throw new Error('Use npm run test:ui.');
 const origin = 'http://127.0.0.1:4173';
 const path = directory('browser');
 const db = openStore(resolve(path, 'household.sqlite'));
