@@ -119,6 +119,7 @@ export class HouseholdFixture {
     development: false,
     unavailable: null as string | null,
     access: 'alex@example.com' as string | null,
+    accessToken: true,
     people: [
       { id: 'owner', name: 'Alex', email: 'alex@example.com' },
       { id: 'partner', name: 'Sam', email: 'sam@example.com' },
@@ -327,6 +328,7 @@ export class HouseholdFixture {
       return json({
         people: admin.people,
         access: admin.access,
+        accessToken: admin.accessToken,
         ai: admin.ai,
         calendar: admin.calendar,
       });
