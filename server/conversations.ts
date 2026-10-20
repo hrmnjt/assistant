@@ -44,10 +44,10 @@ export class Conversations {
   get configured() {
     return Boolean(this.options.model && this.options.household);
   }
-  /** Use another model for later assistant work; the first choice starts the assistant. */
-  setModel(model: ModelRef) {
+  /** Use another model for later assistant work, or none; the first choice starts the assistant. */
+  setModel(model?: ModelRef) {
     this.options.model = model;
-    this.harness.resume();
+    if (model) this.harness.resume();
   }
   /**
    * Resolves true if Pi's storage fails, which closes the harness. The host

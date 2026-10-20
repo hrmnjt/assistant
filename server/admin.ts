@@ -175,6 +175,31 @@ function adminRoutes(app: App): AdminRoute[] {
         return json({ ok: true });
       },
     },
+    {
+      method: 'POST',
+      path: /^\/api\/admin\/chatgpt\/start$/,
+      handle: async () => json({ url: await assistantModel.startSignIn() }),
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/admin\/chatgpt\/finish$/,
+      handle: async (request) => {
+        const input = z
+          .object({ address: z.string().min(1).max(4000) })
+          .strict()
+          .parse(await body(request));
+        await assistantModel.finishSignIn(input.address);
+        return json({ ok: true });
+      },
+    },
+    {
+      method: 'DELETE',
+      path: /^\/api\/admin\/chatgpt$/,
+      handle: async () => {
+        await assistantModel.disconnect();
+        return json({ ok: true });
+      },
+    },
     ...plugins.flatMap((plugin) => plugin.admin?.routes ?? []),
   ];
 }

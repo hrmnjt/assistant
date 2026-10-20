@@ -364,6 +364,23 @@ export class HouseholdFixture {
       };
       return json({ ok: true });
     }
+    if (path === '/admin/chatgpt/start')
+      return json({
+        url: 'https://auth.openai.com/api/accounts/authorize?client_id=dynamic_agent_client&state=fixture-state',
+      });
+    if (path === '/admin/chatgpt/finish') {
+      if (!body.address.includes('state=fixture-state'))
+        return json(
+          { error: 'That address is not from this sign-in. Start again to try once more.' },
+          400,
+        );
+      admin.ai = { connected: true, model: null };
+      return json({ ok: true });
+    }
+    if (path === '/admin/chatgpt' && method === 'DELETE') {
+      admin.ai = { connected: false, model: null };
+      return json({ ok: true });
+    }
     if (path === '/admin/models')
       return json({
         current: admin.ai.model,
