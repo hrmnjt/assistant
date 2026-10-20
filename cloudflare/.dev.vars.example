@@ -1,9 +1,0 @@
-# The Worker's one secret. On Cloudflare, add it under the assistant Worker's
-# Settings → Variables and Secrets as type Secret; deploys keep it.
-
-# Opens the admin page (/admin), where the admin adds the two people, connects
-# the iCloud calendar and ChatGPT, and chooses the assistant's model. Use at
-# least 32 random characters from a password manager. `npm run dev` needs no
-# token, so locally this file is optional (copy it to cloudflare/.dev.vars,
-# which Git ignores).
-# ADMIN_TOKEN=
