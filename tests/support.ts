@@ -35,6 +35,9 @@ export const config = { HOUSEHOLD_DEVELOPMENT: 'true' };
 /** Add both people as the admin does. */
 export const setUp = (household: Household) => household.configure([people.owner, people.partner]);
 
+/** The JSON body of an API response. */
+export const json = async (response: Response) => (await response.json()) as any;
+
 /** Push settings for tests that inject a fake sender; no push service is called. */
 export const push = {
   publicKey: 'test-public-key',
@@ -116,6 +119,25 @@ export function householdParts(
   const plugins: Plugin[] = [...(calendar ? [calendar] : []), tasks, dashboard];
   notices.use(plugins);
   const owners = [household.changes, ...plugins.flatMap((plugin) => plugin.changes ?? [])];
+  const changes = {
+    preview(actorId: string, input: unknown) {
+      const kind = String((input as { kind?: unknown } | null)?.kind);
+      const owner = owners.find((item) => item.kinds.includes(kind));
+      if (!owner) throw new DomainError('Choose a supported change.');
+      return owner.preview(actorId, input);
+    },
+    async confirm(actorId: string, previewId: string) {
+      return (await previewOwner(db, owners, actorId, previewId)).confirm(actorId, previewId);
+    },
+    async cancel(actorId: string, previewId: string) {
+      const owner = await previewOwner(db, owners, actorId, previewId).catch(() => null);
+      await owner?.cancel(actorId, previewId);
+    },
+    /** Preview a change and confirm it as the same person. */
+    async apply(actorId: string, input: unknown) {
+      return await changes.confirm(actorId, (await changes.preview(actorId, input)).id);
+    },
+  };
   return {
     /** The assistant's Pi extensions: the core, then each plugin's. */
     extensions: [
@@ -135,20 +157,15 @@ export function householdParts(
     dashboard,
     plugins,
     /** Previews and confirmations, routed to the owning plugin as the API does. */
-    changes: {
-      preview(actorId: string, input: unknown) {
-        const kind = String((input as { kind?: unknown } | null)?.kind);
-        const owner = owners.find((item) => item.kinds.includes(kind));
-        if (!owner) throw new DomainError('Choose a supported change.');
-        return owner.preview(actorId, input);
-      },
-      async confirm(actorId: string, previewId: string) {
-        return (await previewOwner(db, owners, actorId, previewId)).confirm(actorId, previewId);
-      },
-      async cancel(actorId: string, previewId: string) {
-        const owner = await previewOwner(db, owners, actorId, previewId).catch(() => null);
-        await owner?.cancel(actorId, previewId);
-      },
+    changes,
+    /** Register a phone for a person's push notices. */
+    async subscribe(personId: string, endpoint: string) {
+      await db.run(
+        'INSERT INTO push_subscriptions VALUES (?,?,?)',
+        endpoint,
+        personId,
+        JSON.stringify({ endpoint, keys: {} }),
+      );
     },
     /** Plan every plugin's notices as the scheduler does, without refreshing the calendar. */
     async plan(now = clock()) {
