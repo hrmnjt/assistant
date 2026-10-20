@@ -64,7 +64,7 @@ test('admin: token sign-in, Access check, both people, iCloud and the model, the
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await shot(page, info, 'admin');
 
-  await page.getByRole('button', { name: 'Disconnect' }).click();
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Find calendars' })).toBeVisible();
   await page.getByRole('button', { name: 'Sign out of admin' }).click();
   await expect(page.getByLabel('Admin token')).toBeVisible();
@@ -87,4 +87,31 @@ test('admin: says when Access does not reach the app, and when ADMIN_TOKEN is mi
   await page.reload();
   await expect(page.getByRole('alert')).toHaveText(household.admin.unavailable);
   await expect(page.getByLabel('Admin token')).toHaveCount(0);
+});
+
+test('admin: connect ChatGPT by pasting back the address the sign-in ended on', async ({
+  page,
+  household,
+}, info) => {
+  household.admin.signedIn = true;
+  household.admin.ai = { connected: false, model: null };
+  await page.goto('/admin');
+  await page.getByRole('button', { name: 'Connect ChatGPT' }).click();
+  await expect(page.getByRole('link', { name: 'Sign in with ChatGPT' })).toHaveAttribute(
+    'href',
+    /^https:\/\/auth\.openai\.com\/api\/accounts\/authorize\?/,
+  );
+  const address = page.getByLabel('Address after signing in');
+  await address.fill('http://127.0.0.1:1455/auth/callback?code=x&state=other&client_id=c');
+  await page.getByRole('button', { name: 'Finish connecting' }).click();
+  await expect(page.getByRole('alert')).toContainText('not from this sign-in');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await shot(page, info, 'admin-chatgpt');
+  await page.getByRole('button', { name: 'Start again' }).click();
+  await page.getByRole('button', { name: 'Connect ChatGPT' }).click();
+  await address.fill('http://127.0.0.1:1455/auth/callback?code=x&state=fixture-state&client_id=c');
+  await page.getByRole('button', { name: 'Finish connecting' }).click();
+  await expect(page.getByText('ChatGPT is connected. Choose its model.')).toBeVisible();
+  await page.getByRole('button', { name: 'Disconnect ChatGPT' }).click();
+  await expect(page.getByRole('button', { name: 'Connect ChatGPT' })).toBeVisible();
 });

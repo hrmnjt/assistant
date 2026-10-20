@@ -26,10 +26,6 @@ const commands = {
         .map((file) => `tests/${file}`),
     ],
   ],
-  'ai-connect': [['--import', 'tsx', 'scripts/chatgpt.ts', ...process.argv.slice(3)]],
-  'ai-disconnect': [
-    ['--import', 'tsx', 'scripts/chatgpt.ts', '--remove', ...process.argv.slice(3)],
-  ],
 };
 const selected = commands[process.argv[2]];
 if (!selected) throw new Error('Unknown project command.');

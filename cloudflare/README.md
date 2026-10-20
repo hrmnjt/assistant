@@ -11,13 +11,11 @@ settings are in the [README](../README.md#how-we-work).
 - `wrangler.jsonc`: Worker name, assets, the `HOUSEHOLD` binding and its SQLite
   class migration. Keep the class, binding and migration history on later
   deploys so they keep addressing the same storage.
-- [.dev.vars.example](.dev.vars.example): the Worker's secrets. A deployment's
-  are set on the Worker's Settings → Variables and Secrets; `npm run dev` reads
-  them from `.dev.vars`. `ADMIN_TOKEN` opens the admin page;
-  `npm run ai:connect -- --production` writes the ChatGPT connection to
-  `.prod.vars`, which `npm run secrets` uploads. Git ignores both files. The
-  people, the calendar connection and the model are set on the admin page and
-  kept in the app's own storage.
+- [.dev.vars.example](.dev.vars.example): the Worker's one secret,
+  `ADMIN_TOKEN`, which opens the admin page. A deployment's is set on the
+  Worker's Settings → Variables and Secrets; `npm run dev` needs none. The
+  people, the calendar and ChatGPT connections and the model are set on the
+  admin page and kept in the app's own storage.
 - `tests/`: workerd tests of the real Worker; `vitest.config.ts` blanks every
   documented setting, so a developer's `.dev.vars` never reaches them, then
   sets a test admin token. The

@@ -378,18 +378,19 @@ test('startup recovers a persisted request before Pi admission and keeps its act
   }
 });
 
+const credential = (access = 'synthetic-access') => ({
+  type: 'oauth' as const,
+  access,
+  refresh: 'synthetic-refresh',
+  expires: Date.now() + 3600000,
+  counter: 0,
+});
+
 test('the stored ChatGPT credential serializes refreshes and rejects API credentials', async () => {
   const db = await householdStore();
   const credentials = new StoredCredentials(db);
-  const seed = JSON.stringify({
-    type: 'oauth',
-    access: 'synthetic-access',
-    refresh: 'synthetic-refresh',
-    expires: Date.now() + 3600000,
-    counter: 0,
-  });
   try {
-    await credentials.seed(seed);
+    await credentials.save(credential());
     await Promise.all(
       [1, 2].map(() =>
         credentials.modify('openai', async (current) => {
@@ -405,23 +406,18 @@ test('the stored ChatGPT credential serializes refreshes and rejects API credent
       ((await credentials.read('openai')) as unknown as { counter: unknown }).counter,
       2,
     );
-    // The same connection secret does not overwrite refreshed tokens on restart.
-    await credentials.seed(seed);
-    assert.equal(
-      ((await credentials.read('openai')) as unknown as { counter: unknown }).counter,
-      2,
-    );
     assert.deepEqual(await credentials.list(), [{ providerId: 'openai', type: 'oauth' }]);
     await assert.rejects(
       credentials.modify('openai', async () => ({ type: 'api_key', key: 'never-use-this' })),
     );
-    // A new connection replaces it; removing the secret disconnects.
-    await credentials.seed(seed.replace('synthetic-access', 'reconnected-access'));
+    await assert.rejects(credentials.save({ type: 'api_key', key: 'never-use-this' }));
+    // A new connection replaces it; disconnecting removes it.
+    await credentials.save(credential('reconnected-access'));
     assert.equal(
       ((await credentials.read('openai')) as unknown as { access: string }).access,
       'reconnected-access',
     );
-    await credentials.seed(undefined);
+    await credentials.delete('openai');
     assert.equal(await credentials.read('openai'), undefined);
     assert.equal(await chatgptModels(credentials).getAuth('openai'), undefined);
   } finally {
@@ -429,36 +425,21 @@ test('the stored ChatGPT credential serializes refreshes and rejects API credent
   }
 });
 
-test('the assistant is configured only by a model the admin chose and a readable connection', async () => {
+test('the assistant is configured only by a model the admin chose and a connection', async () => {
   const db = await householdStore();
   const settings = new Settings(db);
-  const credential = JSON.stringify({
-    type: 'oauth',
-    access: 'synthetic-access',
-    refresh: 'synthetic-refresh',
-    expires: Date.now() + 3600000,
-  });
   try {
-    assert.equal((await aiConnection(db, {}, settings)).model, undefined);
-    // Connected, but no model chosen yet.
-    assert.equal(
-      (await aiConnection(db, { CHATGPT_CREDENTIAL_JSON: credential }, settings)).model,
-      undefined,
-    );
+    assert.equal((await aiConnection(db, settings)).model, undefined);
+    await new StoredCredentials(db).save(credential());
+    // Connected, but no model chosen yet, or one the assistant does not support.
+    assert.equal((await aiConnection(db, settings)).model, undefined);
     await settings.set('ai_model', 'not-a-model');
-    assert.equal(
-      (await aiConnection(db, { CHATGPT_CREDENTIAL_JSON: credential }, settings)).model,
-      undefined,
-    );
+    assert.equal((await aiConnection(db, settings)).model, undefined);
     await settings.set('ai_model', 'gpt-6.1-sol');
-    assert.equal(
-      (await aiConnection(db, { CHATGPT_CREDENTIAL_JSON: '{not json' }, settings)).model,
-      undefined,
-    );
-    assert.deepEqual(
-      (await aiConnection(db, { CHATGPT_CREDENTIAL_JSON: credential }, settings)).model,
-      { provider: 'openai', modelId: 'gpt-6.1-sol' },
-    );
+    assert.deepEqual((await aiConnection(db, settings)).model, {
+      provider: 'openai',
+      modelId: 'gpt-6.1-sol',
+    });
   } finally {
     await db.close();
   }
@@ -467,18 +448,8 @@ test('the assistant is configured only by a model the admin chose and a readable
 test('the admin chooses the model from the account catalog, and it applies at once', async () => {
   const db = await householdStore();
   const settings = new Settings(db);
-  const { models } = await aiConnection(
-    db,
-    {
-      CHATGPT_CREDENTIAL_JSON: JSON.stringify({
-        type: 'oauth',
-        access: 'synthetic-access',
-        refresh: 'synthetic-refresh',
-        expires: Date.now() + 3600000,
-      }),
-    },
-    settings,
-  );
+  await new StoredCredentials(db).save(credential());
+  const { models } = await aiConnection(db, settings);
   const original = globalThis.fetch;
   const asked: string[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -515,14 +486,12 @@ test('ChatGPT uses the public streaming Responses endpoint without storage and r
   const credentials = new StoredCredentials(db),
     originalFetch = globalThis.fetch;
   try {
-    await credentials.seed(
-      JSON.stringify({
-        type: 'oauth',
-        access: 'synthetic-wire-token',
-        refresh: 'unused',
-        expires: Date.now() + 3600000,
-      }),
-    );
+    await credentials.save({
+      type: 'oauth',
+      access: 'synthetic-wire-token',
+      refresh: 'unused',
+      expires: Date.now() + 3600000,
+    });
     const models = chatgptModels(credentials),
       model = models.getModel('openai', 'gpt-6.1-sol')!;
     let requests = 0;

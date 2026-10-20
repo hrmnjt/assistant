@@ -259,6 +259,9 @@
   .admin-page legend {
     @apply mb-2 text-sm font-semibold;
   }
+  .admin-page .steps {
+    @apply m-0 grid list-decimal gap-1 pl-5 text-sm;
+  }
   .day-aside {
     @apply grid gap-4;
   }

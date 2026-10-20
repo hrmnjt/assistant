@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { identityHeader } from '../server/auth.js';
 import { openHousehold, type Runtime } from '../server/runtime.js';
 import type {
@@ -347,6 +348,154 @@ test('only the admin sees or chooses the assistant model', async () => {
     });
     assert.equal((await json(await owner.call('/api/state'))).integrations.ai, 'not-connected');
   } finally {
+    await app.conversations.close();
+  }
+});
+
+/** OpenAI's token endpoint for tests: records each exchange and answers with `reply`. */
+function fakeOpenAI(reply: () => Response) {
+  const original = globalThis.fetch;
+  const exchanges: URLSearchParams[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    assert.equal(String(input), 'https://auth.openai.com/api/accounts/oauth/token');
+    exchanges.push(new URLSearchParams(String(init?.body)));
+    return reply();
+  }) as typeof fetch;
+  return { exchanges, restore: () => (globalThis.fetch = original) };
+}
+const granted = () =>
+  Response.json({
+    access_token: 'synthetic-access',
+    refresh_token: 'synthetic-refresh',
+    id_token: 'synthetic-id',
+    scope: 'openid offline_access resource.invoke chatgpt.tokens.use.direct',
+    expires_in: 3600,
+  });
+/** The address the browser ends on after signing in, for the sign-in that `url` started. */
+const returnedTo = (url: string, extra = '') =>
+  `http://127.0.0.1:1455/auth/callback?code=synthetic-code&client_id=issued-client&state=${new URL(url).searchParams.get('state')}${extra}`;
+
+test('the admin connects ChatGPT by pasting back the address the sign-in ended on', async () => {
+  const app = await openHousehold(openStore(), deployment);
+  await setUp(app.household);
+  const page = admin(app);
+  await page.signIn();
+  const openai = fakeOpenAI(granted);
+  try {
+    const owner = client(app, 'owner', base);
+    assert.equal((await owner.call('/api/admin/chatgpt/start', {})).status, 401);
+    const { url } = await json(await page.call('/api/admin/chatgpt/start', {}));
+    const sent = new URL(url);
+    assert.equal(sent.origin + sent.pathname, 'https://auth.openai.com/api/accounts/authorize');
+    assert.equal(sent.searchParams.get('client_id'), 'dynamic_agent_client');
+    assert.equal(sent.searchParams.get('redirect_uri'), 'http://127.0.0.1:1455/auth/callback');
+    assert.equal(sent.searchParams.get('code_challenge_method'), 'S256');
+    assert.match(sent.searchParams.get('scope')!, /chatgpt\.tokens\.use\.direct/);
+    const host = sent.searchParams.get('ext_agent_host_id');
+    assert.match(host!, /^urn:uuid:[0-9a-f-]{36}$/);
+    // Addresses from elsewhere are refused without asking OpenAI.
+    const refused = [
+      'not an address',
+      'https://example.com/elsewhere?code=x&state=y&client_id=z',
+      returnedTo(url).replace(/state=[^&]+/, 'state=forged'),
+      returnedTo(url).replace('code=synthetic-code', 'error=access_denied'),
+    ];
+    for (const address of refused)
+      assert.equal(
+        (await page.call('/api/admin/chatgpt/finish', { address })).status,
+        400,
+        address,
+      );
+    assert.equal(openai.exchanges.length, 0);
+    // A new start replaces the sign-in; the same installation keeps its host id.
+    const again = (await json(await page.call('/api/admin/chatgpt/start', {}))).url;
+    assert.equal(new URL(again).searchParams.get('ext_agent_host_id'), host);
+    assert.equal(
+      (await page.call('/api/admin/chatgpt/finish', { address: returnedTo(url) })).status,
+      400,
+    );
+    const done = await page.call('/api/admin/chatgpt/finish', { address: returnedTo(again) });
+    assert.equal(done.status, 200);
+    const [exchange] = openai.exchanges;
+    assert.equal(exchange.get('grant_type'), 'authorization_code');
+    assert.equal(exchange.get('client_id'), 'issued-client');
+    assert.equal(exchange.get('code'), 'synthetic-code');
+    assert.equal(exchange.get('redirect_uri'), 'http://127.0.0.1:1455/auth/callback');
+    assert.equal(
+      createHash('sha256').update(exchange.get('code_verifier')!).digest('base64url'),
+      new URL(again).searchParams.get('code_challenge'),
+    );
+    const stored = JSON.parse(
+      String((await app.db.get<Row>('SELECT value FROM ai_credentials WHERE id=1'))!.value),
+    );
+    assert.deepEqual(
+      [stored.type, stored.access, stored.clientId],
+      ['oauth', 'synthetic-access', 'issued-client'],
+    );
+    assert.deepEqual((await json(await page.call('/api/admin/state'))).ai, {
+      connected: true,
+      model: null,
+    });
+    assert.equal((await json(await owner.call('/api/state'))).integrations.ai, 'needs-model');
+    // Each sign-in finishes once.
+    const reused = await page.call('/api/admin/chatgpt/finish', { address: returnedTo(again) });
+    assert.equal(reused.status, 409);
+    // Disconnecting removes the connection and stops the assistant.
+    assert.equal((await page.call('/api/admin/chatgpt', undefined, 'DELETE')).status, 200);
+    assert.equal((await json(await page.call('/api/admin/state'))).ai.connected, false);
+    assert.equal((await json(await owner.call('/api/state'))).integrations.ai, 'not-connected');
+  } finally {
+    openai.restore();
+    await app.conversations.close();
+  }
+});
+
+test('a ChatGPT sign-in expires after ten minutes and needs the plan scope; reconnecting resumes the model', async () => {
+  const path = `${directory('admin')}/household.sqlite`;
+  let now = Date.now();
+  const app = await openHousehold(openStore(path), deployment, { clock: () => new Date(now) });
+  await setUp(app.household);
+  const page = admin(app);
+  await page.signIn();
+  let reply = granted;
+  const openai = fakeOpenAI(() => reply());
+  try {
+    const start = async () => (await json(await page.call('/api/admin/chatgpt/start', {}))).url;
+    const late = await start();
+    now += 11 * 60_000;
+    assert.equal(
+      (await page.call('/api/admin/chatgpt/finish', { address: returnedTo(late) })).status,
+      409,
+    );
+    reply = () => Response.json({ error: 'invalid_grant' }, { status: 400 });
+    const failed = await page.call('/api/admin/chatgpt/finish', {
+      address: returnedTo(await start()),
+    });
+    assert.equal(failed.status, 502);
+    assert(!JSON.stringify(await json(failed)).includes('invalid_grant'));
+    reply = () =>
+      Response.json({
+        access_token: 'a',
+        refresh_token: 'r',
+        id_token: 'i',
+        scope: 'openid',
+        expires_in: 3600,
+      });
+    const narrow = await page.call('/api/admin/chatgpt/finish', {
+      address: returnedTo(await start()),
+    });
+    assert.equal(narrow.status, 502);
+    assert.match((await json(narrow)).error, /did not allow the assistant to use its plan/);
+    // With a model already chosen, connecting again starts the assistant at once.
+    await app.settings.set('ai_model', 'gpt-6.1-sol');
+    reply = granted;
+    assert.equal(
+      (await page.call('/api/admin/chatgpt/finish', { address: returnedTo(await start()) })).status,
+      200,
+    );
+    assert.equal(app.conversations.configured, true);
+  } finally {
+    openai.restore();
     await app.conversations.close();
   }
 });

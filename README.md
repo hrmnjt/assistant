@@ -40,9 +40,9 @@ Everything happens from the phone. Features are requested in a Claude Code chat,
 which opens pull requests on GitHub; they are reviewed and merged ("Rebase and
 merge") in the GitHub app; GitHub Actions tests each merge to `main` and deploys
 it to the `assistant` Worker; the app is used in Safari and installed on each
-Home Screen, behind Cloudflare Access. Running locally is optional, for
-checking something specific. The one step that still needs a computer is
-connecting ChatGPT (see [AI access](#ai-access)).
+Home Screen, behind Cloudflare Access. Settings are made on the app's admin
+page, ChatGPT included, so nothing needs a computer; running locally is
+optional, for checking something specific.
 
 ### Run locally (optional)
 
@@ -57,8 +57,7 @@ Open `http://localhost:8787/admin` (or `http://127.0.0.1:8787/admin`) and add
 the two people (emails are optional locally), then open `http://localhost:8787`.
 Development has no sign-in and no admin token: it answers only on this computer
 and acts as the first person; Settings has an "Act as" button to try shared
-features as the second. `npm run ai:connect` saves a local ChatGPT connection in
-the private `cloudflare/.dev.vars`; restart `npm run dev` afterward. `npm run dev` runs `wrangler dev` with the client
+features as the second. ChatGPT connects on the admin page as on a deployment. `npm run dev` runs `wrangler dev` with the client
 rebuilt on each change (reload the page to see it). Local state lives in
 `data/cloudflare/` and survives restarts; delete that folder to start over. The
 local app stops with its process. Phones use the deployment.
@@ -88,9 +87,8 @@ the two people, connects the iCloud calendar and chooses the assistant's model.
    the request, to check Access reaches the app.
 5. Optional, on the same page: connect the shared iCloud calendar (an Apple ID
    and an app-specific password, then the calendar to share).
-6. Optional: connect ChatGPT from the Mac with `npm run ai:connect -- --production`
-   and `npm run secrets` (see [AI access](#ai-access)), then choose the model on
-   the admin page.
+6. Optional, on the same page: connect ChatGPT (see [AI access](#ai-access))
+   and choose the assistant's model.
 
 Push keys need no configuration: the app makes them on first start.
 
@@ -484,17 +482,19 @@ can fund both spouses' interactive use. Keep this eligibility question explicit;
 neither library support nor a Pro upgrade alone resolves it. Keep application
 sign-in distinct from the account authorizing model usage.
 
-Run `npm run ai:connect` in a terminal on the Mac to authorize the local app
-with Sign in with ChatGPT; it saves the connection in `cloudflare/.dev.vars`, so
-restart `npm run dev` afterward. `npm run ai:connect -- --production` saves a
-separate connection in `cloudflare/.prod.vars`; `npm run secrets` uploads it as
-Worker secrets. The sign-in needs a browser on the Mac, so it cannot run from
-the app. Then choose the model on the admin page, from the account's catalog;
-the choice applies at once. Tokens are never printed, and the
-app never reads Codex's tokens or falls back to an API key. The Durable Object
-adopts a newly connected credential once and keeps refreshed tokens in its own
-storage. `npm run ai:disconnect` (with `-- --production` for the deployment)
-removes the connection; revoke the app in ChatGPT settings if desired. Whether
+The admin connects ChatGPT on the admin page with Sign in with ChatGPT, the
+flow pi-ai uses (a public client with PKCE and OpenAI's dynamic client
+registration), run by the app: "Connect ChatGPT" opens OpenAI's sign-in, which
+ends on `http://127.0.0.1:1455/auth/callback`, an address only an app on the
+same device answers. The browser shows an error page there; the admin copies
+its address back into the admin page, and the app exchanges the code for
+tokens. The verifier and state never leave the app, so a pasted address
+finishes only the sign-in the admin started, once, within ten minutes. Then
+the admin chooses the model from the account's catalog; the choice applies at
+once. The app keeps the connection and its refreshed tokens in its own storage,
+never shows or logs tokens, never reads Codex's tokens, and never falls back to
+an API key. "Disconnect ChatGPT" removes the connection; revoke the app in
+ChatGPT settings if desired. Whether
 OpenAI treats a Cloudflare deployment as an eligible installation is not yet
 established.
 

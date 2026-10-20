@@ -339,6 +339,7 @@ function CalendarSettings({ state, onChanged }: { state: AdminState; onChanged: 
 
 /** The ChatGPT connection and the model the assistant uses. */
 function AssistantSettings({ state, onChanged }: { state: AdminState; onChanged: () => void }) {
+  const { busy, run, message } = useAction();
   return (
     <Card className="settings-card">
       <h2>
@@ -351,14 +352,103 @@ function AssistantSettings({ state, onChanged }: { state: AdminState; onChanged:
             {state.ai.model ? `The assistant uses ${state.ai.model}.` : 'Choose its model.'}
           </p>
           <ModelChooser current={state.ai.model} onSaved={onChanged} />
+          {message}
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() =>
+              run(async () => {
+                await api('/admin/chatgpt', undefined, 'DELETE');
+                onChanged();
+              })
+            }
+          >
+            Disconnect ChatGPT
+          </Button>
         </>
       ) : (
-        <p className="muted">
-          Connect ChatGPT from the Mac: run npm run ai:connect -- --production, then npm run
-          secrets.
-        </p>
+        <ChatgptSignIn onConnected={onChanged} />
       )}
     </Card>
+  );
+}
+
+/**
+ * Sign in with ChatGPT from here. OpenAI ends the sign-in on an address only an
+ * app on the same device answers, so the browser shows an error page there;
+ * pasting that page's address back finishes the connection.
+ */
+function ChatgptSignIn({ onConnected }: { onConnected: () => void }) {
+  const { busy, run, message } = useAction();
+  const [url, setUrl] = useState('');
+  const [address, setAddress] = useState('');
+  return (
+    <div className="form">
+      <p className="muted">
+        Connect the ChatGPT plan the assistant uses. Its requests use that plan’s limits; there is
+        no API-key billing.
+      </p>
+      {!url ? (
+        <Button
+          disabled={busy}
+          onClick={() =>
+            run(async () => setUrl((await api<{ url: string }>('/admin/chatgpt/start', {})).url))
+          }
+        >
+          Connect ChatGPT
+        </Button>
+      ) : (
+        <form
+          className="form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            run(async () => {
+              await api('/admin/chatgpt/finish', { address });
+              onConnected();
+            });
+          }}
+        >
+          <ol className="steps">
+            <li>
+              <a href={url} target="_blank" rel="noreferrer">
+                Sign in with ChatGPT
+              </a>{' '}
+              (opens a new tab).
+            </li>
+            <li>
+              The sign-in ends on a page that can’t be opened, at an address starting with
+              http://127.0.0.1:1455. Copy that whole address from the address bar.
+            </li>
+            <li>Paste it here.</li>
+          </ol>
+          <Label>
+            Address after signing in
+            <Input
+              value={address}
+              onChange={(event) => setAddress(event.target.value)}
+              required
+              autoComplete="off"
+              inputMode="url"
+            />
+          </Label>
+          <Button type="submit" disabled={busy}>
+            Finish connecting
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => {
+              setUrl('');
+              setAddress('');
+            }}
+          >
+            Start again
+          </Button>
+        </form>
+      )}
+      {message}
+    </div>
   );
 }
 
