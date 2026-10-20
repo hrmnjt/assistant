@@ -1,0 +1,205 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f2;
+  --surface: #ffffff;
+  --text: #1d1f1c;
+  --muted: #61655c;
+  --line: #deded5;
+  --accent: #2f5d50;
+  --on-accent: #ffffff;
+  --danger: #b3261e;
+  font: 17px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121411;
+    --surface: #1d201c;
+    --text: #ecede8;
+    --muted: #a3a79e;
+    --line: #30342e;
+    --accent: #8fc9b5;
+    --on-accent: #10221c;
+    --danger: #f2b8b5;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+}
+
+body.chat {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: calc(env(safe-area-inset-top) + 10px) 16px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+h1 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+a {
+  color: var(--accent);
+}
+
+#messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+}
+
+.message {
+  max-width: 85%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message p {
+  margin: 0;
+}
+
+.user {
+  align-self: flex-end;
+  padding: 8px 14px;
+  border-radius: 18px;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.assistant {
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+.assistant .secondary {
+  margin-top: 8px;
+}
+
+.reasoning {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.reasoning summary {
+  cursor: pointer;
+}
+
+.reasoning p {
+  margin-top: 4px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+}
+
+.thinking,
+.note {
+  color: var(--muted);
+}
+
+.error {
+  color: var(--danger);
+}
+
+#problem {
+  margin: 0;
+  padding: 0 16px 8px;
+}
+
+#composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 16px calc(env(safe-area-inset-bottom) + 8px);
+  border-top: 1px solid var(--line);
+}
+
+textarea,
+input,
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 9px 12px;
+  min-height: 44px;
+}
+
+textarea {
+  flex: 1;
+  resize: none;
+  max-height: 40dvh;
+  border-radius: 22px;
+  padding: 10px 16px;
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 22px;
+  background: var(--accent);
+  color: var(--on-accent);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--line);
+}
+
+.page {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.page form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.page ol {
+  padding-left: 20px;
+}
+
+.page li {
+  margin-bottom: 8px;
+}
+
+code {
+  overflow-wrap: anywhere;
+}
+
+[hidden] {
+  display: none !important;
+}

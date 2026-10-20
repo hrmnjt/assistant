@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "assistant",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-17",
+  "workers_dev": true,
+  "preview_urls": false,
+  // Settings live in the Worker's Variables and Secrets; a deploy keeps them.
+  "keep_vars": true,
+  // public/ is served as is. Only /api/* reaches the Worker.
+  "assets": { "directory": "public", "run_worker_first": ["/api/*"] },
+  "durable_objects": { "bindings": [{ "name": "CHAT", "class_name": "Chat" }] },
+  // v2 starts over: it deletes the previous app's storage (archived on the archive/v1 branch).
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Household"] },
+    { "tag": "v2", "deleted_classes": ["Household"], "new_sqlite_classes": ["Chat"] }
+  ],
+  "observability": { "enabled": false }
+}

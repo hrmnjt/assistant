@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>assistant · admin</title>
+    <meta name="theme-color" content="#f7f7f2" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#121411" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/admin.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>Admin</h1>
+      <a href="/">Chat</a>
+    </header>
+    <main class="page">
+      <p id="status">Checking ChatGPT…</p>
+      <p id="problem" class="error" role="alert" hidden></p>
+
+      <section id="connect" hidden>
+        <ol>
+          <li>Tap <strong>Connect ChatGPT</strong>, then open the sign-in and sign in to ChatGPT.</li>
+          <li>
+            OpenAI then sends the browser to an address starting with
+            <code>http://127.0.0.1:1455</code>, which doesn’t load. Copy that whole address.
+          </li>
+          <li>Paste it here and tap <strong>Finish</strong> within ten minutes.</li>
+        </ol>
+        <button id="start" type="button">Connect ChatGPT</button>
+        <p><a id="sign-in" target="_blank" rel="noopener" hidden>Open the ChatGPT sign-in</a></p>
+        <form id="finish" hidden>
+          <input name="address" type="url" placeholder="http://127.0.0.1:1455/auth/callback?…" aria-label="Address" required />
+          <button>Finish</button>
+        </form>
+      </section>
+
+      <section id="connected" hidden>
+        <form id="model">
+          <label for="model-list">Model</label>
+          <select id="model-list" name="model"></select>
+          <input id="model-name" name="model" placeholder="Model name" aria-label="Model name" hidden disabled />
+          <p id="model-note" class="note" hidden></p>
+          <button>Save</button>
+        </form>
+        <button id="disconnect" class="secondary" type="button">Disconnect ChatGPT</button>
+      </section>
+    </main>
+  </body>
+</html>
