@@ -74,8 +74,10 @@ export const migrations: readonly string[] = [
   // Cloudflare Access signs people in; the app keeps no sessions or sign-in attempts.
   `DROP TABLE sessions;
   DROP TABLE sign_in_attempts;`,
-  // Household settings kept by the app itself, starting with when the household was set up.
+  // Settings kept by the app itself.
   `CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`,
+  // People, iCloud and the model moved to the Worker's variables; drop what Settings saved.
+  `DELETE FROM settings WHERE key IN ('setup','icloud','ai_model');`,
 ];
 
 export async function schemaVersion(db: Executor) {

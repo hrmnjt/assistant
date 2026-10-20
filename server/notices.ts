@@ -66,7 +66,7 @@ export class Notices {
     this.enabled = Boolean(push.publicKey && push.privateKey);
   }
   /**
-   * Push services' contact for this app: its own address, recorded at setup,
+   * Push services' contact for this app: its own address, recorded when a phone subscribes,
    * so neither person's email goes to Apple or Google.
    */
   private async contact() {

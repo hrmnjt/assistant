@@ -46,8 +46,34 @@ const defaultPreferences = {
   morning: { enabled: true, time: '08:00' },
   evening: { enabled: true, time: '18:00' },
 };
-/** One of the two people at setup; a development server may leave emails out. */
+/** One of the two people; a development server has no sign-in, so no emails. */
 export type Member = { name: string; email?: string };
+
+/**
+ * Both people from the Worker's variables (cloudflare/.dev.vars for `npm run
+ * dev`). A deployment needs both names and emails; a development server only
+ * the names. Missing or invalid values stop the app with a message naming them.
+ */
+export function configuredPeople(
+  vars: Partial<Record<string, string>>,
+  development: boolean,
+): [Member, Member] {
+  const missing: string[] = [];
+  const members = ([1, 2] as const).map((n): Member => {
+    const name = personName.safeParse(vars[`PERSON_${n}_NAME`] ?? '');
+    const address = email.safeParse(vars[`PERSON_${n}_EMAIL`] ?? '');
+    if (!name.success) missing.push(`PERSON_${n}_NAME`);
+    if (!development && !address.success) missing.push(`PERSON_${n}_EMAIL`);
+    return { name: name.data ?? '', email: development ? undefined : address.data };
+  });
+  const where = development
+    ? 'in cloudflare/.dev.vars'
+    : 'in the Worker’s Settings → Variables and Secrets on Cloudflare';
+  if (missing.length) throw new Error(`Configure ${missing.join(', ')} ${where}.`);
+  if (members[0].email && members[0].email === members[1].email)
+    throw new Error(`Configure a different email for each person ${where}.`);
+  return [members[0], members[1]];
+}
 
 /**
  * The core household: the two people, their settings, and the conversations
@@ -114,26 +140,22 @@ export class Household {
       },
     });
   }
-  /** The two people once the household is set up: `owner` set it up, `partner` is the other. */
+  /** The two people: `owner` is person 1 in the Worker's variables, `partner` person 2. */
   async people(q: Executor = this.db): Promise<Person[]> {
-    if (!(await this.setUpAt(q))) return [];
-    return q.all<Person>('SELECT id, username, name FROM users ORDER BY id');
-  }
-  /** When the household was set up, or null before its first sign-in. */
-  async setUpAt(q: Executor = this.db) {
-    const row = await q.get<Row>("SELECT value FROM settings WHERE key='setup'");
-    return row ? String(row.value) : null;
+    return q.all<Person>(
+      "SELECT id, username, name FROM users WHERE id IN ('owner','partner') ORDER BY id",
+    );
   }
   /**
-   * First sign-in: the person setting up and the other person, with their
-   * settings and assistant chats. Names and emails live only in this database;
-   * afterwards only these two emails are recognized.
+   * Apply both people from the Worker's variables at every start, with their
+   * settings and assistant chats. Each keeps their id, so a changed name or
+   * email keeps their records. Names and emails are never in the repository;
+   * only these two emails are recognized.
    */
-  async setUp(owner: Member, partner: Member) {
-    if (owner.email && owner.email === partner.email)
-      throw new DomainError('Use a different email address for each of you.');
+  async configure([owner, partner]: readonly [Member, Member]) {
     await this.db.transaction(async (tx) => {
-      if (await this.setUpAt(tx)) throw new DomainError('The assistant is already set up.', 409);
+      // Release both emails first, so the two can swap without a conflict.
+      await tx.run("UPDATE users SET username='~'||id WHERE id IN ('owner','partner')");
       for (const [id, member] of [
         ['owner', owner],
         ['partner', partner],
@@ -150,27 +172,8 @@ export class Household {
           JSON.stringify(defaultPreferences),
         );
       }
-      await tx.run(
-        "INSERT INTO settings VALUES ('setup', ?)",
-        JSON.stringify(this.clock().toISOString()),
-      );
       await this.spaces(tx);
     });
-  }
-  async rename(personId: string, name: string) {
-    await this.db.run('UPDATE users SET name=? WHERE id=?', personName.parse(name), personId);
-  }
-  /** Correct the other person's email; the person who set up keeps the one they signed in with. */
-  async changeEmail(personId: 'partner', address: string) {
-    const value = email.parse(address);
-    await this.db.transaction(async (tx) => {
-      if (await tx.get('SELECT 1 AS found FROM users WHERE username=? AND id<>?', value, personId))
-        throw new DomainError('Use a different email address for each of you.');
-      await tx.run('UPDATE users SET username=? WHERE id=?', value, personId);
-    });
-  }
-  async ensureSpaces() {
-    await this.db.transaction((tx) => this.spaces(tx));
   }
   private async spaces(tx: Executor) {
     for (const person of await this.people(tx))

@@ -2,9 +2,8 @@ import webpush from 'web-push';
 import type { Executor, Row, Store } from './database.js';
 
 /**
- * Household settings the app keeps itself, instead of deployment
- * configuration: when it was set up, its push keys, the calendar connection
- * and the assistant's model. Values are JSON.
+ * What the app keeps for itself rather than in the Worker's variables: its
+ * push keys, its own address and which calendar it last showed. Values are JSON.
  */
 export class Settings {
   constructor(private db: Store) {}
@@ -18,9 +17,6 @@ export class Settings {
       key,
       JSON.stringify(value),
     );
-  }
-  async delete(key: string) {
-    await this.db.run('DELETE FROM settings WHERE key=?', key);
   }
   /**
    * This household's Web Push keys, made once and kept: phones subscribe to

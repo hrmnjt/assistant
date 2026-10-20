@@ -77,7 +77,6 @@ export function snapshot(): Snapshot {
       },
     ],
     integrations: { ai: 'not-connected', calendar: 'connected' },
-    calendarAccount: 'family@icloud.example',
     calendar: {
       status: 'connected',
       name: 'Household',
@@ -112,8 +111,8 @@ export class HouseholdFixture {
   signedIn = true;
   offline = false;
   model: string | null = null;
-  /** Before the household's first sign-in sets it up. */
-  setup: { email: string | null; development: boolean } | null = null;
+  /** A Worker variable the app needs is missing, so it cannot start. */
+  configuration: string | null = null;
   confirmationError = '';
   confirmationStatus = 409;
   calendarOutcome?: CalendarOutcome;
@@ -140,15 +139,7 @@ export class HouseholdFixture {
       const body = request.postDataJSON();
       this.calls.push({ path, body, method: request.method() });
       const json = (value: unknown, status = 200) => route.fulfill({ status, json: value });
-      if (this.setup && path === '/setup') {
-        if (body.partner.email === this.setup.email)
-          return json({ error: 'Use a different email address for each of you.' }, 400);
-        this.setup = null;
-        this.state.me = { ...this.state.me, name: body.name };
-        this.state.people = [this.state.me, { ...this.state.people[1], name: body.partner.name }];
-        return json({ ok: true });
-      }
-      if (this.setup) return json({ error: 'Set up the assistant first.', setup: this.setup }, 428);
+      if (this.configuration) return json({ error: this.configuration }, 503);
       if (path === '/state')
         return this.offline
           ? json({ error: 'Offline' }, 503)
@@ -157,21 +148,10 @@ export class HouseholdFixture {
             : json(
                 {
                   error:
-                    'Sign in through Cloudflare Access with one of the two email addresses set up for this assistant.',
+                    'Sign in through Cloudflare Access with one of the two emails set for this assistant. If Cloudflare didn’t ask for your email first, turn on Access for the Worker on Cloudflare (Settings → Domains & Routes).',
                 },
                 401,
               );
-      if (path === '/people/me') {
-        this.state.me = { ...this.state.me, name: body.name };
-        this.state.people = this.state.people.map((p) => (p.id === 'owner' ? this.state.me : p));
-        return json({ ok: true });
-      }
-      if (path === '/people/partner') {
-        this.state.people = this.state.people.map((p) =>
-          p.id === 'partner' ? { ...p, username: body.email } : p,
-        );
-        return json({ ok: true });
-      }
       if (path === '/presence' || path === '/notices/read') return json({ ok: true });
       if (path.endsWith('/assistant')) return json(this.status);
       if (path.endsWith('/messages')) {
@@ -290,32 +270,6 @@ export class HouseholdFixture {
         return json({ ok: true, targetId: id });
       }
       if (path === '/calendar/refresh') return json(this.state.calendar);
-      if (path === '/calendar/connection' && request.method() === 'DELETE') {
-        this.state.calendarAccount = undefined;
-        this.state.integrations.calendar = 'not-connected';
-        this.state.calendar = { ...this.state.calendar, status: 'not-connected', events: [] };
-        return json({ ok: true });
-      }
-      if (path === '/calendar/connection') {
-        if (body.password !== 'abcd-efgh-ijkl-mnop')
-          return json(
-            {
-              error:
-                'iCloud did not accept that Apple ID and app-specific password, or could not be reached. Check them and try again.',
-            },
-            400,
-          );
-        const calendars = [
-          { name: 'Personal', url: 'https://caldav.icloud.com/1/calendars/mine/' },
-          { name: 'Household', url: 'https://caldav.icloud.com/1/calendars/home/' },
-        ];
-        if (!body.calendarUrl) return json({ calendars });
-        const chosen = calendars.find((calendar) => calendar.url === body.calendarUrl)!;
-        this.state.calendarAccount = body.username;
-        this.state.integrations.calendar = 'connected';
-        this.state.calendar = { ...this.state.calendar, status: 'connected', name: chosen.name };
-        return json(this.state.calendar);
-      }
       if (path === '/assistant/models')
         return json({
           current: this.model,
@@ -324,11 +278,6 @@ export class HouseholdFixture {
             { id: 'gpt-6.1-mini', name: 'GPT-6.1 Mini' },
           ],
         });
-      if (path === '/assistant/model') {
-        this.model = body.id;
-        this.state.integrations.ai = 'configured';
-        return json({ ok: true });
-      }
       return json({ error: 'Unhandled fixture request: ' + path }, 500);
     });
   }

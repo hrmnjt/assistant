@@ -20,19 +20,15 @@ export async function withAccessIdentity(request: Request, access?: AccessContex
   return new Request(request, { headers });
 }
 
-/** Who is asking: one of the two people, someone who may set the household up, or nobody. */
-export type Caller = { person: Person } | { setup: { email: string | null } } | null;
-
 const loopback = (hostname: string) => ['localhost', '127.0.0.1', '[::1]'].includes(hostname);
 
 /**
  * The app has no sign-in of its own. A deployment sits behind Cloudflare
- * Access, which signs people in; the Worker passes on the verified email and
- * the household maps it to one of its two people. Before the household is set
- * up, the first person to sign in sets up both. A development server (started
- * by `npm run dev`) has no sign-in, answers only on this computer, and acts as
- * the person who set it up, or as the other person to try shared features.
- * Anything else, including a deployment without Access, is refused.
+ * Access, which signs people in; the Worker passes on the verified email, and
+ * it must be one of the two in the Worker's variables. A development server
+ * (started by `npm run dev`) has no sign-in, answers only on this computer, and
+ * acts as person 1, or as person 2 to try shared features. Anything else,
+ * including a deployment without Access, is refused.
  */
 export class Auth {
   readonly mode: 'cloudflare-access' | 'development';
@@ -42,21 +38,18 @@ export class Auth {
   ) {
     this.mode = development ? 'development' : 'cloudflare-access';
   }
-  async caller(request: Request): Promise<Caller> {
+  /** Which of the two people is asking, or null for anyone else. */
+  async caller(request: Request): Promise<Person | null> {
     const people = await this.household.people();
     if (this.mode === 'development') {
-      if (!people.length) return { setup: { email: null } };
       const asPartner = request.headers
         .get('cookie')
         ?.split(';')
         .some((part) => part.trim() === `${developmentPersonCookie}=partner`);
-      return { person: people.find((p) => p.id === (asPartner ? 'partner' : 'owner'))! };
+      return people.find((p) => p.id === (asPartner ? 'partner' : 'owner')) ?? null;
     }
     const email = request.headers.get(identityHeader);
-    if (!email) return null;
-    if (!people.length) return { setup: { email } };
-    const person = people.find((item) => item.username === email);
-    return person ? { person } : null;
+    return (email && people.find((item) => item.username === email)) || null;
   }
   /**
    * The origin this request was served at, or null if the app does not answer

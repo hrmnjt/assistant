@@ -310,9 +310,9 @@ test('HTTP origin checks and task preview/confirm work together', async () => {
 test('each login has a separate ready assistant while shared channels and tasks converge', async () => {
   const f = await fixture();
   try {
-    await f.household.ensureSpaces();
+    await setUp(f.household);
     const first = await f.household.threads();
-    await f.household.ensureSpaces();
+    await setUp(f.household);
     assert.equal((await f.household.threads()).length, first.length);
     assert.equal(first.filter((thread) => thread.assistantFor).length, 2);
     assert.notEqual(

@@ -3,7 +3,7 @@ import type { Row, Store } from './database.js';
 import type { Auth } from './auth.js';
 import { previewOwner } from './changes.js';
 import { DomainError } from './errors.js';
-import { email, personName, type Household } from './household.js';
+import type { Household } from './household.js';
 import type { Conversations } from './conversations.js';
 import type { AssistantModel } from './ai.js';
 import { validPushEndpoint, type Notices } from './notices.js';
@@ -12,7 +12,7 @@ import { CalendarOutcomeError } from './plugins/calendar/service.js';
 import { recoverablePreviews } from './preview-recovery.js';
 import { body, json, RequestError } from './http.js';
 import { Settings } from './settings.js';
-import type { Person, Snapshot } from '../src/types.js';
+import type { Snapshot } from '../src/types.js';
 
 /** The assistant behind `/api`: one instance per runtime. */
 export type App = {
@@ -20,7 +20,7 @@ export type App = {
   auth: Auth;
   household: Household;
   conversations: Conversations;
-  /** The assistant's model, chosen in Settings. */
+  /** The assistant's model, set in the Worker's variables. */
   assistantModel: AssistantModel;
   notices: Notices;
   /** Features beyond the conversation: tasks, the calendar, the dashboard. */
@@ -37,14 +37,12 @@ export async function handle(app: App, request: Request): Promise<Response> {
     if (url.pathname === '/api/health' && request.method === 'GET')
       return json({ ok: app.conversations.healthy });
     if (!auth.writeAllowed(request)) throw new RequestError('Request origin is not allowed.', 403);
-    const caller = await auth.caller(request);
-    if (!caller)
+    const me = await auth.caller(request);
+    if (!me)
       throw new RequestError(
-        'Sign in through Cloudflare Access with one of the two email addresses set up for this assistant.',
+        'Sign in through Cloudflare Access with one of the two emails set for this assistant. If Cloudflare didn’t ask for your email first, turn on Access for the Worker on Cloudflare (Settings → Domains & Routes).',
         401,
       );
-    if ('setup' in caller) return await setUp(app, request, caller.setup.email);
-    const me = caller.person;
     for (const route of routes(app)) {
       const match = route.path.exec(url.pathname);
       if (match && route.method === request.method)
@@ -76,40 +74,8 @@ export async function handle(app: App, request: Request): Promise<Response> {
   }
 }
 
-/**
- * Before the household is set up, the first person to sign in names both
- * people and gives the other person's email; nothing else is available yet.
- */
-async function setUp(app: App, request: Request, signedIn: string | null) {
-  const url = new URL(request.url);
-  const development = app.auth.mode === 'development';
-  if (url.pathname === '/api/setup' && request.method === 'POST') {
-    const input = z
-      .object({
-        name: personName,
-        partner: z
-          .object({ name: personName, email: development ? email.optional() : email })
-          .strict(),
-      })
-      .strict()
-      .parse(await body(request));
-    await app.household.setUp({ name: input.name, email: signedIn ?? undefined }, input.partner);
-    // The app's own address, as Web Push's contact.
-    await new Settings(app.db).set('origin', url.origin);
-    return json({ ok: true });
-  }
-  return json(
-    { error: 'Set up the assistant first.', setup: { email: signedIn, development } },
-    428,
-  );
-}
-
 function routes(app: App): ApiRoute[] {
   const { db, auth, household, conversations, assistantModel, notices, plugins } = app;
-  const onlySetUpBy = (me: Person) => {
-    if (me.id !== 'owner')
-      throw new DomainError('Only the person who set up the assistant manages this.', 403);
-  };
   const id = '([^/]+)';
   const owners = [household.changes, ...plugins.flatMap((plugin) => plugin.changes ?? [])];
   const route = (method: string, path: RegExp, handle: ApiRoute['handle']): ApiRoute => ({
@@ -163,37 +129,8 @@ function routes(app: App): ApiRoute[] {
       }
       return json(state);
     }),
-    route('POST', /^\/api\/people\/me$/, async (request, me) => {
-      const input = z
-        .object({ name: personName })
-        .strict()
-        .parse(await body(request));
-      await household.rename(me.id, input.name);
-      return json({ ok: true });
-    }),
-    // The person who set up the household can correct the other person's email.
-    route('POST', /^\/api\/people\/partner$/, async (request, me) => {
-      onlySetUpBy(me);
-      const input = z
-        .object({ email })
-        .strict()
-        .parse(await body(request));
-      await household.changeEmail('partner', input.email);
-      return json({ ok: true });
-    }),
-    route('GET', /^\/api\/assistant\/models$/, async (_request, me) => {
-      onlySetUpBy(me);
-      return json(await assistantModel.catalog());
-    }),
-    route('POST', /^\/api\/assistant\/model$/, async (request, me) => {
-      onlySetUpBy(me);
-      const input = z
-        .object({ id: z.string().min(1).max(100) })
-        .strict()
-        .parse(await body(request));
-      await assistantModel.choose(input.id);
-      return json({ ok: true });
-    }),
+    // The account's models, to pick one for CHATGPT_MODEL.
+    route('GET', /^\/api\/assistant\/models$/, async () => json(await assistantModel.catalog())),
     route('GET', /^\/api\/previews$/, async (_request, me) =>
       json(await recoverablePreviews(db, me.id, household.clock())),
     ),
@@ -307,6 +244,8 @@ function routes(app: App): ApiRoute[] {
         me.id,
         JSON.stringify(value),
       );
+      // The app's own address, as Web Push's contact.
+      await new Settings(db).set('origin', auth.served(request));
       return json({ ok: true });
     }),
     route('DELETE', /^\/api\/push\/subscription$/, async (request, me) => {
