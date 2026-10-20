@@ -39,7 +39,6 @@ import type {
   Mutation,
   Preferences,
   Preview,
-  SetupNeeded,
   Snapshot,
   Task,
   TaskOccurrence,
@@ -103,7 +102,6 @@ async function api<T>(
       {
         status: response.status,
         calendarOutcome: value.calendarOutcome,
-        setup: value.setup,
       },
     );
   return value;
@@ -114,7 +112,6 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(true);
-  const [setup, setSetup] = useState<SetupNeeded | null>(null);
   const [signedOut, setSignedOut] = useState({
     status: 0,
     message: 'The assistant can’t be reached right now. Try again in a moment.',
@@ -182,17 +179,17 @@ function App() {
     try {
       const value = await api<Snapshot>('/state');
       setState(value);
-      setSetup(null);
       setConnected(true);
     } catch (problem) {
       const status = (problem as { status?: number }).status;
-      if (status === 428) {
-        setState(null);
-        setSetup((problem as { setup: SetupNeeded }).setup);
-      } else if (status === 401 || status === 403) {
+      if (status === 401 || status === 403) {
         setState(null);
         setSignedOut({ status, message: (problem as Error).message });
-      } else setConnected(false);
+      } else {
+        setConnected(false);
+        // Before the first load, say why: a missing Worker variable, say.
+        if (status === 503) setSignedOut({ status, message: (problem as Error).message });
+      }
     } finally {
       setLoading(false);
     }
@@ -498,11 +495,9 @@ function App() {
         <p>Finding our place…</p>
       </div>
     );
-  if (!state && setup) return <HouseholdSetup setup={setup} onDone={refresh} />;
   if (!state) return <SignedOut {...signedOut} />;
   const other = state.people.find((person) => person.id !== state.me.id);
   const otherName = other?.name ?? 'the other person';
-  const setUpBy = state.people.find((person) => person.id === 'owner');
   const zone = state.preferences.timezone;
   const now = DateTime.now().setZone(zone);
   const person = (id: string) =>
@@ -1326,7 +1321,7 @@ function App() {
                     </p>
                   </div>
                 </div>
-                <PeopleSettings state={state} onSaved={refresh} onError={setError} />
+                <PeopleSettings state={state} />
                 <SummarySettings
                   preferences={state.preferences}
                   busy={busy || !connected}
@@ -1351,7 +1346,7 @@ function App() {
                     notifications are enabled. Appointment alerts also come from Apple Calendar.
                   </p>
                 </Card>
-                <CalendarConnection state={state} setUpBy={setUpBy?.name} onChanged={refresh} />
+                <CalendarSettings state={state} />
                 <AppearanceSettings />
                 <Card className="settings-card">
                   <h2>
@@ -1361,14 +1356,10 @@ function App() {
                     {state.integrations.ai === 'configured'
                       ? 'Eligible AI requests use the connected ChatGPT plan. Messages in this topic and the tasks, settings, and appointments the assistant reads are sent to OpenAI. Every proposed change still needs your confirmation.'
                       : state.integrations.ai === 'needs-model'
-                        ? `ChatGPT is connected. ${state.me.id === 'owner' ? 'Choose' : `${setUpBy?.name ?? 'Whoever set up the assistant'} still chooses`} the model the assistant uses.`
-                        : state.me.id === 'owner'
-                          ? 'Connect ChatGPT from your Mac: run npm run ai:connect -- --production, then npm run secrets. You can keep using shared messages, tasks, and the calendar meanwhile.'
-                          : `${setUpBy?.name ?? 'Whoever set up the assistant'} can connect ChatGPT. You can keep using shared messages, tasks, and the calendar meanwhile.`}
+                        ? 'ChatGPT is connected. Set CHATGPT_MODEL in the Worker’s variables on Cloudflare to one of the account’s models.'
+                        : 'Connect ChatGPT from the Mac: run npm run ai:connect -- --production, then npm run secrets. You can keep using shared messages, tasks, and the calendar meanwhile.'}
                   </p>
-                  {state.me.id === 'owner' && state.integrations.ai !== 'not-connected' && (
-                    <ModelChooser onSaved={refresh} />
-                  )}
+                  {state.integrations.ai !== 'not-connected' && <ModelList />}
                   <a href="https://chatgpt.com/#settings/Usage" target="_blank" rel="noreferrer">
                     Manage ChatGPT usage
                   </a>
@@ -1488,9 +1479,8 @@ function App() {
           }}
         >
           <p>
-            Eligible assistant requests use the ChatGPT plan{setUpBy ? ` ${setUpBy.name}` : ''}{' '}
-            connected and share its usage limits. Messages in this topic and the information the
-            assistant reads are sent to OpenAI.
+            Eligible assistant requests use the connected ChatGPT plan and share its usage limits.
+            Messages in this topic and the information the assistant reads are sent to OpenAI.
           </p>
           <p>Task and calendar changes always need a separate confirmation preview.</p>
           <p>
@@ -1779,7 +1769,7 @@ function Empty({ icon, title, text }: { icon: React.ReactNode; title: string; te
   );
 }
 
-/** The welcome layout shared by the signed-out and first-setup screens. */
+/** The welcome layout of the signed-out screen. */
 function Welcome({ children }: { children: React.ReactNode }) {
   return (
     <div className="login-page">
@@ -1831,8 +1821,8 @@ function Welcome({ children }: { children: React.ReactNode }) {
 
 /**
  * Cloudflare Access signs people in, so the app shows this only when that
- * sign-in has ended, names an email outside the household, or the app is not
- * set up at this address.
+ * sign-in has ended or names another email, when Access is not on, or when a
+ * Worker variable the app needs is missing.
  */
 function SignedOut({ status, message }: { status: number; message: string }) {
   return (
@@ -1844,7 +1834,7 @@ function SignedOut({ status, message }: { status: number; message: string }) {
       </p>
       <div className="form signed-out-actions">
         <Button variant="default" onClick={() => location.reload()}>
-          {status ? 'Sign in' : 'Try again'}
+          {status === 401 || status === 403 ? 'Sign in' : 'Try again'}
           <ArrowRight size={17} />
         </Button>
         {status === 401 && <a href="/cdn-cgi/access/logout">Use a different email</a>}
@@ -1853,272 +1843,62 @@ function SignedOut({ status, message }: { status: number; message: string }) {
   );
 }
 
-/**
- * The household's first sign-in: name both people and give the other
- * person's email. The names and emails stay in the household's own storage;
- * afterwards only these two emails can use the app.
- */
-function HouseholdSetup({ setup, onDone }: { setup: SetupNeeded; onDone: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  return (
-    <Welcome>
-      <div className="eyebrow">FIRST, THE TWO OF YOU</div>
-      <h2>Set up your assistant.</h2>
-      <p className="muted">
-        {setup.email
-          ? `You’re signed in as ${setup.email}. Only you and the person you add here can use the app.`
-          : 'This development server has no sign-in. Emails are optional here.'}
-      </p>
-      <form
-        className="form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const form = new FormData(event.currentTarget);
-          const partnerEmail = String(form.get('partnerEmail') ?? '').trim();
-          setBusy(true);
-          setError('');
-          void api('/setup', {
-            name: String(form.get('name')),
-            partner: {
-              name: String(form.get('partnerName')),
-              ...(partnerEmail ? { email: partnerEmail } : {}),
-            },
-          })
-            .then(() => onDone())
-            .catch((problem) => {
-              setError((problem as Error).message);
-              setBusy(false);
-            });
-        }}
-      >
-        <Label>
-          Your name
-          <Input name="name" required maxLength={60} autoComplete="given-name" />
-        </Label>
-        <Label>
-          The other person’s name
-          <Input name="partnerName" required maxLength={60} autoComplete="off" />
-        </Label>
-        <Label>
-          Their email address
-          <Input
-            name="partnerEmail"
-            type="email"
-            required={!setup.development}
-            autoComplete="off"
-          />
-        </Label>
-        {error && (
-          <p className="field-error" role="alert">
-            {error}
-          </p>
-        )}
-        <Button type="submit" disabled={busy}>
-          {busy ? 'Setting up…' : 'Set up our assistant'}
-          <ArrowRight size={17} />
-        </Button>
-      </form>
-    </Welcome>
-  );
-}
+/** Where a Worker variable is set, for the hints below. */
+const workerVariables = 'the Worker’s Settings → Variables and Secrets on Cloudflare';
 
-/**
- * The shared iCloud calendar's connection: whoever set up the household signs
- * in with an Apple ID and an app-specific password, then picks the calendar.
- * The password is sent once and never shown again.
- */
-function CalendarConnection({
-  state,
-  setUpBy,
-  onChanged,
-}: {
-  state: Snapshot;
-  setUpBy?: string;
-  onChanged: () => void;
-}) {
-  const [account, setAccount] = useState({ username: '', password: '' });
-  const [calendars, setCalendars] = useState<{ name: string; url: string }[] | null>(null);
-  const [chosen, setChosen] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const run = (work: () => Promise<void>) => {
-    setBusy(true);
-    setError('');
-    void work()
-      .catch((problem) => setError((problem as Error).message))
-      .finally(() => setBusy(false));
-  };
-  const manages = state.me.id === 'owner';
+/** The shared iCloud calendar's status; the account comes from the Worker's variables. */
+function CalendarSettings({ state }: { state: Snapshot }) {
   return (
     <Card className="settings-card">
       <h2>
         <CalendarDays size={19} /> Shared calendar
       </h2>
-      {!manages ? (
-        <p className="muted">
-          {state.integrations.calendar === 'not-connected'
-            ? `${setUpBy ?? 'Whoever set up the assistant'} can connect the shared iCloud calendar.`
-            : `Connected to ${state.calendar.name}. ${setUpBy ?? 'Whoever set up the assistant'} manages the connection.`}
-        </p>
-      ) : state.calendarAccount ? (
-        <>
-          <p className="muted">
-            Connected to {state.calendar.name} as {state.calendarAccount}.
-          </p>
-          <Button
-            variant="outline"
-            disabled={busy}
-            onClick={() =>
-              run(async () => {
-                await api('/calendar/connection', undefined, 'DELETE');
-                onChanged();
-              })
-            }
-          >
-            Disconnect
-          </Button>
-        </>
-      ) : (
-        <form
-          className="form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            run(async () => {
-              if (!calendars) {
-                const found = await api<{ calendars: { name: string; url: string }[] }>(
-                  '/calendar/connection',
-                  account,
-                );
-                setCalendars(found.calendars);
-                setChosen(
-                  (found.calendars.find((item) => item.name === 'Household') ?? found.calendars[0])
-                    ?.url ?? '',
-                );
-                return;
-              }
-              await api('/calendar/connection', { ...account, calendarUrl: chosen });
-              setAccount({ username: '', password: '' });
-              setCalendars(null);
-              onChanged();
-            });
-          }}
-        >
-          <p className="muted">
-            Sign in with the Apple ID that shares your calendar and an{' '}
-            <a href="https://account.apple.com/account/manage" target="_blank" rel="noreferrer">
-              app-specific password
-            </a>
-            , never the Apple ID password.
-          </p>
-          <Label>
-            Apple ID
-            <Input
-              type="email"
-              autoComplete="off"
-              required
-              value={account.username}
-              disabled={Boolean(calendars)}
-              onChange={(event) => setAccount({ ...account, username: event.target.value })}
-            />
-          </Label>
-          <Label>
-            App-specific password
-            <Input
-              type="password"
-              autoComplete="off"
-              required
-              value={account.password}
-              disabled={Boolean(calendars)}
-              onChange={(event) => setAccount({ ...account, password: event.target.value })}
-            />
-          </Label>
-          {calendars && (
-            <Label>
-              Calendar
-              <NativeSelect value={chosen} onChange={(event) => setChosen(event.target.value)}>
-                {calendars.map((item) => (
-                  <option key={item.url} value={item.url}>
-                    {item.name}
-                  </option>
-                ))}
-              </NativeSelect>
-            </Label>
-          )}
-          {error && (
-            <p className="field-error" role="alert">
-              {error}
-            </p>
-          )}
-          <Button type="submit" disabled={busy || (calendars !== null && !chosen)}>
-            {calendars ? 'Connect calendar' : 'Find calendars'}
-          </Button>
-        </form>
-      )}
+      <p className="muted">
+        {state.integrations.calendar === 'not-connected'
+          ? `To connect the shared iCloud calendar, add ICLOUD_USERNAME (the Apple ID), ICLOUD_APP_PASSWORD (an app-specific password, never the Apple ID password) and ICLOUD_CALENDAR (the calendar’s name) in ${workerVariables}.`
+          : state.integrations.calendar === 'connected'
+            ? `Connected to ${state.calendar.name}.`
+            : (state.calendar.error ?? 'The shared calendar could not be refreshed.')}
+      </p>
     </Card>
   );
 }
 
-/** Whoever set up the household picks the assistant's model from the account's catalog. */
-function ModelChooser({ onSaved }: { onSaved: () => void }) {
+/** The connected ChatGPT account's models, to copy one into CHATGPT_MODEL. */
+function ModelList() {
   const [catalog, setCatalog] = useState<{
     current: string | null;
     models: { id: string; name: string }[];
   } | null>(null);
-  const [chosen, setChosen] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const run = (work: () => Promise<void>) => {
-    setBusy(true);
-    setError('');
-    void work()
-      .catch((problem) => setError((problem as Error).message))
-      .finally(() => setBusy(false));
-  };
   return (
     <div className="form">
       {catalog ? (
-        <form
-          className="form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            run(async () => {
-              await api('/assistant/model', { id: chosen });
-              setCatalog({ ...catalog, current: chosen });
-              onSaved();
-            });
-          }}
-        >
-          <Label>
-            Model
-            <NativeSelect value={chosen} onChange={(event) => setChosen(event.target.value)}>
-              {catalog.models.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                </option>
-              ))}
-            </NativeSelect>
-          </Label>
-          <Button type="submit" variant="outline" disabled={busy || chosen === catalog.current}>
-            Use this model
-          </Button>
-        </form>
+        <ul className="model-list">
+          {catalog.models.map((model) => (
+            <li key={model.id}>
+              {model.name} · <code>{model.id}</code>
+              {model.id === catalog.current && ' (in use)'}
+            </li>
+          ))}
+        </ul>
       ) : (
         <Button
           variant="outline"
           disabled={busy}
-          onClick={() =>
-            run(async () => {
-              const value = await api<{
-                current: string | null;
-                models: { id: string; name: string }[];
-              }>('/assistant/models');
-              setCatalog(value);
-              setChosen(value.current ?? value.models[0]?.id ?? '');
-            })
-          }
+          onClick={() => {
+            setBusy(true);
+            setError('');
+            void api<{ current: string | null; models: { id: string; name: string }[] }>(
+              '/assistant/models',
+            )
+              .then(setCatalog)
+              .catch((problem) => setError((problem as Error).message))
+              .finally(() => setBusy(false));
+          }}
         >
-          Choose the model
+          Show the account’s models
         </Button>
       )}
       {error && (
@@ -2130,86 +1910,21 @@ function ModelChooser({ onSaved }: { onSaved: () => void }) {
   );
 }
 
-/** Each person names themself; the person who set up can correct the other email. */
-function PeopleSettings({
-  state,
-  onSaved,
-  onError,
-}: {
-  state: Snapshot;
-  onSaved: () => void;
-  onError: (message: string) => void;
-}) {
-  const other = state.people.find((person) => person.id !== state.me.id);
-  const [name, setName] = useState(state.me.name);
-  const [email, setEmail] = useState(other?.username ?? '');
-  const [busy, setBusy] = useState(false);
-  useEffect(() => setName(state.me.name), [state.me.name]);
-  useEffect(() => setEmail(other?.username ?? ''), [other?.username]);
-  const save = (path: string, value: unknown) => {
-    setBusy(true);
-    void api(path, value)
-      .then(() => onSaved())
-      .catch((problem) => onError((problem as Error).message))
-      .finally(() => setBusy(false));
-  };
+/** The two people, from the Worker's variables. */
+function PeopleSettings({ state }: { state: Snapshot }) {
   return (
     <Card className="settings-card">
       <h2>
         <Users size={19} /> The two of you
       </h2>
-      {state.signIn === 'cloudflare-access' && (
-        <p className="muted">You’re signed in as {state.me.username}.</p>
-      )}
-      <form
-        className="form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          save('/people/me', { name });
-        }}
-      >
-        <Label>
-          Your name
-          <Input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            required
-            maxLength={60}
-          />
-        </Label>
-        <Button type="submit" variant="outline" disabled={busy || name.trim() === state.me.name}>
-          Save name
-        </Button>
-      </form>
-      {state.me.id === 'owner' && other && state.signIn === 'cloudflare-access' && (
-        <form
-          className="form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            save('/people/partner', { email });
-          }}
-        >
-          <Label>
-            {other.name}’s email
-            <Input
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              required
-            />
-          </Label>
-          <p className="small muted">
-            The address {other.name} signs in with. Cloudflare Access must allow it too.
-          </p>
-          <Button
-            type="submit"
-            variant="outline"
-            disabled={busy || email.trim().toLowerCase() === other.username}
-          >
-            Save email
-          </Button>
-        </form>
-      )}
+      <p className="muted">
+        {state.people.map((person) => person.name).join(' and ')}.
+        {state.signIn === 'cloudflare-access' && ` You’re signed in as ${state.me.username}.`}
+      </p>
+      <p className="small muted">
+        Names and emails are PERSON_1_NAME, PERSON_1_EMAIL, PERSON_2_NAME and PERSON_2_EMAIL in{' '}
+        {workerVariables}. Cloudflare Access must allow both emails.
+      </p>
     </Card>
   );
 }

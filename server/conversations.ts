@@ -44,11 +44,6 @@ export class Conversations {
   get configured() {
     return Boolean(this.options.model && this.options.household);
   }
-  /** Use another model for later assistant work; the first choice starts the assistant. */
-  setModel(model: ModelRef) {
-    this.options.model = model;
-    this.harness.resume();
-  }
   /**
    * Resolves true if Pi's storage fails, which closes the harness. The host
    * restarts rather than reopening in place; Pi resumes pending work on open.

@@ -16,7 +16,6 @@ import { boundedModels, dailyMaintenanceCalls } from '../server/assistant-tools.
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import type { Conversation } from '@earendil-works/pi-durable';
 import { aiConnection, AssistantModel, chatgptModels, StoredCredentials } from '../server/ai.js';
-import { Settings } from '../server/settings.js';
 import { recoverablePreviews } from '../server/preview-recovery.js';
 import type { Store } from '../server/database.js';
 import { directory, householdParts, householdStore, openStore, type Row } from './support.js';
@@ -429,9 +428,8 @@ test('the stored ChatGPT credential serializes refreshes and rejects API credent
   }
 });
 
-test('the assistant is configured only by a model chosen in Settings and a readable connection', async () => {
+test('the assistant is configured only by a supported CHATGPT_MODEL and a readable connection', async () => {
   const db = await householdStore();
-  const settings = new Settings(db);
   const credential = JSON.stringify({
     type: 'oauth',
     access: 'synthetic-access',
@@ -439,49 +437,46 @@ test('the assistant is configured only by a model chosen in Settings and a reada
     expires: Date.now() + 3600000,
   });
   try {
-    assert.equal((await aiConnection(db, {}, settings)).model, undefined);
-    // Connected, but no model chosen yet.
+    assert.equal((await aiConnection(db, { CHATGPT_MODEL: 'gpt-6.1-sol' })).model, undefined);
+    // Connected, but no model set yet, or one the assistant does not support.
+    for (const CHATGPT_MODEL of [undefined, ' ', 'not-a-model'])
+      assert.equal(
+        (await aiConnection(db, { CHATGPT_CREDENTIAL_JSON: credential, CHATGPT_MODEL })).model,
+        undefined,
+      );
     assert.equal(
-      (await aiConnection(db, { CHATGPT_CREDENTIAL_JSON: credential }, settings)).model,
-      undefined,
-    );
-    await settings.set('ai_model', 'not-a-model');
-    assert.equal(
-      (await aiConnection(db, { CHATGPT_CREDENTIAL_JSON: credential }, settings)).model,
-      undefined,
-    );
-    await settings.set('ai_model', 'gpt-6.1-sol');
-    assert.equal(
-      (await aiConnection(db, { CHATGPT_CREDENTIAL_JSON: '{not json' }, settings)).model,
+      (
+        await aiConnection(db, {
+          CHATGPT_CREDENTIAL_JSON: '{not json',
+          CHATGPT_MODEL: 'gpt-6.1-sol',
+        })
+      ).model,
       undefined,
     );
     assert.deepEqual(
-      (await aiConnection(db, { CHATGPT_CREDENTIAL_JSON: credential }, settings)).model,
-      {
-        provider: 'openai',
-        modelId: 'gpt-6.1-sol',
-      },
+      (
+        await aiConnection(db, {
+          CHATGPT_CREDENTIAL_JSON: credential,
+          CHATGPT_MODEL: ' gpt-6.1-sol ',
+        })
+      ).model,
+      { provider: 'openai', modelId: 'gpt-6.1-sol' },
     );
   } finally {
     await db.close();
   }
 });
 
-test('whoever set up chooses the model from the account catalog, and it applies at once', async () => {
+test('the account catalog lists the supported models to set in CHATGPT_MODEL', async () => {
   const db = await householdStore();
-  const settings = new Settings(db);
-  const { models } = await aiConnection(
-    db,
-    {
-      CHATGPT_CREDENTIAL_JSON: JSON.stringify({
-        type: 'oauth',
-        access: 'synthetic-access',
-        refresh: 'synthetic-refresh',
-        expires: Date.now() + 3600000,
-      }),
-    },
-    settings,
-  );
+  const { models } = await aiConnection(db, {
+    CHATGPT_CREDENTIAL_JSON: JSON.stringify({
+      type: 'oauth',
+      access: 'synthetic-access',
+      refresh: 'synthetic-refresh',
+      expires: Date.now() + 3600000,
+    }),
+  });
   const original = globalThis.fetch;
   const asked: string[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -494,19 +489,14 @@ test('whoever set up chooses the model from the account catalog, and it applies 
       ],
     });
   }) as typeof fetch;
-  const used: unknown[] = [];
   try {
-    const model = new AssistantModel(db, settings, models, (ref) => used.push(ref));
+    const model = new AssistantModel(db, models, 'gpt-6.1-sol');
     assert.equal(await model.connected(), true);
     assert.deepEqual(await model.catalog(), {
-      current: null,
+      current: 'gpt-6.1-sol',
       models: [{ id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' }],
     });
     assert.deepEqual(asked, ['https://api.openai.com/v1/models Bearer synthetic-access']);
-    await assert.rejects(model.choose('gpt-hidden'), /listed models/);
-    await model.choose('gpt-6.1-sol');
-    assert.deepEqual(used, [{ provider: 'openai', modelId: 'gpt-6.1-sol' }]);
-    assert.equal((await model.catalog()).current, 'gpt-6.1-sol');
   } finally {
     globalThis.fetch = original;
     await db.close();

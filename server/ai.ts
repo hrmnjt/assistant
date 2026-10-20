@@ -1,11 +1,9 @@
 import type { Credential, CredentialStore, Models } from '@earendil-works/pi-ai';
-import type { ModelRef } from '@earendil-works/pi-durable';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Row, Store } from './database.js';
 import { chatgptModels } from './chatgpt-models.js';
 import { DomainError } from './errors.js';
-import type { Settings } from './settings.js';
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export { chatgptModels } from './chatgpt-models.js';
@@ -77,21 +75,20 @@ export class StoredCredentials implements CredentialStore {
   }
 }
 
-export type AIConfig = { CHATGPT_CREDENTIAL_JSON?: string };
-const modelKey = 'ai_model';
+export type AIConfig = { CHATGPT_MODEL?: string; CHATGPT_CREDENTIAL_JSON?: string };
 
 /**
- * ChatGPT access: the credential from `npm run ai:connect`, and the model
- * chosen in Settings. The assistant is optional: missing or unreadable
- * settings leave it unavailable while tasks, messages, calendar sync, and
- * reminders keep working. No API-key fallback.
+ * ChatGPT access: the credential from `npm run ai:connect` and the model in
+ * CHATGPT_MODEL, both Worker settings. The assistant is optional: missing or
+ * unreadable settings leave it unavailable while tasks, messages, calendar
+ * sync, and reminders keep working. No API-key fallback.
  */
-export async function aiConnection(db: Store, config: AIConfig, settings: Settings) {
+export async function aiConnection(db: Store, config: AIConfig) {
   const credentials = new StoredCredentials(db);
   const models = chatgptModels(credentials);
+  const modelId = config.CHATGPT_MODEL?.trim();
   try {
     await credentials.seed(config.CHATGPT_CREDENTIAL_JSON || undefined);
-    const modelId = await settings.get<string>(modelKey);
     const configured = Boolean(
       modelId && models.getModel('openai', modelId) && (await credentials.read('openai')),
     );
@@ -127,29 +124,18 @@ export async function chatgptCatalog(models: Models): Promise<ChatgptModel[]> {
     .map((model) => ({ id: model.slug, name: model.display_name }));
 }
 
-/** The assistant's model, chosen in Settings from the connected account's catalog. */
+/** The assistant's model, set in CHATGPT_MODEL, and the connected account's models to choose from. */
 export class AssistantModel {
   constructor(
     private db: Store,
-    private settings: Settings,
     private models: Models,
-    /** Start using a newly chosen model. */
-    private use: (model: ModelRef) => void,
+    private current: string | undefined,
   ) {}
-  /** Whether a ChatGPT connection was made, with or without a model chosen. */
+  /** Whether a ChatGPT connection was made, with or without a usable model. */
   async connected() {
     return Boolean(await new StoredCredentials(this.db).read('openai'));
   }
   async catalog() {
-    return {
-      current: (await this.settings.get<string>(modelKey)) ?? null,
-      models: await chatgptCatalog(this.models),
-    };
-  }
-  async choose(id: string) {
-    if (!(await chatgptCatalog(this.models)).some((model) => model.id === id))
-      throw new DomainError('Choose one of the listed models.');
-    await this.settings.set(modelKey, id);
-    this.use({ provider: 'openai', modelId: id });
+    return { current: this.current?.trim() || null, models: await chatgptCatalog(this.models) };
   }
 }

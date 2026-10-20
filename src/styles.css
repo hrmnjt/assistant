@@ -241,6 +241,9 @@
   .section-heading .eyebrow {
     @apply mb-2;
   }
+  .model-list {
+    @apply m-0 grid list-disc gap-1 pl-5 text-sm;
+  }
   .day-aside {
     @apply grid gap-4;
   }

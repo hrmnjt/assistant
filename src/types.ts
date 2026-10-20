@@ -1,8 +1,6 @@
 export type Category = 'household' | 'work' | 'personal';
 /** One of the two people; `username` is the email they sign in with (or their id in development). */
 export type Person = { id: string; name: string; username: string };
-/** Before the household is set up: who signed in (no one, in development). */
-export type SetupNeeded = { email: string | null; development: boolean };
 export type Schedule = { frequency: 'daily' | 'weekly'; timezone: string };
 export type Task = {
   id: string;
@@ -150,10 +148,8 @@ export type Snapshot = {
   notices: Notice[];
   integrations: {
     calendar: CalendarSnapshot['status'];
-    /** `needs-model`: ChatGPT is connected and whoever set up still chooses a model. */
+    /** `needs-model`: ChatGPT is connected, but CHATGPT_MODEL is missing or unsupported. */
     ai: 'not-connected' | 'needs-model' | 'configured';
   };
   calendar: CalendarSnapshot;
-  /** For whoever set up the household: the Apple ID the calendar connection uses. */
-  calendarAccount?: string;
 };

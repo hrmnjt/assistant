@@ -3,7 +3,6 @@ import type { z } from 'zod';
 import type { Row, Store } from './database.js';
 import type { AssistantKit } from './assistant-tools.js';
 import type { Household } from './household.js';
-import type { Settings } from './settings.js';
 import type { Notices } from './notices.js';
 import type { ConfirmationResult, Person, Preview, Snapshot } from '../src/types.js';
 
@@ -68,6 +67,4 @@ export type PluginHost = {
   household: Household;
   notices: Notices;
   assistant: AssistantKit;
-  /** Settings the app keeps itself, such as a plugin's connection. */
-  settings: Settings;
 };

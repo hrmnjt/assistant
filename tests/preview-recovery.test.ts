@@ -15,6 +15,7 @@ import {
   householdParts,
   householdStore,
   openStore,
+  setUp,
   type Row,
 } from './support.js';
 
@@ -157,7 +158,7 @@ test('authenticated state/list endpoints restore only the actor previews and nev
     notices: parts.notices,
     plugins: parts.plugins,
   };
-  await f.household.ensureSpaces();
+  await setUp(f.household);
   // Exercise status indexing separately from the real prepare_change tool test.
   const thread = (await f.household.threads()).find((item) => item.assistantFor === 'owner')!;
   await f.db.run(

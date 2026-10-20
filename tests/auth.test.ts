@@ -1,14 +1,27 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Auth, identityHeader, withAccessIdentity } from '../server/auth.js';
-import { migrate } from '../server/database.js';
+import { migrate, migrations } from '../server/database.js';
 import { Household } from '../server/household.js';
 import { openHousehold, type Runtime } from '../server/runtime.js';
-import { client, config, deployment, openStore, people, setUp, type Row } from './support.js';
+import {
+  client,
+  config,
+  deployment,
+  directory,
+  openStore,
+  people,
+  setUp,
+  type Row,
+} from './support.js';
 
 const json = async (response: Response) => (await response.json()) as any;
-async function withApp(settings: Record<string, string>, work: (app: Runtime) => Promise<void>) {
-  const app = await openHousehold(openStore(), settings);
+async function withApp(
+  settings: Record<string, string>,
+  work: (app: Runtime) => Promise<void>,
+  path?: string,
+) {
+  const app = await openHousehold(openStore(path), settings);
   try {
     await work(app);
   } finally {
@@ -32,31 +45,10 @@ test('the Worker forwards only the email Cloudflare Access verified', async () =
   assert.equal(tokenOnly.headers.get(identityHeader), null);
 });
 
-test('a deployment: the first person to sign in sets up both, then only those two emails get in', async () => {
+test('a deployment: only the two emails in the Worker’s variables get in', async () => {
   await withApp(deployment, async (app) => {
     assert.equal((await client(app, null).call('/api/state')).status, 401);
-    const first = client(app, 'owner');
-    const pending = await first.call('/api/state');
-    assert.equal(pending.status, 428);
-    assert.deepEqual((await json(pending)).setup, {
-      email: people.owner.email,
-      development: false,
-    });
-    // Nothing else is available before setup.
-    assert.equal((await first.call('/api/previews')).status, 428);
-    // A deployment needs the other person's email, distinct from the signed-in one.
-    for (const partner of [{ name: 'Sam' }, { name: 'Sam', email: 'ALEX@example.com' }])
-      assert.equal(
-        (await first.call('/api/setup', { name: 'Alex', partner })).status,
-        400,
-        JSON.stringify(partner),
-      );
-    const done = await first.call('/api/setup', {
-      name: ' Alex ',
-      partner: { name: 'Sam', email: 'Sam@Example.com' },
-    });
-    assert.equal(done.status, 200);
-    const owner = await json(await first.call('/api/state'));
+    const owner = await json(await client(app, 'owner').call('/api/state'));
     assert.deepEqual(
       [owner.me.id, owner.me.name, owner.signIn],
       ['owner', 'Alex', 'cloudflare-access'],
@@ -64,62 +56,80 @@ test('a deployment: the first person to sign in sets up both, then only those tw
     const partner = await json(await client(app, 'partner').call('/api/state'));
     assert.deepEqual([partner.me.id, partner.me.name], ['partner', 'Sam']);
     assert.equal(partner.threads.filter((thread: any) => thread.assistantFor).length, 2);
-    // A third email, even one Access let in, is refused; setup cannot run again.
+    // A third email, even one Access let in, is refused; there is no setup to run.
     const stranger = await app.auth.caller(
       new Request('https://app.example/api/state', {
         headers: { [identityHeader]: 'guest@example.com' },
       }),
     );
     assert.equal(stranger, null);
-    assert.equal(
-      (await first.call('/api/setup', { name: 'Again', partner: { name: 'X', email: 'x@y.z' } }))
-        .status,
-      404,
-    );
-    await assert.rejects(setUp(app.household), /already set up/);
+    assert.equal((await client(app, 'owner').call('/api/setup', { name: 'Again' })).status, 404);
   });
 });
 
-test('names are each person’s own; only the person who set up can correct the other email', async () => {
-  await withApp(deployment, async (app) => {
-    await setUp(app.household);
-    const owner = client(app, 'owner');
-    const partner = client(app, 'partner');
-    assert.equal((await partner.call('/api/people/me', { name: 'Sammy' })).status, 200);
-    assert.equal((await partner.call('/api/people/me', { name: '  ' })).status, 400);
-    assert.equal(
-      (await partner.call('/api/people/partner', { email: 'x@example.com' })).status,
-      403,
-    );
-    assert.equal(
-      (await owner.call('/api/people/partner', { email: people.owner.email })).status,
-      400,
-    );
-    assert.equal(
-      (await owner.call('/api/people/partner', { email: 'Sam@New.example' })).status,
-      200,
-    );
-    const signedIn = (email: string) =>
-      app.auth.caller(
-        new Request('https://app.example/api/state', { headers: { [identityHeader]: email } }),
+test('the app does not start without both people, and says which variables to set', async () => {
+  const cases: [Record<string, string>, RegExp][] = [
+    [{}, /^Configure PERSON_1_NAME, PERSON_1_EMAIL, PERSON_2_NAME, PERSON_2_EMAIL in the Worker/],
+    [{ ...deployment, PERSON_2_EMAIL: 'not an email' }, /^Configure PERSON_2_EMAIL in the Worker/],
+    [{ ...deployment, PERSON_1_NAME: '  ' }, /^Configure PERSON_1_NAME in the Worker/],
+    [{ ...deployment, PERSON_2_EMAIL: ' ALEX@example.com' }, /^Configure a different email/],
+    // A development server has no sign-in, so it needs only the names.
+    [{ HOUSEHOLD_DEVELOPMENT: 'true' }, /^Configure PERSON_1_NAME, PERSON_2_NAME in cloudflare/],
+  ];
+  for (const [settings, message] of cases)
+    await assert.rejects(openHousehold(openStore(), settings), { message });
+  await withApp(
+    { HOUSEHOLD_DEVELOPMENT: 'true', PERSON_1_NAME: 'Alex', PERSON_2_NAME: 'Sam' },
+    async (app) => {
+      assert.deepEqual(
+        (await app.household.people()).map((person) => person.username),
+        ['owner', 'partner'],
       );
-    assert.equal(await signedIn(people.partner.email), null);
-    const moved = await signedIn('sam@new.example');
-    assert.deepEqual(moved && 'person' in moved ? moved.person.name : null, 'Sammy');
-  });
+    },
+  );
 });
 
-test('a development server has no sign-in, answers only on this computer, and sets up with names', async () => {
+test('changing a name or email in the variables keeps each person’s records', async () => {
+  const path = `${directory('people')}/household.sqlite`;
+  const first = await openHousehold(openStore(path), deployment);
+  await client(first, 'partner').call('/api/previews', {
+    kind: 'thread.create',
+    title: 'Holiday',
+    category: 'household',
+  });
+  await first.conversations.close();
+  // Sam is renamed and moves email; Alex takes Sam's old address.
+  const moved = {
+    ...deployment,
+    PERSON_1_EMAIL: people.partner.email,
+    PERSON_2_NAME: 'Sammy',
+    PERSON_2_EMAIL: 'Sam@New.example',
+  };
+  await withApp(
+    moved,
+    async (app) => {
+      const signedIn = (email: string) =>
+        app.auth.caller(
+          new Request('https://app.example/api/state', { headers: { [identityHeader]: email } }),
+        );
+      assert.equal(await signedIn(people.owner.email), null);
+      assert.equal((await signedIn(people.partner.email))?.id, 'owner');
+      const sam = await signedIn('sam@new.example');
+      assert.deepEqual([sam?.id, sam?.name], ['partner', 'Sammy']);
+      const previews = await json(
+        await client(app, null).call('/api/previews', undefined, 'GET', {
+          [identityHeader]: 'sam@new.example',
+        }),
+      );
+      assert.equal(previews.length, 1);
+    },
+    path,
+  );
+});
+
+test('a development server has no sign-in and answers only on this computer', async () => {
   await withApp(config, async (app) => {
-    const local = client(app, null);
-    const pending = await local.call('/api/state');
-    assert.equal(pending.status, 428);
-    assert.deepEqual((await json(pending)).setup, { email: null, development: true });
-    assert.equal(
-      (await local.call('/api/setup', { name: 'Alex', partner: { name: 'Sam' } })).status,
-      200,
-    );
-    const me = await json(await local.call('/api/state'));
+    const me = await json(await client(app, null).call('/api/state'));
     assert.deepEqual([me.me.id, me.me.name, me.signIn], ['owner', 'Alex', 'development']);
     const other = await json(await client(app, 'partner').call('/api/state'));
     assert.equal(other.me.name, 'Sam');
@@ -135,7 +145,6 @@ test('a development server has no sign-in, answers only on this computer, and se
 
 test('writes need the app header and the origin the app was served at', async () => {
   await withApp(deployment, async (app) => {
-    await setUp(app.household);
     const owner = client(app, 'owner', 'https://assistant.example.workers.dev');
     const presence = { threadId: null, clientId: crypto.randomUUID(), typing: false };
     assert.equal((await owner.call('/api/presence', presence)).status, 200);
@@ -148,10 +157,10 @@ test('writes need the app header and the origin the app was served at', async ()
   });
 });
 
-test('setting up keeps the records of people provisioned by an earlier version', async () => {
+test('people from an earlier version keep their records, and settings saved in the app are dropped', async () => {
   const db = openStore();
-  await migrate(db);
-  // Earlier versions created both people from configuration at startup.
+  await migrate(db, migrations.slice(0, 3));
+  // Earlier versions set people up at the first sign-in and kept connections in Settings.
   await db.run("INSERT INTO users VALUES ('owner','owner','You'),('partner','partner','Partner')");
   await db.run(
     "INSERT INTO preferences VALUES ('owner', ?, 4)",
@@ -161,13 +170,14 @@ test('setting up keeps the records of people provisioned by an earlier version',
       evening: { enabled: true, time: '18:00' },
     }),
   );
-  const household = new Household(db);
-  const auth = new Auth(household);
-  assert.deepEqual(await household.people(), []);
-  const before = await auth.caller(
-    new Request('https://app.example/', { headers: { [identityHeader]: people.owner.email } }),
+  for (const key of ['setup', 'icloud', 'ai_model', 'push'])
+    await db.run('INSERT INTO settings VALUES (?, ?)', key, JSON.stringify(key));
+  await migrate(db);
+  assert.deepEqual(
+    (await db.all<Row>('SELECT key FROM settings')).map((row) => row.key),
+    ['push'],
   );
-  assert.deepEqual(before, { setup: { email: people.owner.email } });
+  const household = new Household(db);
   await setUp(household);
   assert.deepEqual(
     (await household.people()).map((person) => [person.id, person.username, person.name]),
@@ -177,7 +187,10 @@ test('setting up keeps the records of people provisioned by an earlier version',
     ],
   );
   assert.equal((await household.preferences('owner')).timezone, 'Europe/London');
-  const rows = await db.all<Row>("SELECT value FROM settings WHERE key='setup'");
-  assert.equal(rows.length, 1);
+  const auth = new Auth(household);
+  const signedIn = await auth.caller(
+    new Request('https://app.example/', { headers: { [identityHeader]: people.owner.email } }),
+  );
+  assert.equal(signedIn?.id, 'owner');
   await db.close();
 });
