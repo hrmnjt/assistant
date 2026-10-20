@@ -1,4 +1,5 @@
 import type { Household } from './household.js';
+import { audienceHeader, type AccessTokens } from './access.js';
 import type { Person } from '../src/types.js';
 
 /**
@@ -9,14 +10,19 @@ export const identityHeader = 'x-household-access-email';
 /** Development only: which of the two people this browser acts as (`partner`, else the owner). */
 export const developmentPersonCookie = 'household-dev-person';
 
-type AccessContext = { getIdentity(): Promise<{ email?: string } | undefined> };
+type AccessContext = { aud?: string; getIdentity(): Promise<{ email?: string } | undefined> };
 
-/** In the Worker: replace any client-sent identity with the email Cloudflare Access verified. */
+/**
+ * In the Worker: replace any client-sent identity with the email Cloudflare
+ * Access verified, and name the Access application when Cloudflare does.
+ */
 export async function withAccessIdentity(request: Request, access?: AccessContext) {
   const headers = new Headers(request.headers);
   headers.delete(identityHeader);
+  headers.delete(audienceHeader);
   const email = (await access?.getIdentity())?.email?.trim().toLowerCase();
   if (email) headers.set(identityHeader, email);
+  if (access?.aud) headers.set(audienceHeader, access.aud);
   return new Request(request, { headers });
 }
 
@@ -24,8 +30,9 @@ const loopback = (hostname: string) => ['localhost', '127.0.0.1', '[::1]'].inclu
 
 /**
  * The app has no sign-in of its own. A deployment sits behind Cloudflare
- * Access, which signs people in; the Worker passes on the verified email, and
- * it must be one of the two in the Worker's variables. A development server
+ * Access, which signs people in; the Worker passes on the verified email (or
+ * the app checks Access's signed token itself), and it must be one of the two
+ * the admin added. A development server
  * (started by `npm run dev`) has no sign-in, answers only on this computer, and
  * acts as person 1, or as person 2 to try shared features. Anything else,
  * including a deployment without Access, is refused.
@@ -35,8 +42,14 @@ export class Auth {
   constructor(
     private household: Household,
     development = false,
+    /** Checks Access's own signed token when the Worker passes on no email. */
+    readonly tokens?: AccessTokens,
   ) {
     this.mode = development ? 'development' : 'cloudflare-access';
+  }
+  /** The email Cloudflare Access signed this request in with, if any. */
+  async email(request: Request) {
+    return request.headers.get(identityHeader) || ((await this.tokens?.email(request)) ?? null);
   }
   /** Which of the two people is asking, or null for anyone else. */
   async caller(request: Request): Promise<Person | null> {
@@ -48,7 +61,7 @@ export class Auth {
         .some((part) => part.trim() === `${developmentPersonCookie}=partner`);
       return people.find((p) => p.id === (asPartner ? 'partner' : 'owner')) ?? null;
     }
-    const email = request.headers.get(identityHeader);
+    const email = await this.email(request);
     return (email && people.find((item) => item.username === email)) || null;
   }
   /**

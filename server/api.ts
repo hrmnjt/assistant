@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Row, Store } from './database.js';
-import { identityHeader, type Auth } from './auth.js';
+import type { Auth } from './auth.js';
 import { handleAdmin, type AdminAuth } from './admin.js';
 import { previewOwner } from './changes.js';
 import { DomainError } from './errors.js';
@@ -46,7 +46,7 @@ export async function handle(app: App, request: Request): Promise<Response> {
       return await handleAdmin(app, request);
     const me = await auth.caller(request);
     // Someone Access signed in (or anyone, in development), before the admin added the two people.
-    const signedIn = auth.mode === 'development' || request.headers.has(identityHeader);
+    const signedIn = auth.mode === 'development' || Boolean(await auth.email(request));
     if (!me && signedIn && !(await app.household.people()).length)
       throw new RequestError(
         'The assistant isn’t set up yet: the admin adds the two of you on the admin page.',

@@ -67,8 +67,12 @@ local app stops with its process. Phones use the deployment.
 Cloudflare Access signs the two people in; the app has no passwords of its own.
 With Access enabled on the Worker, Cloudflare gives it the verified email of
 each request (`ctx.access`); the Worker passes that on to the app, which
-recognizes only the two emails the admin added. A deployment without Access
-refuses every request.
+recognizes only the two emails the admin added. When the Worker is given no
+identity, the app checks Access's own signed token on the request
+(`Cf-Access-Jwt-Assertion`): it must be signed by the Access team, for the
+Access application, that the admin page recorded (the admin's session vouches
+for that request), and not have expired. A deployment without Access refuses
+every request.
 
 The admin page, `/admin`, is separate from the two people's app: it sits behind
 Access too and also needs `ADMIN_TOKEN`, a Worker secret. There the admin adds
@@ -83,8 +87,10 @@ the two people, connects the iCloud calendar and chooses the assistant's model.
 3. In Settings → Variables and Secrets, add `ADMIN_TOKEN` as a Secret: at least
    32 random characters, from a password manager.
 4. Open `/admin`, sign in with that token, and add both people's names and the
-   emails Access allows. The page also shows which email Access verified for
-   the request, to check Access reaches the app.
+   emails Access allows. Opening the page also records which Access team and
+   application sign requests, and shows which email Access verified for the
+   request, to check Access reaches the app. Open it again after changing the
+   Access application.
 5. Optional, on the same page: connect the shared iCloud calendar (an Apple ID
    and an app-specific password, then the calendar to share).
 6. Optional, on the same page: connect ChatGPT (see [AI access](#ai-access))

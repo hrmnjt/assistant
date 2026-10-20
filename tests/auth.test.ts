@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Auth, identityHeader, withAccessIdentity } from '../server/auth.js';
+import { audienceHeader } from '../server/access.js';
 import { migrate, migrations } from '../server/database.js';
 import { Household } from '../server/household.js';
 import { openHousehold, type Runtime } from '../server/runtime.js';
@@ -34,6 +35,16 @@ test('the Worker forwards only the email Cloudflare Access verified', async () =
   // Access present but without an email (a service token, say) is still nobody.
   const tokenOnly = await withAccessIdentity(spoofed, { getIdentity: async () => ({}) });
   assert.equal(tokenOnly.headers.get(identityHeader), null);
+  // The Worker names the Access application in front of it; a client cannot claim one.
+  const claimed = new Request('https://app.example/api/state', {
+    headers: { [audienceHeader]: 'claimed-by-client' },
+  });
+  assert.equal((await withAccessIdentity(claimed)).headers.get(audienceHeader), null);
+  const named = await withAccessIdentity(claimed, {
+    aud: 'access-application',
+    getIdentity: async () => undefined,
+  });
+  assert.equal(named.headers.get(audienceHeader), 'access-application');
 });
 
 test('a deployment: only the two emails the admin added get in', async () => {
