@@ -1,11 +1,6 @@
 import { DateTime } from 'luxon';
 import type { CalendarEvent } from './types';
 
-export function monthDays(month: string, zone: string) {
-  const first = DateTime.fromISO(`${month}-01`, { zone });
-  const beginning = first.minus({ days: first.weekday - 1 });
-  return Array.from({ length: 42 }, (_, index) => beginning.plus({ days: index }));
-}
 export function eventsForDay(events: CalendarEvent[], day: string, zone: string) {
   const beginning = DateTime.fromISO(day, { zone }).startOf('day');
   const end = beginning.plus({ days: 1 });
