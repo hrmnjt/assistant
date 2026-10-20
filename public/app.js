@@ -1,4 +1,5 @@
-// The chat: threads, each with its own context. Replies stream in as lines of JSON.
+// The chat: threads, each with its own context. Replies stream in as lines of JSON,
+// and a WebSocket says when a thread changes, on this device or another.
 
 const list = document.querySelector('#messages');
 const problem = document.querySelector('#problem');
@@ -10,6 +11,8 @@ const sendButton = form.querySelector('button');
 /** The open thread, from the address (`/?t=12`); none for a new chat. */
 let thread = Number(new URLSearchParams(location.search).get('t')) || null;
 let busy = false;
+/** The open thread changed while this page was busy; show it again once done. */
+let stale = false;
 
 const post = (path, body = {}) =>
   fetch(path, {
@@ -28,6 +31,14 @@ function element(tag, className = '', text = '') {
 function setBusy(value) {
   busy = value;
   sendButton.disabled = value;
+  if (!value && stale) refresh();
+}
+
+/** Show the open thread as saved: now, or when this page is no longer busy. */
+function refresh() {
+  if (busy) return (stale = true);
+  setBusy(true);
+  load();
 }
 
 /** Show why a request failed. Without a response, the network or the Access sign-in failed. */
@@ -123,6 +134,8 @@ async function follow(response) {
 }
 
 async function load() {
+  // What this fetches includes every change so far.
+  stale = false;
   if (!thread) {
     list.replaceChildren(element('p', 'empty', 'Ask anything. Each chat keeps its own context.'));
     return setBusy(false);
@@ -131,13 +144,15 @@ async function load() {
   if (!response?.ok) return fail(response);
   const { title: name, messages, replying } = await response.json();
   title.textContent = document.title = name;
-  list.replaceChildren();
-  messages.forEach(show);
-  // The last message can be answered again if its reply failed or never came.
-  const last = messages.at(-1);
-  if (!replying && last?.role === 'user') show({ role: 'assistant', error: 'No reply yet.' });
-  if (!replying && (last?.role === 'user' || last?.error)) list.lastChild.append(retryButton());
-  list.scrollTop = list.scrollHeight;
+  // Showing it again keeps the reader's place, unless they were at the end.
+  keepAtBottom(() => {
+    list.replaceChildren();
+    messages.forEach(show);
+    // The last message can be answered again if its reply failed or never came.
+    const last = messages.at(-1);
+    if (!replying && last?.role === 'user') show({ role: 'assistant', error: 'No reply yet.' });
+    if (!replying && (last?.role === 'user' || last?.error)) list.lastChild.append(retryButton());
+  });
   if (replying) {
     const stream = await fetch(`/api/threads/${thread}/stream`).catch(() => null);
     if (stream?.status === 200) return follow(stream);
@@ -177,11 +192,43 @@ async function showThreads() {
 
 async function removeThread(item) {
   if (!confirm(`Delete “${item.title}”? This can’t be undone.`)) return;
+  // The open chat is going away: don't show it again meanwhile.
+  if (item.id === thread) setBusy(true);
   const response = await fetch(`/api/threads/${item.id}`, { method: 'DELETE' }).catch(() => null);
   if (!response?.ok) return fail(response);
   if (item.id === thread) location.href = '/';
   else showThreads();
 }
+
+let socket;
+
+/** Hear when a thread changes. A new connection catches up on what the dropped one missed. */
+function listen() {
+  if (socket && socket.readyState <= WebSocket.OPEN) return;
+  const reconnecting = Boolean(socket);
+  socket = new WebSocket(`${location.origin.replace('http', 'ws')}/api/events`);
+  if (reconnecting) socket.addEventListener('open', catchUp);
+  socket.addEventListener('message', ({ data }) => {
+    if (data === 'pong') return;
+    showThreads();
+    if (JSON.parse(data).thread === thread) refresh();
+  });
+  socket.addEventListener('close', () => setTimeout(listen, 5000));
+}
+
+function catchUp() {
+  showThreads();
+  refresh();
+}
+
+// Cloudflare closes a silent WebSocket; the app answers pings without waking up.
+setInterval(() => socket.readyState === WebSocket.OPEN && socket.send('ping'), 30_000);
+// A phone drops the socket in the background, sometimes without saying: catch up on return.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (socket.readyState === WebSocket.OPEN) catchUp();
+  else listen();
+});
 
 function resize() {
   input.style.height = 'auto';
@@ -224,3 +271,4 @@ document.querySelector('#close-threads').addEventListener('click', () => panel(f
 setBusy(true);
 load();
 showThreads();
+listen();
