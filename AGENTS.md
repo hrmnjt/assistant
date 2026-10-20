@@ -8,6 +8,9 @@ Durable Object, and plain HTML/JS pages in `public/`. Keep it that small.
 - The owner works from a phone. Deliver changes as pull requests; the owner
   merges them with "Rebase and merge", so keep branches linear. Merging to
   `main` deploys.
+- Commits are the owner's alone: author them as the owner, with no Claude
+  co-author or session lines and no session signing key
+  (`git -c commit.gpgsign=false`).
 - `npm run check` (typecheck and Worker bundle) must pass. Try behavior changes
   with `npm run dev`.
 - Treat the repository as public: never commit names, emails, account
