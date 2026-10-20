@@ -12,6 +12,8 @@ type AdminState = {
   people: { id: string; name: string; email: string }[];
   /** The email Cloudflare Access verified for this request, if any. */
   access: string | null;
+  /** Whether the request carried Access's signed token. */
+  accessToken: boolean;
   ai: { connected: boolean; model: string | null };
   calendar: { status: string; name: string | null; account: string | null; error: string | null };
 };
@@ -144,7 +146,9 @@ function AccessCheck({ state }: { state: AdminState }) {
       </h2>
       <p className="muted">
         {!state.access
-          ? 'No Access sign-in reached the app on this request, so the app turns everyone away. Check that Access is on for this Worker (Settings → Domains & Routes).'
+          ? state.accessToken
+            ? 'Access sent a sign-in token on this request, but the app could not check it, so it turns everyone away. Reload this page in a minute; if this stays, the token is not from this Access application.'
+            : 'No Access sign-in reached the app on this request, so the app turns everyone away. Check that Access is on for this Worker (Settings → Domains & Routes).'
           : known
             ? `Access signed you in as ${state.access}.`
             : `Access signed you in as ${state.access}, which is not one of the two people’s emails below, so the app turns it away.`}

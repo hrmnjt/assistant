@@ -77,6 +77,9 @@ test('admin: says when Access does not reach the app, and when ADMIN_TOKEN is mi
   household.admin.access = null;
   household.admin.signedIn = true;
   await page.goto('/admin');
+  await expect(page.getByText(/^Access sent a sign-in token on this request/)).toBeVisible();
+  household.admin.accessToken = false;
+  await page.reload();
   await expect(page.getByText(/^No Access sign-in reached the app on this request/)).toBeVisible();
   household.admin.access = 'someone@example.com';
   await page.reload();

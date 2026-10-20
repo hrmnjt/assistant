@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Row, Store } from './database.js';
 import { DomainError } from './errors.js';
 import { body, json, RequestError } from './http.js';
-import { identityHeader } from './auth.js';
+import { assertionHeader } from './access.js';
 import { peopleInput } from './household.js';
 import { Settings } from './settings.js';
 import type { AdminRoute } from './plugin.js';
@@ -132,14 +132,17 @@ function adminRoutes(app: App): AdminRoute[] {
       method: 'GET',
       path: /^\/api\/admin\/state$/,
       handle: async (request) => {
+        // The admin's session vouches that this request came through Access: trust its signer.
+        await app.auth.tokens?.trust(request);
         let state: Record<string, unknown> = {
           people: (await household.people()).map((person) => ({
             id: person.id,
             name: person.name,
             email: person.username.includes('@') ? person.username : '',
           })),
-          // The email Cloudflare Access verified for this request, to check Access reaches the app.
-          access: request.headers.get(identityHeader),
+          // Who Cloudflare Access signed in on this request, to check Access reaches the app.
+          access: await app.auth.email(request),
+          accessToken: request.headers.has(assertionHeader),
           ai: {
             connected: await assistantModel.connected(),
             model: (await app.settings.get<string>('ai_model')) ?? null,

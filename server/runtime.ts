@@ -4,6 +4,7 @@ import { migrate, type Store } from './database.js';
 import { Auth } from './auth.js';
 import { Household } from './household.js';
 import { AdminAuth } from './admin.js';
+import { AccessTokens } from './access.js';
 import { Conversations } from './conversations.js';
 import { Notices, type PushSender } from './notices.js';
 import { AssistantKit, coreExtension } from './assistant-tools.js';
@@ -94,7 +95,7 @@ export async function openHousehold(
     (model) => conversations.setModel(model),
     clock,
   );
-  const auth = new Auth(household, development);
+  const auth = new Auth(household, development, new AccessTokens(settings, clock));
   const admin = new AdminAuth(db, config.ADMIN_TOKEN, development, clock);
   const nextWake = async () => {
     const now = clock();
