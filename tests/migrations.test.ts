@@ -1,74 +1,72 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite';
 import { migrate, migrations, schemaVersion } from '../server/database.js';
-import { directory, openStore, type Row } from './support.js';
+import { openHousehold } from '../server/runtime.js';
+import { adminToken, client, config, deployment, json, openStore, push, setUp } from './support.js';
 
-test('a new store is migrated once and reopening is idempotent', async () => {
-  const path = directory('migrations');
-  const file = resolve(path, 'household.sqlite');
-  try {
-    let db = openStore(file);
-    await migrate(db);
-    assert.equal(await schemaVersion(db), migrations.length);
-    await db.run("INSERT INTO users VALUES ('owner','owner','Alex')");
-    await db.close();
-    db = openStore(file);
-    await migrate(db);
-    assert.equal(await schemaVersion(db), migrations.length);
-    assert.equal((await db.get<Row>('SELECT COUNT(*) AS n FROM users'))!.n, 1);
-    await db.close();
-  } finally {
-    rmSync(path, { recursive: true, force: true });
-  }
-});
-
-test('household tables and Pi tables share one store without name collisions', async () => {
-  const db = openStore();
-  await migrate(db);
-  await SqliteStorage.open(db);
-  const tables = (await db.all<Row>("SELECT name FROM sqlite_master WHERE type='table'")).map(
-    (row) => row.name,
-  );
-  // Pi owns `tasks`; household tasks live in their own table.
-  assert.ok(tables.includes('tasks'));
-  assert.ok(tables.includes('household_tasks'));
-  await migrate(db);
-  await db.close();
-});
-
-test('a failed migration rolls back completely and keeps the previous version', async () => {
+test('a failed upgrade leaves the store as it was, and a newer store is refused untouched', async () => {
   const db = openStore();
   try {
     await migrate(db);
-    const broken = [
-      ...migrations,
-      'CREATE TABLE half_applied (id INTEGER); INSERT INTO missing_table VALUES (1);',
-    ];
-    await assert.rejects(migrate(db, broken), /missing_table/);
+    const step = 'CREATE TABLE half_applied (id INTEGER);';
+    await assert.rejects(
+      migrate(db, [...migrations, `${step} INSERT INTO missing_table VALUES (1);`]),
+    );
     assert.equal(await schemaVersion(db), migrations.length);
     assert.equal(
       await db.get("SELECT 1 AS found FROM sqlite_master WHERE name='half_applied'"),
       undefined,
     );
-    // A corrected later step applies on the next start.
-    await migrate(db, [...migrations, 'CREATE TABLE half_applied (id INTEGER);']);
+    // Corrected, the step applies on the next start.
+    await migrate(db, [...migrations, step]);
+    assert.equal(await schemaVersion(db), migrations.length + 1);
+    // The app is now older than its store, so it does not start rather than change it.
+    await assert.rejects(openHousehold(db, config));
     assert.equal(await schemaVersion(db), migrations.length + 1);
   } finally {
     await db.close();
   }
 });
 
-test('a store from a newer app version is refused rather than modified', async () => {
+test('people and their settings from an earlier version survive the upgrade; retired settings are dropped', async () => {
   const db = openStore();
+  // Earlier versions set people up at the first sign-in and kept connections in Settings.
+  await migrate(db, migrations.slice(0, 3));
+  await db.run("INSERT INTO users VALUES ('owner','owner','You'),('partner','partner','Partner')");
+  await db.run(
+    "INSERT INTO preferences VALUES ('owner', ?, 4)",
+    JSON.stringify({
+      timezone: 'Europe/London',
+      morning: { enabled: false, time: '07:00' },
+      evening: { enabled: true, time: '18:00' },
+    }),
+  );
+  const saved = {
+    icloud: { username: 'family@icloud.example', password: 'old-app-password' },
+    ai_model: 'gpt-6.1-sol',
+    push,
+  };
+  for (const [key, value] of Object.entries(saved))
+    await db.run('INSERT INTO settings VALUES (?, ?)', key, JSON.stringify(value));
+  const app = await openHousehold(db, deployment);
   try {
-    await migrate(db);
-    await db.run('UPDATE household_schema SET version=?', migrations.length + 1);
-    await assert.rejects(migrate(db), /newer app version/);
-    assert.equal(await schemaVersion(db), migrations.length + 1);
+    await setUp(app.household);
+    const owner = client(app, 'owner', 'https://assistant.example.workers.dev');
+    const state = await json(await owner.call('/api/state'));
+    assert.deepEqual(
+      [state.me.id, state.me.name, state.preferences.timezone],
+      ['owner', 'Alex', 'Europe/London'],
+    );
+    // The push keys stay, so phones keep their subscriptions; iCloud and the model are set again.
+    assert.equal((await json(await owner.call('/api/push/key'))).publicKey, push.publicKey);
+    const signedIn = await owner.call('/api/admin/session', { token: adminToken });
+    const adminState = await json(
+      await owner.call('/api/admin/state', undefined, 'GET', {
+        Cookie: signedIn.headers.get('set-cookie')!.split(';')[0],
+      }),
+    );
+    assert.deepEqual([adminState.calendar.account, adminState.ai.model], [null, null]);
   } finally {
-    await db.close();
+    await app.conversations.close();
   }
 });

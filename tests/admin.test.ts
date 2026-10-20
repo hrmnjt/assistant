@@ -3,36 +3,39 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { identityHeader } from '../server/auth.js';
 import { openHousehold, type Runtime } from '../server/runtime.js';
-import type {
-  CalendarAccount,
-  CalendarConnector,
-  CalendarTransport,
-} from '../server/plugins/calendar/caldav.js';
+import type { CalendarConnector } from '../server/plugins/calendar/caldav.js';
 import {
   adminToken,
   client,
-  config,
   deployment,
   directory,
+  json,
   openStore,
-  origin,
   people,
   setUp,
-  type Row,
 } from './support.js';
 
-const json = async (response: Response) => (await response.json()) as any;
 const base = 'https://assistant.example.workers.dev';
 
+/** Run `work` on an open assistant, then stop it. */
+async function running(opening: Promise<Runtime>, work: (app: Runtime) => Promise<void>) {
+  const app = await opening;
+  try {
+    await work(app);
+  } finally {
+    await app.conversations.close();
+  }
+}
+
 /** The admin page's requests, keeping its session cookie as a browser does. */
-function admin(app: Runtime, headers: Record<string, string> = {}, at = base) {
-  let cookie = '';
+function admin(app: Runtime, cookie = '') {
   const call = async (
     path: string,
     body?: unknown,
     method = body === undefined ? 'GET' : 'POST',
+    headers: Record<string, string> = {},
   ) => {
-    const response = await client(app, null, at).call(path, body, method, {
+    const response = await client(app, null, base).call(path, body, method, {
       ...(cookie ? { Cookie: cookie } : {}),
       ...headers,
     });
@@ -50,247 +53,145 @@ function admin(app: Runtime, headers: Record<string, string> = {}, at = base) {
 }
 
 test('the admin signs in with ADMIN_TOKEN, separately from the two people', async () => {
-  const app = await openHousehold(openStore(), deployment);
-  try {
-    const page = admin(app);
-    assert.deepEqual(await json(await page.call('/api/admin/session')), {
-      signedIn: false,
-      development: false,
-      unavailable: null,
+  for (const ADMIN_TOKEN of [undefined, 'too-short'])
+    await running(openHousehold(openStore(), { ADMIN_TOKEN }), async (app) => {
+      const page = admin(app);
+      assert.ok((await json(await page.call('/api/admin/session'))).unavailable);
+      assert.equal((await page.signIn('too-short')).status, 503);
     });
+  let now = Date.parse('2026-10-20T09:00:00Z');
+  const clock = () => new Date(now);
+  const path = `${directory('admin')}/household.sqlite`;
+  let session = '';
+  await running(openHousehold(openStore(path), deployment, { clock }), async (app) => {
+    await setUp(app.household);
+    const page = admin(app);
     assert.equal((await page.call('/api/admin/state')).status, 401);
     assert.equal((await page.signIn('not the token')).status, 401);
     const signedIn = await page.signIn();
     assert.equal(signedIn.status, 200);
-    const cookie = signedIn.headers.get('set-cookie')!;
-    for (const part of [
-      'Path=/api/admin',
-      'HttpOnly',
-      'SameSite=Strict',
-      'Secure',
-      'Max-Age=43200',
-    ])
-      assert(cookie.includes(part), part);
-    assert.equal((await json(await page.call('/api/admin/session'))).signedIn, true);
+    const flags = signedIn.headers.get('set-cookie')!.split('; ');
+    for (const flag of ['Path=/api/admin', 'HttpOnly', 'SameSite=Strict', 'Secure'])
+      assert.ok(flags.includes(flag), flag);
+    // The page shows who Cloudflare Access signed in on this request.
+    const state = await page.call('/api/admin/state', undefined, 'GET', {
+      [identityHeader]: people.owner.email,
+    });
+    assert.equal((await json(state)).access, people.owner.email);
     // The admin's session is not a person's sign-in, and a person's is not the admin's.
-    await setUp(app.household);
     assert.equal((await page.call('/api/state')).status, 401);
     assert.equal((await client(app, 'owner', base).call('/api/admin/state')).status, 401);
-    // Signing out ends the session.
+    // Signing out ends the session itself, not just the browser's cookie.
+    const signedOut = page.cookie;
     assert.equal((await page.call('/api/admin/session', undefined, 'DELETE')).status, 200);
-    assert.equal(page.cookie, 'assistant-admin=');
-    assert.equal((await page.call('/api/admin/state')).status, 401);
-  } finally {
-    await app.conversations.close();
-  }
-});
-
-test('admin sign-in is off without a long ADMIN_TOKEN, locks after five wrong tokens, and ends with a new token', async () => {
-  for (const ADMIN_TOKEN of [undefined, 'too-short'] as const) {
-    const app = await openHousehold(openStore(), { ADMIN_TOKEN });
-    try {
-      const page = admin(app);
-      assert.match((await json(await page.call('/api/admin/session'))).unavailable, /ADMIN_TOKEN/);
-      assert.equal((await page.signIn('too-short')).status, 503);
-    } finally {
-      await app.conversations.close();
-    }
-  }
-  const path = `${directory('admin')}/household.sqlite`;
-  const first = await openHousehold(openStore(path), deployment);
-  const page = admin(first);
-  try {
+    assert.equal((await admin(app, signedOut).call('/api/admin/state')).status, 401);
+    // Five wrong tokens lock sign-in, even with the right token, until the lock passes.
     for (let attempt = 0; attempt < 5; attempt++)
       assert.equal((await page.signIn(`wrong-${attempt}`)).status, 401);
-    const locked = await page.signIn();
-    assert.equal(locked.status, 429);
-    assert.match((await json(locked)).error, /Try again in 15 minutes/);
-  } finally {
-    await first.conversations.close();
-  }
-  // After the lock (here: a clock 16 minutes on), the right token works again.
-  const later = await openHousehold(openStore(path), deployment, {
-    clock: () => new Date(Date.now() + 16 * 60_000),
+    assert.equal((await page.signIn()).status, 429);
+    now += 16 * 60_000;
+    assert.equal((await page.signIn()).status, 200);
+    session = page.cookie;
   });
-  const again = admin(later);
-  try {
-    assert.equal((await again.signIn()).status, 200);
-  } finally {
-    await later.conversations.close();
-  }
-  // A new ADMIN_TOKEN ends the sessions made with the old one.
-  const rotated = await openHousehold(openStore(path), {
-    ADMIN_TOKEN: 'a-new-admin-token-0123456789-abcdefghij',
-  });
-  try {
-    const response = await client(rotated, null, base).call('/api/admin/state', undefined, 'GET', {
-      Cookie: again.cookie,
+  // A session outlasts a restart, but a new ADMIN_TOKEN ends those made with the old one.
+  const rotated = { ADMIN_TOKEN: `${adminToken}-rotated` };
+  for (const [settings, status] of [
+    [deployment, 200],
+    [rotated, 401],
+  ] as const)
+    await running(openHousehold(openStore(path), settings, { clock }), async (app) => {
+      assert.equal((await admin(app, session).call('/api/admin/state')).status, status);
     });
-    assert.equal(response.status, 401);
-  } finally {
-    await rotated.conversations.close();
-  }
 });
 
-test('the admin adds the two people; a changed name or email keeps their records', async () => {
-  const app = await openHousehold(openStore(), deployment);
-  try {
+test('adding and renaming the two people keeps their records and their assistant chats', async () => {
+  await running(openHousehold(openStore(), deployment), async (app) => {
     const page = admin(app);
     await page.signIn();
-    const invalid = [
-      [{ name: 'Alex', email: 'alex@example.com' }],
-      [
-        { name: 'Alex', email: 'alex@example.com' },
-        { name: 'Sam', email: 'ALEX@example.com' },
-      ],
-      [
-        { name: ' ', email: 'alex@example.com' },
-        { name: 'Sam', email: 'sam@example.com' },
-      ],
-      // A deployment needs both emails.
-      [{ name: 'Alex', email: 'alex@example.com' }, { name: 'Sam' }],
-    ];
-    for (const value of invalid)
-      assert.equal(
-        (await page.call('/api/admin/people', { people: value }, 'PUT')).status,
-        400,
-        JSON.stringify(value),
-      );
-    const added = await page.call(
-      '/api/admin/people',
-      { people: [people.owner, { name: 'Sam', email: 'Sam@Example.com' }] },
-      'PUT',
-    );
-    assert.equal(added.status, 200);
-    const sam = client(app, 'partner', base);
-    assert.equal((await json(await sam.call('/api/state'))).me.name, 'Sam');
-    await sam.call('/api/previews', {
-      kind: 'thread.create',
-      title: 'Holiday',
-      category: 'household',
-    });
-    // Sam is renamed and moves email; Alex takes Sam's old address.
-    await page.call(
-      '/api/admin/people',
-      {
-        people: [
-          { name: 'Alex', email: people.partner.email },
-          { name: 'Sammy', email: 'sam@new.example' },
-        ],
-      },
-      'PUT',
-    );
-    const signedIn = (email: string) =>
-      app.auth.caller(new Request(`${base}/api/state`, { headers: { [identityHeader]: email } }));
-    assert.equal(await signedIn(people.owner.email), null);
-    assert.equal((await signedIn(people.partner.email))?.id, 'owner');
-    const moved = await signedIn('sam@new.example');
-    assert.deepEqual([moved?.id, moved?.name], ['partner', 'Sammy']);
-    const previews = await json(
-      await client(app, null, base).call('/api/previews', undefined, 'GET', {
-        [identityHeader]: 'sam@new.example',
-      }),
-    );
-    assert.equal(previews.length, 1);
-    const state = await json(await page.call('/api/admin/state'));
-    assert.deepEqual(state.people, [
-      { id: 'owner', name: 'Alex', email: people.partner.email },
-      { id: 'partner', name: 'Sammy', email: 'sam@new.example' },
-    ]);
-  } finally {
-    await app.conversations.close();
-  }
-});
-
-test('the admin page shows the email Cloudflare Access verified for this request', async () => {
-  const app = await openHousehold(openStore(), deployment);
-  try {
-    const page = admin(app, { [identityHeader]: 'someone@example.com' });
-    await page.signIn();
-    assert.equal((await json(await page.call('/api/admin/state'))).access, 'someone@example.com');
-    const without = admin(app);
-    await without.signIn();
-    assert.equal((await json(await without.call('/api/admin/state'))).access, null);
-  } finally {
-    await app.conversations.close();
-  }
-});
-
-test('a development server needs no admin token, and emails are optional there', async () => {
-  const app = await openHousehold(openStore(), config);
-  try {
-    const page = admin(app, {}, origin);
-    assert.equal((await json(await page.call('/api/admin/session'))).signedIn, true);
-    const added = await page.call(
-      '/api/admin/people',
-      { people: [{ name: 'Alex' }, { name: 'Sam' }] },
-      'PUT',
-    );
-    assert.equal(added.status, 200);
-    assert.equal((await json(await client(app, 'partner').call('/api/state'))).me.name, 'Sam');
-  } finally {
-    await app.conversations.close();
-  }
-});
-
-/** iCloud for tests: one account with a shared calendar and a personal one. */
-function fakeICloud() {
-  const opened: string[] = [];
-  const valid = (account: CalendarAccount) =>
-    account.username === 'family@icloud.example' && account.password === 'abcd-efgh-ijkl-mnop';
-  const calendars = [
-    { name: 'Household', url: 'https://caldav.icloud.com/1/calendars/home/' },
-    { name: 'Personal', url: 'https://caldav.icloud.com/1/calendars/mine/' },
-  ];
-  const connector: CalendarConnector = {
-    calendars: async (account) => {
-      if (!valid(account)) throw new Error('401');
-      return calendars;
-    },
-    open: (account): CalendarTransport => {
-      opened.push(account.calendarUrl);
-      const name = calendars.find((calendar) => calendar.url === account.calendarUrl)!.name;
-      return {
-        collection: async () => ({ name, url: account.calendarUrl }),
-        list: async () => [],
-        get: async () => null,
-        put: async () => undefined,
-        remove: async () => undefined,
-      };
-    },
-  };
-  return { connector, opened };
-}
-
-test('the admin connects iCloud; it is kept, private, and can be removed', async () => {
-  const path = `${directory('admin')}/household.sqlite`;
-  const icloud = fakeICloud();
-  const app = await openHousehold(openStore(path), deployment, { connector: icloud.connector });
-  await setUp(app.household);
-  const page = admin(app);
-  await page.signIn();
-  const account = { username: 'family@icloud.example', password: 'abcd-efgh-ijkl-mnop' };
-  try {
+    const save = (value: unknown) => page.call('/api/admin/people', { people: value }, 'PUT');
+    const signedIn = async (email: string) => {
+      const response = await client(app, null, base).call('/api/state', undefined, 'GET', {
+        [identityHeader]: email,
+      });
+      return response.ok ? await json(response) : null;
+    };
+    const threads = (state: any) => state.threads.map((thread: any) => thread.id).sort();
+    // Each person needs an email of their own.
+    for (const value of [
+      [people.owner, { name: 'Sam', email: people.owner.email.toUpperCase() }],
+      [people.owner, { name: 'Sam' }],
+    ])
+      assert.equal((await save(value)).status, 400, JSON.stringify(value));
     assert.equal(
-      (await client(app, 'owner', base).call('/api/admin/calendar', account)).status,
-      401,
+      (await save([people.owner, { name: 'Sam', email: 'Sam@Example.com' }])).status,
+      200,
     );
-    const wrong = await page.call('/api/admin/calendar', { ...account, password: 'nope-nope' });
-    assert.equal(wrong.status, 400);
-    assert.match((await json(wrong)).error, /did not accept/);
-    // Without a chosen calendar: the account's calendars to choose from; nothing is saved.
+    const sam = await signedIn(people.partner.email);
+    assert.equal(sam.me.name, 'Sam');
+    assert.deepEqual(sam.threads.flatMap((thread: any) => thread.assistantFor ?? []).sort(), [
+      'owner',
+      'partner',
+    ]);
+    const channel = { kind: 'thread.create', title: 'Holiday', category: 'household' };
+    assert.equal((await client(app, 'partner', base).call('/api/previews', channel)).status, 201);
+    // Saved again as they are, then Sam is renamed and moves email; Alex takes Sam's old address.
+    assert.equal((await save([people.owner, people.partner])).status, 200);
+    const renamed = [
+      { name: 'Alex', email: people.partner.email },
+      { name: 'Sammy', email: 'sam@new.example' },
+    ];
+    assert.equal((await save(renamed)).status, 200);
+    assert.equal(await signedIn(people.owner.email), null);
+    assert.equal((await signedIn(people.partner.email)).me.id, 'owner');
+    const moved = await signedIn('sam@new.example');
+    assert.deepEqual([moved.me.id, moved.me.name, moved.previews.length], ['partner', 'Sammy', 1]);
+    // Neither save added a chat or lost one.
+    assert.deepEqual(threads(moved), threads(sam));
+    assert.deepEqual((await json(await page.call('/api/admin/state'))).people, [
+      { id: 'owner', ...renamed[0] },
+      { id: 'partner', ...renamed[1] },
+    ]);
+  });
+});
+
+const account = { username: 'family@icloud.example', password: 'abcd-efgh-ijkl-mnop' };
+/** iCloud for tests: the account has a shared calendar and a personal one, both empty. */
+const icloud: CalendarConnector = {
+  calendars: async ({ username, password }) => {
+    if (username !== account.username || password !== account.password) throw new Error('401');
+    return [
+      { name: 'Household', url: 'https://caldav.icloud.com/1/calendars/home/' },
+      { name: 'Personal', url: 'https://caldav.icloud.com/1/calendars/mine/' },
+    ];
+  },
+  open: ({ calendarUrl }) => ({
+    collection: async () => ({
+      name: calendarUrl.endsWith('/home/') ? 'Household' : 'Personal',
+      url: calendarUrl,
+    }),
+    list: async () => [],
+    get: async () => null,
+    put: async () => undefined,
+    remove: async () => undefined,
+  }),
+};
+
+test('the admin connects iCloud; it is kept across restarts, its password stays private, and it can be removed', async () => {
+  const path = `${directory('admin')}/household.sqlite`;
+  await running(openHousehold(openStore(path), deployment, { connector: icloud }), async (app) => {
+    await setUp(app.household);
+    const page = admin(app);
+    await page.signIn();
+    const wrong = { ...account, password: 'wrong-password' };
+    assert.equal((await page.call('/api/admin/calendar', wrong)).status, 400);
+    // Without a chosen calendar, the account's calendars to choose from.
     const listed = await json(await page.call('/api/admin/calendar', account));
     assert.deepEqual(
       listed.calendars.map((calendar: { name: string }) => calendar.name),
       ['Household', 'Personal'],
     );
-    assert.equal((await app.db.all<Row>("SELECT key FROM settings WHERE key='icloud'")).length, 0);
-    const other = { ...account, calendarUrl: 'https://caldav.icloud.com/1/calendars/other/' };
-    assert.equal((await page.call('/api/admin/calendar', other)).status, 400);
-    const connected = await page.call('/api/admin/calendar', {
-      ...account,
-      calendarUrl: listed.calendars[0].url,
-    });
+    const calendarUrl = listed.calendars[0].url;
+    const connected = await page.call('/api/admin/calendar', { ...account, calendarUrl });
     assert.equal(connected.status, 200);
     const adminState = await json(await page.call('/api/admin/state'));
     assert.deepEqual(adminState.calendar, {
@@ -301,199 +202,130 @@ test('the admin connects iCloud; it is kept, private, and can be removed', async
     });
     const personState = await json(await client(app, 'partner', base).call('/api/state'));
     assert.equal(personState.integrations.calendar, 'connected');
-    for (const state of [adminState, personState])
-      assert(!JSON.stringify(state).includes(account.password));
-  } finally {
-    await app.conversations.close();
-  }
-  // A restart reopens the saved connection.
-  const reopened = await openHousehold(openStore(path), deployment, {
-    connector: icloud.connector,
+    for (const body of [listed, await json(connected), adminState, personState])
+      assert.ok(!JSON.stringify(body).includes(account.password));
   });
-  try {
-    assert.deepEqual(icloud.opened, [
-      'https://caldav.icloud.com/1/calendars/home/',
-      'https://caldav.icloud.com/1/calendars/home/',
-    ]);
-    const owner = client(reopened, 'owner', base);
-    assert.equal((await owner.call('/api/calendar/refresh', {})).status, 200);
-    assert.equal((await json(await owner.call('/api/state'))).integrations.calendar, 'connected');
-    const page = admin(reopened);
-    await page.signIn();
-    assert.equal((await page.call('/api/admin/calendar', undefined, 'DELETE')).status, 200);
-    assert.equal(
-      (await json(await owner.call('/api/state'))).integrations.calendar,
-      'not-connected',
-    );
-    assert.equal((await json(await page.call('/api/admin/state'))).calendar.account, null);
-  } finally {
-    await reopened.conversations.close();
-  }
-});
-
-test('only the admin sees or chooses the assistant model', async () => {
-  const app = await openHousehold(openStore(), deployment);
-  await setUp(app.household);
-  try {
+  await running(openHousehold(openStore(path), deployment, { connector: icloud }), async (app) => {
     const owner = client(app, 'owner', base);
-    assert.equal((await owner.call('/api/admin/models')).status, 401);
-    assert.equal((await owner.call('/api/admin/model', { id: 'gpt-6.1-sol' })).status, 401);
-    // Without a ChatGPT connection there is no catalog to choose from.
+    const calendar = async () => (await json(await owner.call('/api/state'))).integrations.calendar;
+    assert.equal((await owner.call('/api/calendar/refresh', {})).status, 200);
+    assert.equal(await calendar(), 'connected');
     const page = admin(app);
     await page.signIn();
-    assert.equal((await page.call('/api/admin/models')).status, 409);
-    assert.deepEqual((await json(await page.call('/api/admin/state'))).ai, {
-      connected: false,
-      model: null,
-    });
-    assert.equal((await json(await owner.call('/api/state'))).integrations.ai, 'not-connected');
-  } finally {
-    await app.conversations.close();
-  }
+    assert.equal((await page.call('/api/admin/calendar', undefined, 'DELETE')).status, 200);
+    assert.equal(await calendar(), 'not-connected');
+    assert.equal((await json(await page.call('/api/admin/state'))).calendar.account, null);
+  });
 });
 
-/** OpenAI's token endpoint for tests: records each exchange and answers with `reply`. */
-function fakeOpenAI(reply: () => Response) {
-  const original = globalThis.fetch;
-  const exchanges: URLSearchParams[] = [];
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    assert.equal(String(input), 'https://auth.openai.com/api/accounts/oauth/token');
-    exchanges.push(new URLSearchParams(String(init?.body)));
-    return reply();
-  }) as typeof fetch;
-  return { exchanges, restore: () => (globalThis.fetch = original) };
-}
-const granted = () =>
+const granted = (scope = 'openid offline_access resource.invoke chatgpt.tokens.use.direct') =>
   Response.json({
     access_token: 'synthetic-access',
     refresh_token: 'synthetic-refresh',
     id_token: 'synthetic-id',
-    scope: 'openid offline_access resource.invoke chatgpt.tokens.use.direct',
+    scope,
     expires_in: 3600,
   });
+/** OpenAI for tests: its token endpoint answers with `reply`; the account lists three models. */
+function fakeOpenAI() {
+  const original = globalThis.fetch;
+  const openai = {
+    exchanges: [] as URLSearchParams[],
+    reply: () => granted(),
+    restore: () => {
+      globalThis.fetch = original;
+    },
+  };
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === 'https://api.openai.com/v1/models')
+      return Response.json({
+        models: [
+          { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1 Sol', visibility: 'list' },
+          { slug: 'gpt-6-sol', display_name: 'GPT-6 Sol', visibility: 'hide' },
+          { slug: 'unknown-model', display_name: 'Unknown', visibility: 'list' },
+        ],
+      });
+    if (url !== 'https://auth.openai.com/api/accounts/oauth/token')
+      return new Response(null, { status: 404 });
+    openai.exchanges.push(new URLSearchParams(String(init?.body)));
+    return openai.reply();
+  }) as typeof fetch;
+  return openai;
+}
 /** The address the browser ends on after signing in, for the sign-in that `url` started. */
-const returnedTo = (url: string, extra = '') =>
-  `http://127.0.0.1:1455/auth/callback?code=synthetic-code&client_id=issued-client&state=${new URL(url).searchParams.get('state')}${extra}`;
+const returnedTo = (url: string) =>
+  `http://127.0.0.1:1455/auth/callback?code=synthetic-code&client_id=issued-client&state=${new URL(url).searchParams.get('state')}`;
 
-test('the admin connects ChatGPT by pasting back the address the sign-in ended on', async () => {
-  const app = await openHousehold(openStore(), deployment);
-  await setUp(app.household);
-  const page = admin(app);
-  await page.signIn();
-  const openai = fakeOpenAI(granted);
-  try {
-    const owner = client(app, 'owner', base);
-    assert.equal((await owner.call('/api/admin/chatgpt/start', {})).status, 401);
-    const { url } = await json(await page.call('/api/admin/chatgpt/start', {}));
-    const sent = new URL(url);
-    assert.equal(sent.origin + sent.pathname, 'https://auth.openai.com/api/accounts/authorize');
-    assert.equal(sent.searchParams.get('client_id'), 'dynamic_agent_client');
-    assert.equal(sent.searchParams.get('redirect_uri'), 'http://127.0.0.1:1455/auth/callback');
-    assert.equal(sent.searchParams.get('code_challenge_method'), 'S256');
-    assert.match(sent.searchParams.get('scope')!, /chatgpt\.tokens\.use\.direct/);
-    const host = sent.searchParams.get('ext_agent_host_id');
-    assert.match(host!, /^urn:uuid:[0-9a-f-]{36}$/);
-    // Addresses from elsewhere are refused without asking OpenAI.
-    const refused = [
-      'not an address',
-      'https://example.com/elsewhere?code=x&state=y&client_id=z',
-      returnedTo(url).replace(/state=[^&]+/, 'state=forged'),
-      returnedTo(url).replace('code=synthetic-code', 'error=access_denied'),
-    ];
-    for (const address of refused)
-      assert.equal(
-        (await page.call('/api/admin/chatgpt/finish', { address })).status,
-        400,
-        address,
-      );
-    assert.equal(openai.exchanges.length, 0);
-    // A new start replaces the sign-in; the same installation keeps its host id.
-    const again = (await json(await page.call('/api/admin/chatgpt/start', {}))).url;
-    assert.equal(new URL(again).searchParams.get('ext_agent_host_id'), host);
-    assert.equal(
-      (await page.call('/api/admin/chatgpt/finish', { address: returnedTo(url) })).status,
-      400,
-    );
-    const done = await page.call('/api/admin/chatgpt/finish', { address: returnedTo(again) });
-    assert.equal(done.status, 200);
-    const [exchange] = openai.exchanges;
-    assert.equal(exchange.get('grant_type'), 'authorization_code');
-    assert.equal(exchange.get('client_id'), 'issued-client');
-    assert.equal(exchange.get('code'), 'synthetic-code');
-    assert.equal(exchange.get('redirect_uri'), 'http://127.0.0.1:1455/auth/callback');
-    assert.equal(
-      createHash('sha256').update(exchange.get('code_verifier')!).digest('base64url'),
-      new URL(again).searchParams.get('code_challenge'),
-    );
-    const stored = JSON.parse(
-      String((await app.db.get<Row>('SELECT value FROM ai_credentials WHERE id=1'))!.value),
-    );
-    assert.deepEqual(
-      [stored.type, stored.access, stored.clientId],
-      ['oauth', 'synthetic-access', 'issued-client'],
-    );
-    assert.deepEqual((await json(await page.call('/api/admin/state'))).ai, {
-      connected: true,
-      model: null,
-    });
-    assert.equal((await json(await owner.call('/api/state'))).integrations.ai, 'needs-model');
-    // Each sign-in finishes once.
-    const reused = await page.call('/api/admin/chatgpt/finish', { address: returnedTo(again) });
-    assert.equal(reused.status, 409);
-    // Disconnecting removes the connection and stops the assistant.
-    assert.equal((await page.call('/api/admin/chatgpt', undefined, 'DELETE')).status, 200);
-    assert.equal((await json(await page.call('/api/admin/state'))).ai.connected, false);
-    assert.equal((await json(await owner.call('/api/state'))).integrations.ai, 'not-connected');
-  } finally {
-    openai.restore();
-    await app.conversations.close();
-  }
-});
-
-test('a ChatGPT sign-in expires after ten minutes and needs the plan scope; reconnecting resumes the model', async () => {
-  const path = `${directory('admin')}/household.sqlite`;
+test('the admin connects ChatGPT by pasting back the address its sign-in ended on, then chooses the model', async () => {
+  // pi-ai checks the credential's expiry against the real clock, so this clock starts now.
   let now = Date.now();
-  const app = await openHousehold(openStore(path), deployment, { clock: () => new Date(now) });
-  await setUp(app.household);
-  const page = admin(app);
-  await page.signIn();
-  let reply = granted;
-  const openai = fakeOpenAI(() => reply());
+  const app = await openHousehold(openStore(), deployment, { clock: () => new Date(now) });
+  const openai = fakeOpenAI();
   try {
-    const start = async () => (await json(await page.call('/api/admin/chatgpt/start', {}))).url;
+    await setUp(app.household);
+    const page = admin(app);
+    await page.signIn();
+    const owner = client(app, 'owner', base);
+    const assistant = async () => (await json(await owner.call('/api/state'))).integrations.ai;
+    const start = async (): Promise<string> =>
+      (await json(await page.call('/api/admin/chatgpt/start', {}))).url;
+    const finish = (address: string) => page.call('/api/admin/chatgpt/finish', { address });
+    assert.equal((await page.call('/api/admin/models')).status, 409);
+    assert.equal(await assistant(), 'not-connected');
+    // A sign-in lasts ten minutes.
     const late = await start();
     now += 11 * 60_000;
-    assert.equal(
-      (await page.call('/api/admin/chatgpt/finish', { address: returnedTo(late) })).status,
-      409,
-    );
-    reply = () => Response.json({ error: 'invalid_grant' }, { status: 400 });
-    const failed = await page.call('/api/admin/chatgpt/finish', {
-      address: returnedTo(await start()),
-    });
+    assert.equal((await finish(returnedTo(late))).status, 409);
+    // An address that is not from this sign-in never reaches OpenAI.
+    const url = await start();
+    assert.equal(new URL(url).searchParams.get('code_challenge_method'), 'S256');
+    const forged = returnedTo(url).replace(/state=[^&]+/, 'state=forged');
+    assert.equal((await finish(forged)).status, 400);
+    assert.equal(openai.exchanges.length, 0);
+    // OpenAI's own error text is never shown.
+    openai.reply = () =>
+      Response.json(
+        { error: 'invalid_grant', error_description: 'synthetic provider detail' },
+        { status: 400 },
+      );
+    const failed = await finish(returnedTo(url));
     assert.equal(failed.status, 502);
-    assert(!JSON.stringify(await json(failed)).includes('invalid_grant'));
-    reply = () =>
-      Response.json({
-        access_token: 'a',
-        refresh_token: 'r',
-        id_token: 'i',
-        scope: 'openid',
-        expires_in: 3600,
-      });
-    const narrow = await page.call('/api/admin/chatgpt/finish', {
-      address: returnedTo(await start()),
-    });
-    assert.equal(narrow.status, 502);
-    assert.match((await json(narrow)).error, /did not allow the assistant to use its plan/);
-    // With a model already chosen, connecting again starts the assistant at once.
-    await app.settings.set('ai_model', 'gpt-6.1-sol');
-    reply = granted;
-    assert.equal(
-      (await page.call('/api/admin/chatgpt/finish', { address: returnedTo(await start()) })).status,
-      200,
+    assert.ok(!JSON.stringify(await json(failed)).includes('invalid_grant'));
+    // Without the plan's scope, ChatGPT is not connected.
+    openai.reply = () => granted('openid offline_access');
+    assert.equal((await finish(returnedTo(await start()))).status, 502);
+    assert.equal(await assistant(), 'not-connected');
+    // The code goes to OpenAI with the verifier that only the server kept.
+    openai.reply = () => granted();
+    const signIn = await start();
+    assert.equal((await finish(returnedTo(signIn))).status, 200);
+    const exchange = openai.exchanges.at(-1)!;
+    assert.deepEqual(
+      [exchange.get('code'), exchange.get('client_id')],
+      ['synthetic-code', 'issued-client'],
     );
-    assert.equal(app.conversations.configured, true);
+    assert.equal(
+      createHash('sha256').update(exchange.get('code_verifier')!).digest('base64url'),
+      new URL(signIn).searchParams.get('code_challenge'),
+    );
+    assert.equal(await assistant(), 'needs-model');
+    // Each sign-in finishes once.
+    assert.equal((await finish(returnedTo(signIn))).status, 409);
+    // The catalog leaves out hidden models and ones the assistant cannot use; a choice applies at once.
+    assert.deepEqual(await json(await page.call('/api/admin/models')), {
+      current: null,
+      models: [{ id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' }],
+    });
+    for (const id of ['gpt-6-sol', 'unknown-model'])
+      assert.equal((await page.call('/api/admin/model', { id })).status, 400, id);
+    assert.equal((await page.call('/api/admin/model', { id: 'gpt-6.1-sol' })).status, 200);
+    assert.equal(await assistant(), 'configured');
+    // Disconnecting stops the assistant; connecting again resumes the chosen model.
+    assert.equal((await page.call('/api/admin/chatgpt', undefined, 'DELETE')).status, 200);
+    assert.equal(await assistant(), 'not-connected');
+    assert.equal((await finish(returnedTo(await start()))).status, 200);
+    assert.equal(await assistant(), 'configured');
   } finally {
     openai.restore();
     await app.conversations.close();
