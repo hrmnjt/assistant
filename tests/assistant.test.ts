@@ -1,82 +1,76 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { rmSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { setTimeout as pause } from 'node:timers/promises';
+import { setImmediate } from 'node:timers/promises';
 import {
   createModels,
   fauxProvider,
   fauxAssistantMessage,
   fauxToolCall,
+  type TranscriptContext,
 } from '@earendil-works/pi-ai';
-import { DomainError } from '../server/errors.js';
-import { Conversations } from '../server/conversations.js';
-import { boundedModels, dailyMaintenanceCalls } from '../server/assistant-tools.js';
-import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
-import type { Conversation } from '@earendil-works/pi-durable';
-import { aiConnection, AssistantModel, chatgptModels, StoredCredentials } from '../server/ai.js';
-import { recoverablePreviews } from '../server/preview-recovery.js';
-import { Settings } from '../server/settings.js';
-import type { Store } from '../server/database.js';
-import { directory, householdParts, householdStore, openStore, type Row } from './support.js';
+import {
+  boundedModels,
+  dailyMaintenanceCalls,
+  requestModelCalls,
+} from '../server/assistant-tools.js';
+import { chatgptModels, StoredCredentials } from '../server/ai.js';
+import { openHousehold, type Overrides, type Runtime } from '../server/runtime.js';
+import type { ChatStatus, Message, Preview, Task } from '../src/types.js';
+import {
+  client,
+  config,
+  directory,
+  householdStore,
+  json,
+  openStore,
+  people,
+  setUp,
+} from './support.js';
 
-/** A file-backed household store shared with Pi; closing Pi closes it, as when a runtime stops. */
-async function fixture() {
-  const path = directory('assistant');
-  const file = resolve(path, 'household.sqlite');
-  let db: Store = await householdStore(file);
-  let parts = householdParts(db);
-  const thread = (
-    await parts.changes.confirm(
-      'owner',
-      (
-        await parts.changes.preview('owner', {
-          kind: 'thread.create',
-          title: 'Home',
-          category: 'household',
-        })
-      ).id,
-    )
-  ).targetId;
+/** A faux ChatGPT answering with scripted replies, and the model the admin chose on it. */
+function fauxChatgpt() {
   const faux = fauxProvider(),
     models = createModels();
   models.setProvider(faux.provider);
-  const model = { provider: faux.getModel().provider, modelId: faux.getModel().id };
   return {
-    path,
-    get db() {
-      return db;
-    },
-    get parts() {
-      return parts;
-    },
-    thread,
     faux,
-    get options() {
-      return { models, model, household: parts.household, extensions: parts.extensions };
-    },
-    /** Open the same store again after Pi closed it. */
-    reopen() {
-      db = openStore(file);
-      parts = householdParts(db);
-    },
-    async close() {
-      await db.close();
-      rmSync(path, { recursive: true, force: true });
-    },
+    ai: { models, model: { provider: faux.getModel().provider, modelId: faux.getModel().id } },
   };
 }
-async function finished(conversations: Conversations, thread: string) {
-  for (let i = 0; i < 300; i++) {
-    if (
-      !(await conversations.status(thread)).running &&
-      !(await conversations.status(thread)).queued
-    )
-      return;
-    await pause(10);
+/** A household where the admin has added both people, and their shared chat. */
+async function household(overrides: Overrides = {}, store = openStore()) {
+  const app = await openHousehold(store, config, overrides);
+  await setUp(app.household);
+  return {
+    app,
+    thread: (await app.household.threads()).find((thread) => !thread.assistantFor)!.id,
+  };
+}
+/** One person in a chat, through the API. */
+function chat(app: Runtime, person: 'owner' | 'partner', thread: string) {
+  const { call } = client(app, person);
+  const post = (text: string, requestId: string, askAssistant: boolean) =>
+    call(`/api/threads/${thread}/messages`, { text, requestId, askAssistant });
+  return {
+    say: (text: string, requestId = randomUUID()) => post(text, requestId, false),
+    ask: (text: string, requestId = randomUUID()) => post(text, requestId, true),
+    messages: async (): Promise<Message[]> => json(await call(`/api/threads/${thread}/messages`)),
+    assistant: async (): Promise<ChatStatus> =>
+      json(await call(`/api/threads/${thread}/assistant`)),
+    previews: async (): Promise<Preview[]> => json(await call('/api/previews')),
+    confirm: (previewId: string) => call(`/api/previews/${previewId}/confirm`, {}),
+    tasks: async (): Promise<Task[]> => (await json(await call('/api/state'))).tasks,
+  };
+}
+/** Wait, as the Worker does before it sleeps, until the assistant has finished every request. */
+async function answered(app: Runtime) {
+  const hang = Date.now() + 30_000;
+  while (await app.conversations.pending()) {
+    if (Date.now() > hang) throw new Error('The assistant did not finish.');
+    await app.conversations.settle(30_000);
+    await setImmediate();
   }
-  throw new Error('Assistant did not settle.');
 }
 const change = {
   kind: 'task.create',
@@ -89,394 +83,266 @@ const change = {
     schedule: null,
   },
 };
+/** The model's reply preparing that task. */
+const prepare = () =>
+  fauxAssistantMessage(fauxToolCall('prepare_task_change', { change }), { stopReason: 'toolUse' });
 
-test('Pi tools read household state and only prepare actor-bound changes; retries and reopen do not repeat inference', async () => {
-  const f = await fixture();
-  let conversations = await Conversations.open(f.db, f.options);
-  const request = randomUUID();
-  f.faux.setResponses([
+test('asking the assistant prepares a change that only the asker can confirm, once', async () => {
+  const path = `${directory('assistant')}/household.sqlite`;
+  const { faux, ai } = fauxChatgpt();
+  let { app, thread } = await household(ai, openStore(path));
+  const lastResult = (context: TranscriptContext) => {
+    const result = context.messages.findLast((message) => message.role === 'toolResult');
+    const first = result?.role === 'toolResult' ? result.content[0] : undefined;
+    return first?.type === 'text' ? JSON.parse(first.text) : undefined;
+  };
+  faux.setResponses([
     (context) => {
-      const tools = context.messages
-        .filter((message) => message.role === 'system')
-        .flatMap((message) => (message.role === 'system' ? (message.toolsAdded ?? []) : []));
-      assert.deepEqual(tools.map((tool) => tool.name).sort(), [
-        'prepare_household_change',
-        'prepare_task_change',
-        'read_household',
-        'read_tasks',
-      ]);
+      const tools = context.messages.flatMap((message) =>
+        message.role === 'system' ? (message.toolsAdded ?? []) : [],
+      );
+      const names = tools.map((tool) => tool.name);
+      assert.ok(names.includes('read_household') && names.includes('prepare_task_change'));
+      // The assistant can only read and prepare.
+      assert.ok(names.every((name) => /^(read|prepare)_/.test(name)));
+      assert.ok(JSON.stringify(context.messages).includes('Please bring oat milk'));
       return fauxAssistantMessage(fauxToolCall('read_household', {}), { stopReason: 'toolUse' });
     },
     (context) => {
-      const result = context.messages.findLast((message) => message.role === 'toolResult');
-      const first = result?.role === 'toolResult' ? result.content[0] : undefined;
-      const read = first?.type === 'text' ? JSON.parse(first.text) : undefined;
-      assert.equal(read?.actorId, 'owner');
+      const read = lastResult(context);
+      assert.equal(read.actorId, 'owner');
       // The model learns the two names, never their email addresses.
-      assert.deepEqual(read?.people, [
-        { id: 'owner', name: 'Alex' },
-        { id: 'partner', name: 'Sam' },
+      assert.deepEqual(read.people, [
+        { id: 'owner', name: people.owner.name },
+        { id: 'partner', name: people.partner.name },
       ]);
-      assert(!first || !JSON.stringify(first).includes('@example.com'));
-      return fauxAssistantMessage(fauxToolCall('prepare_task_change', { change }), {
-        stopReason: 'toolUse',
-      });
+      assert.ok(!JSON.stringify(read).includes(people.owner.email));
+      return prepare();
     },
+    // A tool the assistant does not have cannot confirm what it prepared.
+    (context) =>
+      fauxAssistantMessage(fauxToolCall('confirm_change', { id: lastResult(context).preview.id }), {
+        stopReason: 'toolUse',
+      }),
     fauxAssistantMessage('I prepared a task for Sam. Review the change to confirm it.'),
   ]);
   try {
-    await conversations.send(f.thread, 'owner', 'Add buy milk for Sam', request);
-    await finished(conversations, f.thread);
-    assert.equal((await conversations.status(f.thread)).error, null);
-    assert.equal((await f.parts.tasks.list()).length, 0);
-    const proposal = (await conversations.status(f.thread)).previews[0];
-    assert.equal(proposal.actorId, 'owner');
+    const sam = chat(app, 'partner', thread);
+    assert.equal((await sam.say('Please bring oat milk')).status, 200);
+    assert.equal(faux.state.callCount, 0);
+
+    const request = randomUUID();
+    let alex = chat(app, 'owner', thread);
+    assert.equal((await alex.ask('Add buy milk for Sam', request)).status, 200);
+    await answered(app);
+    const status = await alex.assistant();
+    assert.equal(status.error, null);
     assert.deepEqual(
-      (await recoverablePreviews(f.db, 'owner')).map((p) => p.id),
-      [proposal.preview.id],
+      status.previews.map((proposal) => proposal.actorId),
+      ['owner'],
     );
-    assert.deepEqual(await recoverablePreviews(f.db, 'partner'), []);
-    await assert.rejects(
-      async () => await f.parts.changes.confirm('partner', proposal.preview.id),
-      DomainError,
-    );
-    const messages = await conversations.messages(f.thread);
-    assert.equal(messages.filter((message) => message.authorId === 'owner').length, 1);
-    assert.ok(
-      messages.findIndex((message) => message.authorId === 'owner') <
-        messages.findIndex((message) => message.authorId === 'assistant'),
-    );
-    assert.ok(
-      messages.some(
-        (message) => message.authorId === 'assistant' && message.text.includes('prepared'),
-      ),
-    );
-    await conversations.send(f.thread, 'owner', 'Add buy milk for Sam', request);
-    assert.equal(f.faux.state.callCount, 3);
-    await conversations.close();
-    f.reopen();
-    conversations = await Conversations.open(f.db, f.options);
-    await conversations.send(f.thread, 'owner', 'Add buy milk for Sam', request);
-    assert.equal(f.faux.state.callCount, 3);
+    const preview = status.previews[0].preview;
+    assert.deepEqual(await alex.tasks(), []);
+    assert.deepEqual(await sam.previews(), []);
+    assert.equal((await sam.confirm(preview.id)).status, 404);
+    const messages = await alex.messages();
+    assert.equal(messages.filter((message) => message.text === 'Add buy milk for Sam').length, 1);
+    assert.equal(messages.filter((message) => message.authorId === 'assistant').length, 1);
+
+    // Retrying the request, before or after a restart, does not ask the model again.
+    assert.equal((await alex.ask('Add buy milk for Sam', request)).status, 200);
+    await app.conversations.close();
+    app = await openHousehold(openStore(path), config, ai);
+    alex = chat(app, 'owner', thread);
+    assert.equal((await alex.ask('Add buy milk for Sam', request)).status, 200);
+    await answered(app);
+    assert.equal(faux.state.callCount, 4);
     assert.deepEqual(
-      (await recoverablePreviews(f.db, 'owner')).map((p) => p.id),
-      [proposal.preview.id],
+      (await alex.previews()).map((item) => item.id),
+      [preview.id],
     );
-    await f.parts.changes.confirm('owner', proposal.preview.id);
-    assert.equal((await f.parts.tasks.list())[0].ownerId, 'partner');
-    assert.equal((await conversations.status(f.thread)).previews.length, 0);
+
+    assert.equal((await alex.confirm(preview.id)).status, 200);
+    assert.deepEqual(
+      (await alex.tasks()).map((task) => task.ownerId),
+      ['partner'],
+    );
+    assert.deepEqual((await alex.assistant()).previews, []);
   } finally {
-    await conversations.close();
-    await f.close();
+    await app.conversations.close();
   }
 });
 
-test('messages queue while the assistant works without changing the requesting actor', async () => {
-  const f = await fixture();
-  const conversations = await Conversations.open(f.db, f.options);
+test('requests from both people queue, and each keeps its asker', async () => {
+  const { faux, ai } = fauxChatgpt();
+  const { app, thread } = await household(ai);
   let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  f.faux.setResponses([
+  const held = new Promise<void>((resolve) => (release = resolve));
+  faux.setResponses([
     async () => {
-      await gate;
+      await held;
       return fauxAssistantMessage('Hello Alex');
     },
-    fauxAssistantMessage(fauxToolCall('prepare_task_change', { change }), {
-      stopReason: 'toolUse',
-    }),
+    prepare,
     fauxAssistantMessage('Ready for review'),
   ]);
   try {
+    const alex = chat(app, 'owner', thread),
+      sam = chat(app, 'partner', thread);
+    assert.equal((await alex.ask('Hello')).status, 200);
     const request = randomUUID();
-    await conversations.send(f.thread, 'owner', 'Hello', request);
-    const partnerRequest = randomUUID();
-    await conversations.send(f.thread, 'partner', 'Add milk', partnerRequest);
-    await conversations.send(f.thread, 'partner', 'Add milk', partnerRequest);
-    assert.equal((await conversations.status(f.thread)).queued, 1);
-    assert.equal((await conversations.status(f.thread)).running, true);
-    assert.equal(
-      (await conversations.messages(f.thread)).filter((message) => message.authorId === 'partner')
-        .length,
-      1,
-    );
-    await assert.rejects(
-      conversations.send(f.thread, 'owner', 'Different text', request),
-      DomainError,
-    );
-    release();
-    await finished(conversations, f.thread);
+    assert.equal((await sam.ask('Add milk', request)).status, 200);
+    assert.equal((await sam.ask('Add milk', request)).status, 200);
+    assert.equal((await sam.ask('Add oat milk', request)).status, 409);
+    const waiting = await sam.assistant();
+    assert.equal(waiting.running, true);
+    assert.equal(waiting.queued, 1);
+    assert.equal((await sam.messages()).filter((message) => message.text === 'Add milk').length, 1);
 
-    assert.equal((await conversations.status(f.thread)).previews[0].actorId, 'partner');
-    assert.equal((await f.parts.tasks.list()).length, 0);
+    release();
+    await answered(app);
+    const status = await sam.assistant();
+    assert.equal(status.error, null);
+    assert.deepEqual(
+      status.previews.map((proposal) => proposal.actorId),
+      ['partner'],
+    );
+    assert.deepEqual(
+      (await sam.previews()).map((preview) => preview.id),
+      [status.previews[0].preview.id],
+    );
+    assert.deepEqual(await alex.previews(), []);
+    assert.equal(faux.state.callCount, 3);
   } finally {
     release();
-    await conversations.close();
-    await f.close();
+    await app.conversations.close();
   }
 });
 
-test('ordinary shared-channel messages do not call the model, and the next assistant request can see them', async () => {
-  const f = await fixture();
-  const conversations = await Conversations.open(f.db, f.options);
-  try {
-    await conversations.send(f.thread, 'partner', 'Please bring oat milk', randomUUID(), false);
-    assert.equal(f.faux.state.callCount, 0);
-    f.faux.setResponses([
-      (context) => {
-        assert.ok(JSON.stringify(context.messages).includes('Please bring oat milk'));
-        return fauxAssistantMessage('Oat milk is in the conversation.');
-      },
-    ]);
-    await conversations.send(f.thread, 'owner', 'What did Sam ask for?', randomUUID(), true);
-    await finished(conversations, f.thread);
-    assert.equal((await conversations.status(f.thread)).error, null);
-    assert.equal(f.faux.state.callCount, 1);
-  } finally {
-    await conversations.close();
-    await f.close();
-  }
-});
-
-test('queued requests resume after restart with their own authors and without resubmission', async () => {
-  const f = await fixture();
-  const passive = await Conversations.open(f.db);
-  await passive.close();
-  f.reopen();
+test('an interrupted request resumes once after a restart, and messages sent meanwhile are kept', async () => {
+  const path = `${directory('assistant')}/household.sqlite`;
+  const { faux, ai } = fauxChatgpt();
+  let interrupted!: () => void;
+  const running = new Promise<void>((resolve) => (interrupted = resolve));
+  faux.setResponses([
+    prepare,
+    (_context, options) =>
+      new Promise((_, reject) => {
+        interrupted();
+        options?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      }),
+    fauxAssistantMessage('Milk is ready for review.'),
+  ]);
+  let { app, thread } = await household(ai, openStore(path));
   const request = randomUUID();
-  await f.db.run(
-    'INSERT INTO assistant_runs VALUES (?,?,?,?,?,?,?,NULL)',
-    f.thread,
-    `partner:${request}`,
-    'partner',
-    'Add milk',
-    randomUUID(),
-    new Date().toISOString(),
-    'queued',
-  );
-  f.faux.setResponses([
-    fauxAssistantMessage(fauxToolCall('prepare_task_change', { change }), {
-      stopReason: 'toolUse',
-    }),
-    fauxAssistantMessage('Prepared'),
-  ]);
-  const conversations = await Conversations.open(f.db, f.options);
+  assert.equal((await chat(app, 'partner', thread).ask('Add milk for me', request)).status, 200);
+  await running;
+  await app.conversations.close();
+
+  // Without ChatGPT, both people can still talk, but the assistant waits.
+  app = await openHousehold(openStore(path), config);
   try {
-    await finished(conversations, f.thread);
-    assert.equal((await conversations.status(f.thread)).previews[0].actorId, 'partner');
-    await conversations.send(f.thread, 'partner', 'Add milk', request);
-    assert.equal(f.faux.state.callCount, 2);
+    const sam = chat(app, 'partner', thread);
+    const note = randomUUID();
+    assert.equal((await sam.say('Remember the dentist', note)).status, 200);
+    assert.equal((await sam.say('Remember the dentist', note)).status, 200);
+    assert.equal((await chat(app, 'owner', thread).ask('And plan dinner')).status, 409);
+    assert.ok((await sam.assistant()).error);
   } finally {
-    await conversations.close();
-    await f.close();
+    await app.conversations.close();
+  }
+
+  app = await openHousehold(openStore(path), config, ai);
+  try {
+    await answered(app);
+    const sam = chat(app, 'partner', thread);
+    // Two calls before the restart, then one to finish.
+    assert.equal(faux.state.callCount, 3);
+    const status = await sam.assistant();
+    assert.equal(status.error, null);
+    assert.deepEqual(
+      status.previews.map((proposal) => proposal.actorId),
+      ['partner'],
+    );
+    const messages = await sam.messages();
+    const sent = (text: string) => messages.filter((message) => message.text === text).length;
+    assert.equal(sent('Add milk for me'), 1);
+    assert.equal(sent('Remember the dentist'), 1);
+    assert.equal(messages.filter((message) => message.authorId === 'assistant').length, 1);
+    assert.equal((await sam.ask('Add milk for me', request)).status, 200);
+    await answered(app);
+    assert.equal(faux.state.callCount, 3);
+  } finally {
+    await app.conversations.close();
   }
 });
 
-test('an unsupported confirmation tool cannot bypass human confirmation', async () => {
-  const f = await fixture();
-  const conversations = await Conversations.open(f.db, f.options);
-  const preview = await f.parts.changes.preview('owner', change);
-  f.faux.setResponses([
-    fauxAssistantMessage(fauxToolCall('confirm_change', { id: preview.id }), {
-      stopReason: 'toolUse',
-    }),
-    fauxAssistantMessage('Use the app confirmation button.'),
-  ]);
-  try {
-    await conversations.send(f.thread, 'owner', 'Yes confirm it', randomUUID());
-    await finished(conversations, f.thread);
-    assert.equal((await f.parts.tasks.list()).length, 0);
-  } finally {
-    await conversations.close();
-    await f.close();
-  }
-});
-
-test('provider failure is visible without exposing provider error text or silently using another provider', async () => {
-  const f = await fixture();
-  const conversations = await Conversations.open(f.db, f.options);
-  f.faux.setResponses([
+test('a failed or runaway request ends visibly and bounded, without provider details', async () => {
+  const { faux, ai } = fauxChatgpt();
+  const { app, thread } = await household(ai);
+  const alex = chat(app, 'owner', thread);
+  faux.setResponses([
     fauxAssistantMessage('partial', {
       stopReason: 'error',
       errorMessage: 'secret-provider-detail',
     }),
   ]);
   try {
-    await conversations.send(f.thread, 'owner', 'Hello', randomUUID());
-    await finished(conversations, f.thread);
-    assert.ok((await conversations.status(f.thread)).error);
-    assert.equal(
-      JSON.stringify(await conversations.status(f.thread)).includes('secret-provider-detail'),
-      false,
-    );
-    assert.equal(
-      (await conversations.messages(f.thread)).some((message) => message.text === 'partial'),
-      false,
-    );
-    assert.equal(f.faux.state.callCount, 1);
-  } finally {
-    await conversations.close();
-    await f.close();
-  }
-});
+    await alex.ask('Hello');
+    await answered(app);
+    const failed = await alex.assistant();
+    assert.ok(failed.error);
+    assert.ok(!JSON.stringify(failed).includes('secret-provider-detail'));
+    assert.ok(!(await alex.messages()).some((message) => message.text === 'partial'));
+    assert.equal(faux.state.callCount, 1);
 
-test('assistant requests stop at the bounded model-turn limit', async () => {
-  const f = await fixture();
-  const conversations = await Conversations.open(f.db, f.options);
-  f.faux.setResponses(
-    Array.from({ length: 12 }, () =>
-      fauxAssistantMessage(fauxToolCall('read_household', {}), { stopReason: 'toolUse' }),
-    ),
-  );
-  try {
-    await conversations.send(f.thread, 'owner', 'Read things forever', randomUUID());
-    await finished(conversations, f.thread);
-    assert.ok((await conversations.status(f.thread)).error);
-    assert.equal(f.faux.state.callCount, 8);
-  } finally {
-    await conversations.close();
-    await f.close();
-  }
-});
-
-test('startup recovers a persisted request before Pi admission and keeps its actor and message identity', async () => {
-  const f = await fixture();
-  const passive = await Conversations.open(f.db);
-  await passive.close();
-  f.reopen();
-  const request = randomUUID(),
-    messageId = randomUUID();
-  await f.db.run(
-    'INSERT INTO assistant_runs VALUES (?,?,?,?,?,?,?,NULL)',
-    f.thread,
-    `partner:${request}`,
-    'partner',
-    'Buy milk',
-    messageId,
-    new Date().toISOString(),
-    'running',
-  );
-  f.faux.setResponses([
-    fauxAssistantMessage(fauxToolCall('prepare_task_change', { change }), {
-      stopReason: 'toolUse',
-    }),
-    fauxAssistantMessage('Prepared for review.'),
-  ]);
-  const conversations = await Conversations.open(f.db, f.options);
-  try {
-    await finished(conversations, f.thread);
-    assert.equal((await conversations.status(f.thread)).previews[0].actorId, 'partner');
-    const messages = await conversations.messages(f.thread);
-    assert.equal(messages.filter((message) => message.id === messageId).length, 1);
-    await conversations.send(f.thread, 'partner', 'Buy milk', request);
-    assert.equal(f.faux.state.callCount, 2);
-    assert.equal((await f.parts.tasks.list()).length, 0);
-  } finally {
-    await conversations.close();
-    await f.close();
-  }
-});
-
-const credential = (access = 'synthetic-access') => ({
-  type: 'oauth' as const,
-  access,
-  refresh: 'synthetic-refresh',
-  expires: Date.now() + 3600000,
-  counter: 0,
-});
-
-test('the stored ChatGPT credential serializes refreshes and rejects API credentials', async () => {
-  const db = await householdStore();
-  const credentials = new StoredCredentials(db);
-  try {
-    await credentials.save(credential());
-    await Promise.all(
-      [1, 2].map(() =>
-        credentials.modify('openai', async (current) => {
-          await pause(10);
-          return {
-            ...current!,
-            counter: Number((current as unknown as { counter: number }).counter) + 1,
-          };
-        }),
+    faux.setResponses(
+      Array.from({ length: requestModelCalls + 4 }, () =>
+        fauxAssistantMessage(fauxToolCall('read_household', {}), { stopReason: 'toolUse' }),
       ),
     );
-    assert.equal(
-      ((await credentials.read('openai')) as unknown as { counter: unknown }).counter,
-      2,
-    );
-    assert.deepEqual(await credentials.list(), [{ providerId: 'openai', type: 'oauth' }]);
+    await alex.ask('Read things forever');
+    await answered(app);
+    assert.ok((await alex.assistant()).error);
+    assert.equal(faux.state.callCount, 1 + requestModelCalls);
+  } finally {
+    await app.conversations.close();
+  }
+});
+
+test('concurrent ChatGPT token refreshes are serialized, and API keys are refused', async () => {
+  const db = await householdStore();
+  const credentials = new StoredCredentials(db);
+  const credential = {
+    type: 'oauth' as const,
+    access: 'synthetic-access',
+    refresh: 'synthetic-refresh',
+    expires: Date.now() + 3600000,
+  };
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const refresh = () =>
+    credentials.modify('openai', async (current) => {
+      await held;
+      return current?.type === 'oauth' ? { ...current, access: `${current.access}+` } : current;
+    });
+  try {
+    await credentials.save(credential);
+    const both = Promise.all([refresh(), refresh()]);
+    await setImmediate();
+    release();
+    await both;
+    assert.deepEqual(await credentials.read('openai'), {
+      ...credential,
+      access: 'synthetic-access++',
+    });
     await assert.rejects(
       credentials.modify('openai', async () => ({ type: 'api_key', key: 'never-use-this' })),
     );
     await assert.rejects(credentials.save({ type: 'api_key', key: 'never-use-this' }));
-    // A new connection replaces it; disconnecting removes it.
-    await credentials.save(credential('reconnected-access'));
-    assert.equal(
-      ((await credentials.read('openai')) as unknown as { access: string }).access,
-      'reconnected-access',
-    );
-    await credentials.delete('openai');
-    assert.equal(await credentials.read('openai'), undefined);
-    assert.equal(await chatgptModels(credentials).getAuth('openai'), undefined);
+    assert.equal((await credentials.read('openai'))?.type, 'oauth');
   } finally {
-    await db.close();
-  }
-});
-
-test('the assistant is configured only by a model the admin chose and a connection', async () => {
-  const db = await householdStore();
-  const settings = new Settings(db);
-  try {
-    assert.equal((await aiConnection(db, settings)).model, undefined);
-    await new StoredCredentials(db).save(credential());
-    // Connected, but no model chosen yet, or one the assistant does not support.
-    assert.equal((await aiConnection(db, settings)).model, undefined);
-    await settings.set('ai_model', 'not-a-model');
-    assert.equal((await aiConnection(db, settings)).model, undefined);
-    await settings.set('ai_model', 'gpt-6.1-sol');
-    assert.deepEqual((await aiConnection(db, settings)).model, {
-      provider: 'openai',
-      modelId: 'gpt-6.1-sol',
-    });
-  } finally {
-    await db.close();
-  }
-});
-
-test('the admin chooses the model from the account catalog, and it applies at once', async () => {
-  const db = await householdStore();
-  const settings = new Settings(db);
-  await new StoredCredentials(db).save(credential());
-  const { models } = await aiConnection(db, settings);
-  const original = globalThis.fetch;
-  const asked: string[] = [];
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    asked.push(`${String(input)} ${new Headers(init?.headers).get('authorization')}`);
-    return Response.json({
-      models: [
-        { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1 Sol', visibility: 'list' },
-        { slug: 'gpt-hidden', display_name: 'Hidden', visibility: 'hide' },
-        { slug: 'unknown-model', display_name: 'Unknown', visibility: 'list' },
-      ],
-    });
-  }) as typeof fetch;
-  const used: unknown[] = [];
-  try {
-    const model = new AssistantModel(db, settings, models, (ref) => used.push(ref));
-    assert.equal(await model.connected(), true);
-    assert.deepEqual(await model.catalog(), {
-      current: null,
-      models: [{ id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' }],
-    });
-    assert.deepEqual(asked, ['https://api.openai.com/v1/models Bearer synthetic-access']);
-    await assert.rejects(model.choose('gpt-hidden'), /listed models/);
-    await model.choose('gpt-6.1-sol');
-    assert.deepEqual(used, [{ provider: 'openai', modelId: 'gpt-6.1-sol' }]);
-    assert.equal((await model.catalog()).current, 'gpt-6.1-sol');
-  } finally {
-    globalThis.fetch = original;
+    release();
     await db.close();
   }
 });
@@ -530,187 +396,40 @@ test('ChatGPT uses the public streaming Responses endpoint without storage and r
   }
 });
 
-async function within<T>(work: Promise<T>, label: string) {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} did not settle.`)), 5000);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-test('human messages are saved while a queued request waits for AI, which resumes it once', async () => {
-  const f = await fixture();
-  const passive = await Conversations.open(f.db);
-  const request = randomUUID();
-  await f.db.run(
-    'INSERT INTO assistant_runs VALUES (?,?,?,?,?,?,?,NULL)',
-    f.thread,
-    `owner:${request}`,
-    'owner',
-    'Plan dinner',
-    randomUUID(),
-    new Date().toISOString(),
-    'queued',
-  );
-  const human = randomUUID();
-  try {
-    await passive.send(f.thread, 'partner', 'I can cook on Friday', human, false);
-    // Retrying the same human message does not duplicate it.
-    await passive.send(f.thread, 'partner', 'I can cook on Friday', human, false);
-    await assert.rejects(
-      passive.send(f.thread, 'partner', 'Ask the assistant too', randomUUID(), true),
-      (error: unknown) => error instanceof DomainError && error.status === 409,
-    );
-    assert.match((await passive.status(f.thread)).error ?? '', /paused/);
-    assert.equal((await passive.status(f.thread)).queued, 1);
-  } finally {
-    await passive.close();
-    f.reopen();
-  }
-  f.faux.setResponses([
-    (context) => {
-      assert.ok(JSON.stringify(context.messages).includes('I can cook on Friday'));
-      return fauxAssistantMessage('Friday dinner sounds good.');
+test('topic maintenance has a daily cap that resets, and unbound or unmetered calls are refused', async () => {
+  const { faux, ai } = fauxChatgpt();
+  const { app, thread } = await household(ai);
+  // A person's request binds the provider session to its topic.
+  let sessionId: string | undefined;
+  faux.setResponses([
+    (_context, options) => {
+      sessionId = options?.sessionId;
+      return fauxAssistantMessage('Noted.');
     },
   ]);
-  const conversations = await Conversations.open(f.db, f.options);
   try {
-    await finished(conversations, f.thread);
-    assert.equal((await conversations.status(f.thread)).error, null);
-    assert.equal(f.faux.state.callCount, 1);
-    const messages = await conversations.messages(f.thread);
-    assert.deepEqual(
-      messages.map((message) => message.authorId),
-      ['owner', 'partner', 'assistant'],
-    );
-  } finally {
-    await conversations.close();
-    await f.close();
-  }
-});
+    await chat(app, 'owner', thread).ask('Note that the boiler is serviced');
+    await answered(app);
+    assert.ok(sessionId);
 
-test('human messages are saved while an admitted request is paused mid-run', async () => {
-  const f = await fixture();
-  let started!: () => void;
-  const running = new Promise<void>((resolve) => (started = resolve));
-  f.faux.setResponses([
-    (_context, options) =>
-      new Promise((_, reject) => {
-        started();
-        options?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
-      }),
-  ]);
-  let conversations = await Conversations.open(f.db, f.options);
-  await conversations.send(f.thread, 'owner', 'Plan the week', randomUUID());
-  await within(running, 'The first model call');
-  await conversations.close();
-  f.reopen();
-  conversations = await Conversations.open(f.db);
-  try {
-    await within(
-      conversations.send(f.thread, 'partner', 'Remember the dentist', randomUUID(), false),
-      'A passive message',
+    let now = Date.parse('2026-10-14T07:00:00Z');
+    const maintenance = boundedModels(app.db, ai.models, () => now);
+    const model = faux.getModel();
+    const context = { messages: [{ role: 'user' as const, content: 'Summarize', timestamp: now }] };
+    faux.setResponses(
+      Array.from({ length: dailyMaintenanceCalls + 1 }, () => fauxAssistantMessage('Summary')),
     );
-    assert.ok(
-      (await conversations.messages(f.thread)).some(
-        (message) => message.text === 'Remember the dentist',
-      ),
-    );
-  } finally {
-    await conversations.close();
-    f.reopen();
-  }
-  f.faux.setResponses([fauxAssistantMessage('Here is the week.')]);
-  conversations = await Conversations.open(f.db, f.options);
-  try {
-    await finished(conversations, f.thread);
-    assert.equal((await conversations.status(f.thread)).error, null);
-    // The interrupted call plus exactly one resumed call.
-    assert.equal(f.faux.state.callCount, 2);
-    const messages = await conversations.messages(f.thread);
-    assert.equal(messages.filter((message) => message.text === 'Plan the week').length, 1);
-    assert.equal(messages.filter((message) => message.text === 'Remember the dentist').length, 1);
-    assert.equal(messages.filter((message) => message.authorId === 'assistant').length, 1);
-  } finally {
-    await conversations.close();
-    await f.close();
-  }
-});
-
-test('maintenance inference is metered per topic with its own daily budget', async () => {
-  const f = await fixture();
-  let now = Date.parse('2026-10-14T07:00:00Z');
-  const models = boundedModels(f.db, f.options.models, () => now);
-  const model = f.faux.getModel();
-  const context = { messages: [{ role: 'user' as const, content: 'Summarize', timestamp: now }] };
-  f.faux.setResponses(
-    Array.from({ length: dailyMaintenanceCalls + 1 }, () => fauxAssistantMessage('Summary')),
-  );
-  try {
-    await assert.rejects(
-      models.completeSimple(model, context, { sessionId: 'unbound' }),
-      /cannot be bound/,
-    );
-    await f.db.run('INSERT INTO assistant_sessions VALUES (?,?)', 'session-1', f.thread);
+    await assert.rejects(maintenance.completeSimple(model, context, { sessionId: 'unbound' }));
     for (let call = 0; call < dailyMaintenanceCalls; call++)
-      await models.completeSimple(model, context, { sessionId: 'session-1' });
-    await assert.rejects(
-      models.completeSimple(model, context, { sessionId: 'session-1' }),
-      /daily assistant maintenance limit/,
-    );
-    assert.equal(f.faux.state.callCount, dailyMaintenanceCalls);
-    // Maintenance never consumes a person's request budget.
-    assert.equal((await f.db.get<Row>('SELECT COUNT(*) AS n FROM assistant_model_calls'))!.n, 0);
+      await maintenance.completeSimple(model, context, { sessionId });
+    await assert.rejects(maintenance.completeSimple(model, context, { sessionId }), /limit/);
+    assert.equal(faux.state.callCount, 1 + dailyMaintenanceCalls);
     now += 86_400_001;
-    await models.completeSimple(model, context, { sessionId: 'session-1' });
-    assert.throws(() => models.complete(model, context), /Unmetered/);
-    assert.throws(() => models.stream(model, context), /Unmetered/);
+    await maintenance.completeSimple(model, context, { sessionId });
+    assert.equal(faux.state.callCount, 2 + dailyMaintenanceCalls);
+    assert.throws(() => maintenance.complete(model, context), /Unmetered/);
+    assert.throws(() => maintenance.stream(model, context), /Unmetered/);
   } finally {
-    await f.close();
-  }
-});
-
-test('a Pi compaction of a topic counts as maintenance rather than request generation', async () => {
-  const f = await fixture();
-  const conversations = await Conversations.open(f.db, f.options);
-  f.faux.setResponses([fauxAssistantMessage('Noted.'), fauxAssistantMessage('Noted again.')]);
-  try {
-    // Enough model-visible history for Pi to keep recent context and summarize the rest.
-    for (const text of ['a'.repeat(90_000), 'b'.repeat(90_000)]) {
-      await conversations.send(f.thread, 'owner', text, randomUUID());
-      await finished(conversations, f.thread);
-    }
-    const generation = (await f.db.get<Row>('SELECT COUNT(*) AS n FROM assistant_model_calls'))!.n;
-    assert.equal(generation, 2);
-    f.faux.setResponses([fauxAssistantMessage('The owner shared two long notes.')]);
-    const conversation = await (
-      conversations as unknown as { conversation(id: string): Promise<Conversation> }
-    ).conversation(f.thread);
-    await conversation.compact(undefined, BACKGROUND_CONTEXT);
-    await within(
-      (async () => {
-        while (!(await f.db.get<Row>('SELECT 1 FROM assistant_maintenance_calls'))) await pause(10);
-      })(),
-      'Compaction',
-    );
-    assert.deepEqual(
-      (await f.db.all<Row>('SELECT thread_id FROM assistant_maintenance_calls')).map(
-        (row) => row.thread_id,
-      ),
-      [f.thread],
-    );
-    assert.equal(
-      (await f.db.get<Row>('SELECT COUNT(*) AS n FROM assistant_model_calls'))!.n,
-      generation,
-    );
-  } finally {
-    await conversations.close();
-    await f.close();
+    await app.conversations.close();
   }
 });
