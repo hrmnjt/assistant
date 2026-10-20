@@ -1,17 +1,15 @@
 import { DatabaseSync } from 'node:sqlite';
-import { createModels } from '@earendil-works/pi-ai';
 import { mkdirSync, mkdtempSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { NodeSqliteDatabase } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { migrate, type Store } from '../server/database.js';
 import { developmentPersonCookie, identityHeader } from '../server/auth.js';
 import { handle, type App } from '../server/api.js';
-import { AssistantKit, coreExtension } from '../server/assistant-tools.js';
+import { AssistantKit } from '../server/assistant-tools.js';
 import { previewOwner } from '../server/changes.js';
 import { DomainError } from '../server/errors.js';
 import { Household } from '../server/household.js';
 import { Settings } from '../server/settings.js';
-import { AssistantModel } from '../server/ai.js';
 import { Notices, type PushConfig, type PushSender } from '../server/notices.js';
 import type { Plugin, PluginHost } from '../server/plugin.js';
 import type { CalendarSnapshot } from '../src/types.js';
@@ -20,7 +18,7 @@ import { DashboardPlugin } from '../server/plugins/dashboard.js';
 import { TasksPlugin } from '../server/plugins/tasks.js';
 
 export type Row = Record<string, any>;
-export const origin = 'http://localhost:5173';
+const origin = 'http://localhost:5173';
 /** The two test people the admin adds: Alex first, then Sam. */
 export const people = {
   owner: { name: 'Alex', email: 'alex@example.com' },
@@ -139,18 +137,11 @@ export function householdParts(
     },
   };
   return {
-    /** The assistant's Pi extensions: the core, then each plugin's. */
-    extensions: [
-      coreExtension(db, assistant, household),
-      ...plugins.flatMap((plugin) => (plugin.extension ? [plugin.extension] : [])),
-    ],
     db,
     household,
     notices,
     assistant,
     settings,
-    /** An assistant model chooser with no ChatGPT connection. */
-    assistantModel: new AssistantModel(db, settings, createModels(), () => undefined),
     host,
     tasks,
     calendar,
