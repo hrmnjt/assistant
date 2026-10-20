@@ -241,8 +241,23 @@
   .section-heading .eyebrow {
     @apply mb-2;
   }
-  .model-list {
-    @apply m-0 grid list-disc gap-1 pl-5 text-sm;
+  .admin-page {
+    @apply mx-auto grid w-full max-w-xl gap-4 px-4 pt-6 pb-16;
+  }
+  .admin-header {
+    @apply flex flex-wrap items-center justify-between gap-3;
+  }
+  .admin-header h1 {
+    @apply flex items-center gap-2 text-2xl font-semibold;
+  }
+  .admin-header a {
+    @apply flex items-center gap-1 text-sm;
+  }
+  .admin-page fieldset {
+    @apply m-0 border-0 p-0;
+  }
+  .admin-page legend {
+    @apply mb-2 text-sm font-semibold;
   }
   .day-aside {
     @apply grid gap-4;

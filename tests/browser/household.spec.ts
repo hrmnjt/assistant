@@ -67,51 +67,51 @@ test('signed out: loading, then the reason and a way back through Cloudflare Acc
   );
 });
 
-test('a missing Worker variable: the app says which to set, then opens once it is set', async ({
+test('before the admin adds the two people, the app says so and links to the admin page', async ({
   page,
   household,
 }, info) => {
-  household.configuration =
-    'Configure PERSON_2_EMAIL in the Worker’s Settings → Variables and Secrets on Cloudflare.';
+  household.notSetUp = true;
   await page.goto('/');
-  await expect(page.getByRole('alert')).toHaveText(household.configuration);
-  await expect(page.getByRole('link', { name: 'Use a different email' })).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveText(
+    'The assistant isn’t set up yet: the admin adds the two of you on the admin page.',
+  );
+  await expect(page.getByRole('link', { name: 'Open the admin page' })).toHaveAttribute(
+    'href',
+    '/admin',
+  );
   await noHorizontalOverflow(page);
-  await shot(page, info, 'configure');
-  household.configuration = null;
+  await shot(page, info, 'not-set-up');
+  household.notSetUp = false;
   await page.getByRole('button', { name: 'Try again' }).click();
   await expect(page.getByLabel('Message', { exact: true })).toBeVisible();
 });
 
-test('settings: both people and the connections come from the Worker’s variables', async ({
+test('settings: both people and the connections show their status; the admin changes them', async ({
   page,
   household,
-}, info) => {
+}) => {
   household.state.integrations.calendar = 'not-connected';
   household.state.calendar = { ...household.state.calendar, status: 'not-connected' };
   household.state.integrations.ai = 'needs-model';
   await page.goto('/');
   await navigate(page, 'Settings');
   await expect(page.getByText('Alex and Sam. You’re signed in as alex@example.com.')).toBeVisible();
-  await expect(page.getByText(/^Names and emails are PERSON_1_NAME/)).toBeVisible();
-  await expect(page.getByText(/add ICLOUD_USERNAME \(the Apple ID\)/)).toBeVisible();
-  await expect(page.getByText(/Set CHATGPT_MODEL in the Worker’s variables/)).toBeVisible();
-  // Nothing is entered in the app.
+  await expect(page.getByRole('link', { name: 'admin page' })).toHaveAttribute('href', '/admin');
+  await expect(
+    page.getByText('The admin connects the shared iCloud calendar on the admin page.'),
+  ).toBeVisible();
+  await expect(
+    page.getByText('ChatGPT is connected. The admin still chooses its model on the admin page.'),
+  ).toBeVisible();
+  // Nothing is entered here.
   for (const field of ['Your name', 'Apple ID', 'App-specific password'])
     await expect(page.getByLabel(field)).toHaveCount(0);
-  await page.getByRole('button', { name: 'Show the account’s models' }).click();
-  await expect(page.getByRole('listitem')).toHaveText([
-    'GPT-6.1 Sol · gpt-6.1-sol',
-    'GPT-6.1 Mini · gpt-6.1-mini',
-  ]);
-  await noHorizontalOverflow(page);
-  await shot(page, info, 'settings-connections');
 
-  // Connected, with the model in use; the other person sees the same.
+  // Connected; the other person sees the same.
   household.state.integrations.calendar = 'connected';
   household.state.calendar = { ...household.state.calendar, status: 'connected' };
   household.state.integrations.ai = 'configured';
-  household.model = 'gpt-6.1-mini';
   household.state.me = household.state.people[1];
   household.state.threads.push({
     id: 'assistant-partner',
@@ -129,22 +129,6 @@ test('settings: both people and the connections come from the Worker’s variabl
   await navigate(page, 'Settings');
   await expect(page.getByText('Connected to Household.')).toBeVisible();
   await expect(page.getByText('Eligible AI requests use the connected ChatGPT plan')).toBeVisible();
-  await page.getByRole('button', { name: 'Show the account’s models' }).click();
-  await expect(page.getByRole('listitem').last()).toHaveText(
-    'GPT-6.1 Mini · gpt-6.1-mini (in use)',
-  );
-  // A calendar the variables name wrongly says what to set.
-  household.state.integrations.calendar = 'error';
-  household.state.calendar = {
-    ...household.state.calendar,
-    status: 'error',
-    error: 'Set ICLOUD_CALENDAR to one of your iCloud calendars: Home, Work.',
-  };
-  await page.reload();
-  await navigate(page, 'Settings');
-  await expect(
-    page.getByText('Set ICLOUD_CALENDAR to one of your iCloud calendars: Home, Work.').first(),
-  ).toBeVisible();
 });
 
 test('settings: sign out through Access, or act as the other person in development', async ({

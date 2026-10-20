@@ -11,7 +11,7 @@ import { openHousehold } from '../../server/runtime.js';
 import { securityHeaders } from '../../server/http.js';
 import { updateEventData } from '../../server/plugins/calendar/icalendar.js';
 import type { CalendarResource, CalendarTransport } from '../../server/plugins/calendar/caldav.js';
-import { config, directory, openStore } from '../support.js';
+import { config, directory, openStore, setUp } from '../support.js';
 
 if (process.env.HOUSEHOLD_BROWSER_TEST !== '1') throw new Error('Use npm run test:browser.');
 const origin = 'http://127.0.0.1:4173';
@@ -38,6 +38,7 @@ const transport: CalendarTransport = {
 };
 // A development server, as `npm run dev` is: no sign-in, acting as Alex unless the browser picks Sam.
 const app = await openHousehold(db, config, { transport });
+await setUp(app.household);
 const fields = {
   title: 'Uncertain browser appointment',
   notes: '',

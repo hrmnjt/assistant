@@ -17,12 +17,9 @@ export default defineConfig({
       miniflare: {
         bindings: {
           ...blank,
-          // A deployment, so people need a Cloudflare Access identity, and two test people.
+          // A deployment, so people need a Cloudflare Access identity; the admin a token.
           HOUSEHOLD_DEVELOPMENT: '',
-          PERSON_1_NAME: 'Alex',
-          PERSON_1_EMAIL: 'alex@example.com',
-          PERSON_2_NAME: 'Sam',
-          PERSON_2_EMAIL: 'sam@example.com',
+          ADMIN_TOKEN: 'test-admin-token-0123456789-abcdefghij',
         },
       },
     }),

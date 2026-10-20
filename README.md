@@ -53,13 +53,12 @@ npm ci --cache ./.cache/npm --ignore-scripts
 npm run dev
 ```
 
-First copy `cloudflare/.dev.vars.example` to `cloudflare/.dev.vars` (private,
-ignored by Git) and fill in at least `PERSON_1_NAME` and `PERSON_2_NAME`; the
-other values are optional locally. Open `http://localhost:8787` (or
-`http://127.0.0.1:8787`). Development has no sign-in: it answers only on this
-computer and acts as person 1; Settings has an "Act as" button to try shared
-features as person 2. `npm run ai:connect` adds a local ChatGPT connection to
-`cloudflare/.dev.vars`; restart `npm run dev` after changing that file. `npm run dev` runs `wrangler dev` with the client
+Open `http://localhost:8787/admin` (or `http://127.0.0.1:8787/admin`) and add
+the two people (emails are optional locally), then open `http://localhost:8787`.
+Development has no sign-in and no admin token: it answers only on this computer
+and acts as the first person; Settings has an "Act as" button to try shared
+features as the second. `npm run ai:connect` saves a local ChatGPT connection in
+the private `cloudflare/.dev.vars`; restart `npm run dev` afterward. `npm run dev` runs `wrangler dev` with the client
 rebuilt on each change (reload the page to see it). Local state lives in
 `data/cloudflare/` and survives restarts; delete that folder to start over. The
 local app stops with its process. Phones use the deployment.
@@ -69,32 +68,31 @@ local app stops with its process. Phones use the deployment.
 Cloudflare Access signs the two people in; the app has no passwords of its own.
 With Access enabled on the Worker, Cloudflare gives it the verified email of
 each request (`ctx.access`); the Worker passes that on to the app, which
-recognizes only the two emails in its variables. A deployment without Access
+recognizes only the two emails the admin added. A deployment without Access
 refuses every request.
 
-Everything is configured on the `assistant` Worker's page in the Cloudflare
-dashboard:
+The admin page, `/admin`, is separate from the two people's app: it sits behind
+Access too and also needs `ADMIN_TOKEN`, a Worker secret. There the admin adds
+the two people, connects the iCloud calendar and chooses the assistant's model.
 
 1. Deploy the Worker: `npm run wrangler -- login`, then `npm run deploy` (or
    let [continuous deployment](#continuous-deployment) do it). It appears as
    `assistant.<subdomain>.workers.dev`.
-2. Settings → Domains & Routes: enable Cloudflare Access for workers.dev. In
-   Zero Trust → Access, edit the Worker's policy so it allows exactly the two
-   email addresses.
-3. Settings → Variables and Secrets: add `PERSON_1_NAME`, `PERSON_1_EMAIL`,
-   `PERSON_2_NAME` and `PERSON_2_EMAIL`. The emails must be the two Access
-   allows. Until all four are set, the app says which are missing.
-4. Optional, same page: the shared iCloud calendar with `ICLOUD_USERNAME` (the
-   Apple ID), `ICLOUD_APP_PASSWORD` (an app-specific password, as a Secret) and
-   `ICLOUD_CALENDAR` (the calendar's name; leave it out at first and Settings
-   lists the account's calendars).
-5. Optional: connect ChatGPT from the Mac with `npm run ai:connect -- --production`
-   and `npm run secrets` (see [AI access](#ai-access)), then add `CHATGPT_MODEL`
-   on the same page; Settings lists the account's models.
+2. In the Worker's Settings → Domains & Routes, enable Cloudflare Access for
+   workers.dev. In Zero Trust → Access, edit the Worker's policy so it allows
+   exactly the two email addresses.
+3. In Settings → Variables and Secrets, add `ADMIN_TOKEN` as a Secret: at least
+   32 random characters, from a password manager.
+4. Open `/admin`, sign in with that token, and add both people's names and the
+   emails Access allows. The page also shows which email Access verified for
+   the request, to check Access reaches the app.
+5. Optional, on the same page: connect the shared iCloud calendar (an Apple ID
+   and an app-specific password, then the calendar to share).
+6. Optional: connect ChatGPT from the Mac with `npm run ai:connect -- --production`
+   and `npm run secrets` (see [AI access](#ai-access)), then choose the model on
+   the admin page.
 
-Saving a variable restarts the Worker with it. `cloudflare/.dev.vars.example`
-lists every variable. Push keys need no configuration: the app makes them on
-first start.
+Push keys need no configuration: the app makes them on first start.
 
 `npm run deploy` uploads code only and keeps the Worker's variables and
 secrets. Run `npm run check` first to typecheck and
@@ -117,11 +115,13 @@ deploy twice or to a second Worker.
 
 ### Accounts and settings
 
-The two people's names and emails live only on Cloudflare, in the Worker's
-variables: never in the repository or GitHub. Person 1 and person 2 keep their
-records when a name or email changes; a changed email must also be allowed in
-Access. Settings shows both names and the connections' status; there is
-nothing to enter in the app beyond each person's own reminder settings. Email addresses are not
+The two people's names and emails live only in the app's storage on Cloudflare,
+never in the repository or GitHub. Only the admin changes them, on the admin
+page; each person keeps their records when a name or email changes, and a
+changed email must also be allowed in Access. The admin's sign-in lasts 12
+hours, five wrong tokens lock it for 15 minutes, and a new `ADMIN_TOKEN` ends
+every admin session. The people's Settings show both names and the connections'
+status. Email addresses are not
 sent to ChatGPT; the assistant reads names only. Sign out (Settings) ends the
 Access session; Access decides how long a sign-in lasts. Use the deployment's
 stable HTTPS address on phones, which the service worker and push require.
@@ -132,10 +132,10 @@ as the push services' contact, so neither email goes to Apple or Google. Without
 permission, reminders stay available in the app's Updates.
 
 To connect the calendar, create and share the iCloud calendar in Apple
-Calendar, then set `ICLOUD_USERNAME`, `ICLOUD_APP_PASSWORD` and
-`ICLOUD_CALENDAR` on the Worker. The password stays a Worker secret and is
-never sent to the app. Naming another calendar, or removing the variables,
-drops the previous calendar's cached appointments.
+Calendar, then on the admin page sign in with an Apple ID and an Apple
+app-specific password and pick the calendar. The password is kept in the app's
+storage, sent once and never shown again. Disconnecting removes it and the
+cached appointments.
 The app refreshes complete months (previous month through two months ahead,
 with time-zone boundary padding) every five minutes in the background, and
 within a minute while someone is using the app. It checks the live event version
@@ -185,11 +185,11 @@ Durable Object restarts and resumes pending assistant work from committed state.
 - The app is an assistant for the two of us and speaks of us by name. Our
   names and emails are never in the repository or on GitHub (decided 18
   October 2026).
-- Configure the app on the `assistant` Worker's page in the Cloudflare
-  dashboard: the two people, the iCloud calendar and the ChatGPT model are the
-  Worker's variables and secrets, not settings entered in the app (decided 20
-  October 2026). The ChatGPT connection is the exception: it is a sign-in, made
-  on the Mac with `npm run ai:connect` and uploaded with `npm run secrets`.
+- Separate admin access from the two people's: the admin page (`/admin`) sits
+  behind Cloudflare Access and also needs the `ADMIN_TOKEN` Worker secret.
+  There the admin adds the two people and makes the app's settings (the iCloud
+  calendar, ChatGPT and its model); the people use the app day to day (decided
+  20 October 2026).
 - The application is named `assistant`, deployed as the `assistant` Worker
   (decided 19 October 2026). "Household" is only one of its task categories.
 - Use text chat, with the iPhone keyboard's dictation for speech input.
@@ -489,8 +489,8 @@ with Sign in with ChatGPT; it saves the connection in `cloudflare/.dev.vars`, so
 restart `npm run dev` afterward. `npm run ai:connect -- --production` saves a
 separate connection in `cloudflare/.prod.vars`; `npm run secrets` uploads it as
 Worker secrets. The sign-in needs a browser on the Mac, so it cannot run from
-the app. Then set `CHATGPT_MODEL` on the Worker (in `cloudflare/.dev.vars`
-locally) to one of the account's models, which Settings lists. Tokens are never printed, and the
+the app. Then choose the model on the admin page, from the account's catalog;
+the choice applies at once. Tokens are never printed, and the
 app never reads Codex's tokens or falls back to an API key. The Durable Object
 adopts a newly connected credential once and keeps refreshed tokens in its own
 storage. `npm run ai:disconnect` (with `-- --production` for the deployment)

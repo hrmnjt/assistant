@@ -2,7 +2,8 @@ import type { Models } from '@earendil-works/pi-ai';
 import type { ModelRef } from '@earendil-works/pi-durable';
 import { migrate, type Store } from './database.js';
 import { Auth } from './auth.js';
-import { configuredPeople, Household } from './household.js';
+import { Household } from './household.js';
+import { AdminAuth } from './admin.js';
 import { Conversations } from './conversations.js';
 import { Notices, type PushSender } from './notices.js';
 import { AssistantKit, coreExtension } from './assistant-tools.js';
@@ -11,37 +12,28 @@ import { Settings } from './settings.js';
 import type { Plugin, PluginHost } from './plugin.js';
 import { CalendarPlugin } from './plugins/calendar/index.js';
 import { CalendarService } from './plugins/calendar/service.js';
-import { ICloudTransport, type CalendarTransport } from './plugins/calendar/caldav.js';
+import {
+  iCloud,
+  type CalendarConnector,
+  type CalendarTransport,
+} from './plugins/calendar/caldav.js';
 import { TasksPlugin } from './plugins/tasks.js';
 import { DashboardPlugin } from './plugins/dashboard.js';
 import type { App } from './api.js';
 
 /**
- * The Worker's variables and secrets, set on Cloudflare (Settings → Variables
- * and Secrets) or in cloudflare/.dev.vars for `npm run dev`; see
- * cloudflare/.dev.vars.example. The app keeps only push keys and each person's
- * own reminder settings.
+ * The Worker's secrets: ADMIN_TOKEN opens the admin page, and `npm run dev`
+ * sets HOUSEHOLD_DEVELOPMENT. Everything else the admin sets in the app.
  */
 export type Config = Partial<
-  Record<
-    | 'HOUSEHOLD_DEVELOPMENT'
-    | 'PERSON_1_NAME'
-    | 'PERSON_1_EMAIL'
-    | 'PERSON_2_NAME'
-    | 'PERSON_2_EMAIL'
-    | 'ICLOUD_USERNAME'
-    | 'ICLOUD_APP_PASSWORD'
-    | 'ICLOUD_CALENDAR'
-    | 'CHATGPT_MODEL'
-    | 'CHATGPT_CREDENTIAL_JSON',
-    string
-  >
+  Record<'HOUSEHOLD_DEVELOPMENT' | 'ADMIN_TOKEN' | 'CHATGPT_CREDENTIAL_JSON', string>
 >;
 /** Replaceable integrations, for tests and local fixtures. */
 export type Overrides = {
   clock?: () => Date;
-  /** A fixed calendar, instead of the iCloud one in the variables. */
+  /** A fixed calendar, instead of the one the admin connected. */
   transport?: CalendarTransport;
+  connector?: CalendarConnector;
   models?: Models;
   model?: ModelRef;
   send?: PushSender;
@@ -69,24 +61,17 @@ export async function openHousehold(
   // `npm run dev` sets HOUSEHOLD_DEVELOPMENT; a deployment never does.
   const development = config.HOUSEHOLD_DEVELOPMENT === 'true';
   const household = new Household(db, clock);
-  await household.configure(configuredPeople(config, development));
+  await household.ensureSpaces();
   const settings = new Settings(db);
-  const icloud = {
-    username: config.ICLOUD_USERNAME?.trim() ?? '',
-    password: config.ICLOUD_APP_PASSWORD?.trim() ?? '',
-    calendarName: config.ICLOUD_CALENDAR?.trim() ?? '',
-  };
-  const transport =
-    overrides.transport ??
-    (icloud.username && icloud.password ? new ICloudTransport(icloud) : undefined);
+  const connector = overrides.connector ?? iCloud;
+  const transport = overrides.transport ?? (await CalendarPlugin.saved(settings, connector));
   const notices = new Notices(db, await settings.pushKeys(), clock, overrides.send);
   const assistant = new AssistantKit(db);
-  const host: PluginHost = { db, clock, household, notices, assistant };
+  const host: PluginHost = { db, clock, household, notices, assistant, settings };
   const calendar = new CalendarPlugin(
     host,
-    await new CalendarService(db, transport, clock).load(
-      `${icloud.username}\n${icloud.calendarName}`,
-    ),
+    await new CalendarService(db, transport, clock).load(),
+    connector,
   );
   const tasks = new TasksPlugin(host);
   // The calendar refreshes before the dashboard summarizes it.
@@ -94,7 +79,7 @@ export async function openHousehold(
   notices.use(plugins);
   const ai = overrides.models
     ? { models: overrides.models, model: overrides.model }
-    : await aiConnection(db, config);
+    : await aiConnection(db, config, settings);
   const conversations = await Conversations.open(db, {
     ...ai,
     household,
@@ -103,8 +88,11 @@ export async function openHousehold(
       ...plugins.flatMap((plugin) => (plugin.extension ? [plugin.extension] : [])),
     ],
   });
-  const assistantModel = new AssistantModel(db, ai.models, config.CHATGPT_MODEL);
+  const assistantModel = new AssistantModel(db, settings, ai.models, (model) =>
+    conversations.setModel(model),
+  );
   const auth = new Auth(household, development);
+  const admin = new AdminAuth(db, config.ADMIN_TOKEN, development, clock);
   const nextWake = async () => {
     const now = clock();
     const times = [now.getTime() + fallbackWake, (await notices.nextWake(now)) ?? Infinity];
@@ -118,6 +106,8 @@ export async function openHousehold(
     household,
     conversations,
     assistantModel,
+    admin,
+    settings,
     notices,
     plugins,
     nextWake,

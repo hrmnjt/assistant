@@ -7,8 +7,8 @@ import { chatgptModels } from '../server/chatgpt-models.js';
 // npm run ai:connect [-- --production]     sign in with ChatGPT and save the connection
 // npm run ai:disconnect [-- --production]  remove it
 // Local values go to cloudflare/.dev.vars; production values to cloudflare/.prod.vars,
-// uploaded by `npm run secrets`. Tokens are never printed. The model is the
-// CHATGPT_MODEL variable, from the account's models that Settings lists.
+// uploaded by `npm run secrets`. Tokens are never printed. The model is chosen on
+// the admin page.
 process.umask(0o077);
 process.env.PI_OAUTH_CALLBACK_HOST = '127.0.0.1';
 const path = process.argv.includes('--production')
@@ -74,7 +74,7 @@ if (process.argv.includes('--remove')) {
     if (!credential) throw new Error('No OAuth credential was returned.');
     save({ CHATGPT_HOST_ID: hostId, CHATGPT_CREDENTIAL_JSON: JSON.stringify(credential) });
     console.log(
-      `Saved the ChatGPT connection in ${path}. ${path.includes('prod') ? 'Run npm run secrets to upload it, then set CHATGPT_MODEL on the Worker' : 'Set CHATGPT_MODEL there and restart npm run dev'}; Settings lists the account's models. Send a message to validate completed inference; shared use by both of you still needs account eligibility validation.`,
+      `Saved the ChatGPT connection in ${path}. ${path.includes('prod') ? 'Run npm run secrets to upload it' : 'Restart npm run dev'}, then choose the model on the admin page. Send a message to validate completed inference; shared use by both of you still needs account eligibility validation.`,
     );
   } catch {
     console.error(
