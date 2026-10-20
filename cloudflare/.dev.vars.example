@@ -1,13 +1,9 @@
-# The Worker's secrets. On Cloudflare, add them under the assistant Worker's
-# Settings → Variables and Secrets as type Secret; deploys keep them. For
-# `npm run dev`, copy this file to cloudflare/.dev.vars, which Git ignores.
+# The Worker's one secret. On Cloudflare, add it under the assistant Worker's
+# Settings → Variables and Secrets as type Secret; deploys keep it.
 
 # Opens the admin page (/admin), where the admin adds the two people, connects
-# the iCloud calendar and chooses the assistant's model. Use at least 32 random
-# characters from a password manager. `npm run dev` needs no token.
+# the iCloud calendar and ChatGPT, and chooses the assistant's model. Use at
+# least 32 random characters from a password manager. `npm run dev` needs no
+# token, so locally this file is optional (copy it to cloudflare/.dev.vars,
+# which Git ignores).
 # ADMIN_TOKEN=
-
-# The ChatGPT connection, written by `npm run ai:connect` (to cloudflare/.prod.vars
-# with `-- --production`, which `npm run secrets` uploads).
-# CHATGPT_HOST_ID=
-# CHATGPT_CREDENTIAL_JSON=

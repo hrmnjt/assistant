@@ -22,12 +22,11 @@ import { DashboardPlugin } from './plugins/dashboard.js';
 import type { App } from './api.js';
 
 /**
- * The Worker's secrets: ADMIN_TOKEN opens the admin page, and `npm run dev`
- * sets HOUSEHOLD_DEVELOPMENT. Everything else the admin sets in the app.
+ * The Worker's only settings: the ADMIN_TOKEN secret opens the admin page, and
+ * `npm run dev` sets HOUSEHOLD_DEVELOPMENT. Everything else the admin sets in
+ * the app.
  */
-export type Config = Partial<
-  Record<'HOUSEHOLD_DEVELOPMENT' | 'ADMIN_TOKEN' | 'CHATGPT_CREDENTIAL_JSON', string>
->;
+export type Config = Partial<Record<'HOUSEHOLD_DEVELOPMENT' | 'ADMIN_TOKEN', string>>;
 /** Replaceable integrations, for tests and local fixtures. */
 export type Overrides = {
   clock?: () => Date;
@@ -79,7 +78,7 @@ export async function openHousehold(
   notices.use(plugins);
   const ai = overrides.models
     ? { models: overrides.models, model: overrides.model }
-    : await aiConnection(db, config, settings);
+    : await aiConnection(db, settings);
   const conversations = await Conversations.open(db, {
     ...ai,
     household,
@@ -88,8 +87,12 @@ export async function openHousehold(
       ...plugins.flatMap((plugin) => (plugin.extension ? [plugin.extension] : [])),
     ],
   });
-  const assistantModel = new AssistantModel(db, settings, ai.models, (model) =>
-    conversations.setModel(model),
+  const assistantModel = new AssistantModel(
+    db,
+    settings,
+    ai.models,
+    (model) => conversations.setModel(model),
+    clock,
   );
   const auth = new Auth(household, development);
   const admin = new AdminAuth(db, config.ADMIN_TOKEN, development, clock);

@@ -56,17 +56,6 @@ const commands = {
   ],
   // Code only, as continuous deployment does; secrets and dashboard variables are kept.
   deploy: [[...wrangler, 'deploy', '--config', 'cloudflare/wrangler.jsonc']],
-  // Upload cloudflare/.prod.vars as Worker secrets; secrets missing from the file are kept.
-  secrets: [
-    [
-      ...wrangler,
-      'secret',
-      'bulk',
-      'cloudflare/.prod.vars',
-      '--config',
-      'cloudflare/wrangler.jsonc',
-    ],
-  ],
   // The Worker under test serves the built client, so build it first.
   test: [
     ['./node_modules/vite/bin/vite.js', 'build', '--logLevel', 'warn'],
@@ -76,14 +65,6 @@ const commands = {
 };
 const selected = commands[process.argv[2]];
 if (!selected) throw new Error('Unknown Cloudflare command');
-if (process.argv[2] === 'secrets') {
-  if (!existsSync('cloudflare/.prod.vars')) {
-    console.error(
-      'Nothing to upload: npm run ai:connect -- --production creates cloudflare/.prod.vars.',
-    );
-    process.exit(1);
-  }
-}
 for (const args of selected) {
   const child = spawn(process.execPath, args, { env, stdio: 'inherit' });
   const interrupt = () => child.kill('SIGINT'),
