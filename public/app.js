@@ -1,5 +1,6 @@
-// The chat: threads, each with its own context. Replies stream in as lines of JSON,
-// and a WebSocket says when a thread changes, on this device or another.
+// The chat: threads, each with its own context, shared by the people the app lets in.
+// Replies stream in as lines of JSON, and a WebSocket says when a thread changes, on
+// this device or another.
 
 const list = document.querySelector('#messages');
 const problem = document.querySelector('#problem');
@@ -10,9 +11,14 @@ const input = form.elements.text;
 const sendButton = form.querySelector('button');
 /** The open thread, from the address (`/?t=12`); none for a new chat. */
 let thread = Number(new URLSearchParams(location.search).get('t')) || null;
+/** The letter on this person's messages. */
+let you = null;
+/** Showing the open thread, or following its reply. */
 let busy = false;
 /** The open thread changed while this page was busy; show it again once done. */
 let stale = false;
+/** A message is on its way. One can be sent while a reply streams; it then waits its turn. */
+let sending = false;
 
 const post = (path, body = {}) =>
   fetch(path, {
@@ -30,7 +36,6 @@ function element(tag, className = '', text = '') {
 
 function setBusy(value) {
   busy = value;
-  sendButton.disabled = value;
   if (!value && stale) refresh();
 }
 
@@ -42,11 +47,15 @@ function refresh() {
 }
 
 /** Show why a request failed. Without a response, the network or the Access sign-in failed. */
-async function fail(response) {
+async function explain(response) {
   const body = await response?.json().catch(() => null);
   problem.textContent =
     body?.error ?? 'Couldn’t reach the app. Check the connection, or reload to sign in again.';
   problem.hidden = false;
+}
+
+async function fail(response) {
+  await explain(response);
   setBusy(false);
 }
 
@@ -82,10 +91,21 @@ function retryButton() {
 function show(message) {
   const node = element('article', `message ${message.role}`);
   if (message.reasoning) node.append(reasoningBlock(message.reasoning, false));
-  if (message.text) node.append(element('p', '', message.text));
+  if (message.text) node.append(element('p', message.role === 'user' ? 'bubble' : '', message.text));
+  // Each person's messages carry their letter.
+  if (message.author) node.append(element('span', 'avatar', message.author));
   if (message.error) node.append(element('p', 'error', message.error));
   list.append(node);
   return node;
+}
+
+/** A message sent while the thread was replying: it goes in, and is answered, after the reply. */
+function showQueued(message) {
+  if (list.querySelector(`[data-queued="${message.id}"]`)) return;
+  const node = show({ ...message, role: 'user' });
+  node.classList.add('queued');
+  node.dataset.queued = message.id;
+  node.append(element('p', 'note', 'Waiting for the reply above'));
 }
 
 /** Show a reply as it streams in, then reload the thread as saved. */
@@ -96,7 +116,8 @@ async function follow(response) {
   const text = element('p');
   reasoning.hidden = true;
   node.append(reasoning, thinking, text);
-  keepAtBottom(() => list.append(node));
+  // Messages waiting for this reply stay after it.
+  keepAtBottom(() => list.insertBefore(node, list.querySelector('.queued')));
   let reasoningText = '';
   let replyText = '';
   try {
@@ -119,6 +140,7 @@ async function follow(response) {
           reasoningText += event.reasoning ?? '';
           replyText += event.text ?? '';
         }
+        if (event.type === 'queued') keepAtBottom(() => showQueued(event.queued));
       }
       keepAtBottom(() => {
         reasoning.hidden = !reasoningText.trim();
@@ -142,7 +164,7 @@ async function load() {
   }
   const response = await fetch(`/api/threads/${thread}`).catch(() => null);
   if (!response?.ok) return fail(response);
-  const { title: name, messages, replying } = await response.json();
+  const { title: name, messages, queued, replying } = await response.json();
   title.textContent = document.title = name;
   // Showing it again keeps the reader's place, unless they were at the end.
   keepAtBottom(() => {
@@ -152,6 +174,7 @@ async function load() {
     const last = messages.at(-1);
     if (!replying && last?.role === 'user') show({ role: 'assistant', error: 'No reply yet.' });
     if (!replying && (last?.role === 'user' || last?.error)) list.lastChild.append(retryButton());
+    queued.forEach(showQueued);
   });
   if (replying) {
     const stream = await fetch(`/api/threads/${thread}/stream`).catch(() => null);
@@ -173,9 +196,10 @@ async function showThreads() {
   const response = await fetch('/api/threads').catch(() => null);
   // A failure here shows up in the conversation too, so stay quiet.
   if (!response?.ok) return;
-  const { threads } = await response.json();
+  const body = await response.json();
+  you = body.you;
   threadList.replaceChildren(
-    ...threads.map((item) => {
+    ...body.threads.map((item) => {
       const row = element('li', item.id === thread ? 'current' : '');
       const link = element('a', '', item.title);
       link.href = `/?t=${item.id}`;
@@ -238,20 +262,32 @@ function resize() {
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   const text = input.value.trim();
-  if (!text || busy) return;
-  setBusy(true);
+  if (!text || sending) return;
+  sending = sendButton.disabled = true;
   problem.hidden = true;
   const path = thread ? `/api/threads/${thread}/messages` : '/api/threads';
   const response = await post(path, { text });
+  sending = sendButton.disabled = false;
   // On failure the message stays in the box to send again.
-  if (!response?.ok) return fail(response);
+  if (!response?.ok) return explain(response);
   input.value = '';
   resize();
+  // The thread is replying: the message waits for that reply, and any waiting before it.
+  if (response.status === 202) {
+    const { queued } = await response.json();
+    return keepAtBottom(() => showQueued(queued));
+  }
+  // This page is still showing the thread: show it again after, this reply included.
+  if (busy) {
+    response.body.cancel();
+    return refresh();
+  }
+  setBusy(true);
   if (!thread) {
     list.replaceChildren();
     title.textContent = document.title = text;
   }
-  keepAtBottom(() => show({ role: 'user', text }));
+  keepAtBottom(() => show({ role: 'user', author: you, text }));
   await follow(response);
 });
 

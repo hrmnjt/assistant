@@ -9,10 +9,10 @@ const bytes = (part: string) =>
   Uint8Array.from(atob(part.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
 const decode = (part: string) => JSON.parse(new TextDecoder().decode(bytes(part)));
 
-/** Whether Access signed this request in, for this team and Access application. */
-export async function fromAccess(request: Request, teamDomain: string, audience: string) {
+/** The email Access signed this request in with, for this team and Access application, if it did. */
+export async function accessEmail(request: Request, teamDomain: string, audience: string) {
   const parts = request.headers.get('cf-access-jwt-assertion')?.split('.') ?? [];
-  if (parts.length !== 3) return false;
+  if (parts.length !== 3) return null;
   const issuer = (teamDomain.includes('://') ? teamDomain : `https://${teamDomain}`).replace(
     /\/+$/,
     '',
@@ -20,15 +20,17 @@ export async function fromAccess(request: Request, teamDomain: string, audience:
   try {
     const header = decode(parts[0]);
     const claims = decode(parts[1]);
-    if (header.alg !== 'RS256' || claims.iss !== issuer) return false;
-    if (![claims.aud].flat().includes(audience)) return false;
-    if (typeof claims.exp !== 'number' || claims.exp * 1000 < Date.now()) return false;
+    if (header.alg !== 'RS256' || claims.iss !== issuer) return null;
+    if (![claims.aud].flat().includes(audience)) return null;
+    if (typeof claims.exp !== 'number' || claims.exp * 1000 < Date.now()) return null;
+    if (typeof claims.email !== 'string') return null;
     const key = await publicKey(issuer, String(header.kid));
-    if (!key) return false;
+    if (!key) return null;
     const signed = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
-    return await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, bytes(parts[2]), signed);
+    const verified = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, bytes(parts[2]), signed);
+    return verified ? claims.email : null;
   } catch {
-    return false;
+    return null;
   }
 }
 

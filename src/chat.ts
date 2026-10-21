@@ -17,11 +17,16 @@ type Message = {
   id: number;
   thread: number;
   role: 'user' | 'assistant';
+  /** The email of the person who sent it; none on replies, or on messages from before people did. */
+  sender: string | null;
   text: string;
   reasoning: string;
   error: string | null;
   at: number;
 };
+/** A message sent while its thread was replying, waiting to go in. */
+type Queued = { id: number; thread: number; sender: string | null; text: string; at: number };
+type Person = { letter: string; email: string };
 
 /** How many recent messages of a thread the model sees. */
 const historyLimit = 50;
@@ -62,7 +67,14 @@ class Reply {
   }
 }
 
-/** The chats: their threads and messages, the ChatGPT sign-in and the chosen model. */
+/** Who sent the request: the email the Worker found for them. */
+const emailOf = (request: Request) => request.headers.get('x-email')?.toLowerCase() ?? null;
+/** Shows each message with its sender's letter, from the people set on the admin page. */
+const withLetters = (table: string) =>
+  `SELECT ${table}.*, people.letter AS author FROM ${table}
+   LEFT JOIN people ON people.email = ${table}.sender WHERE thread = ? ORDER BY id`;
+
+/** The chats: threads and messages, the people sharing them, the ChatGPT sign-in and the model. */
 export class Chat extends DurableObject<Env> {
   private sql = this.ctx.storage.sql;
   /** Replies in progress, at most one per thread. */
@@ -83,14 +95,30 @@ export class Chat extends DurableObject<Env> {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       thread INTEGER,
       role TEXT NOT NULL,
+      sender TEXT,
       text TEXT NOT NULL,
       reasoning TEXT NOT NULL DEFAULT '',
       error TEXT,
       at INTEGER NOT NULL
     )`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread INTEGER NOT NULL,
+      sender TEXT,
+      text TEXT NOT NULL,
+      at INTEGER NOT NULL
+    )`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS people (
+      email TEXT PRIMARY KEY,
+      letter TEXT NOT NULL
+    )`);
+    const columns = this.sql
+      .exec<{ name: string }>(`SELECT name FROM pragma_table_info('messages')`)
+      .toArray()
+      .map((column) => column.name);
+    if (!columns.includes('sender')) this.sql.exec('ALTER TABLE messages ADD COLUMN sender TEXT');
     // The first version kept a single conversation; it becomes the first thread.
-    const columns = this.sql.exec<{ name: string }>(`SELECT name FROM pragma_table_info('messages')`);
-    if (!columns.toArray().some((column) => column.name === 'thread'))
+    if (!columns.includes('thread'))
       ctx.storage.transactionSync(() => {
         this.sql.exec('ALTER TABLE messages ADD COLUMN thread INTEGER');
         const [first] = this.sql
@@ -107,15 +135,14 @@ export class Chat extends DurableObject<Env> {
     try {
       switch (route) {
         case 'GET /api/threads':
-          return json({ threads: this.threads() });
+          return json({ you: this.letterOf(emailOf(request)), threads: this.threads() });
         case 'POST /api/threads':
           return await this.start(request);
         case 'GET /api/threads/:id':
           return json({
             ...this.thread(id),
-            messages: this.sql
-              .exec<Message>('SELECT * FROM messages WHERE thread = ? ORDER BY id', id)
-              .toArray(),
+            messages: this.sql.exec(withLetters('messages'), id).toArray(),
+            queued: this.queued(id),
             replying: this.replies.has(id),
           });
         case 'DELETE /api/threads/:id':
@@ -133,6 +160,8 @@ export class Chat extends DurableObject<Env> {
           return json({
             connected: Boolean(await this.ctx.storage.get('chatgpt')),
             model: (await this.ctx.storage.get<string>('model')) ?? null,
+            email: emailOf(request),
+            people: this.people(),
           });
         case 'GET /api/admin/models':
           return json({ models: await listModels(await this.token()) });
@@ -144,6 +173,9 @@ export class Chat extends DurableObject<Env> {
         case 'POST /api/admin/model':
           await this.choose(request);
           return json({ ok: true });
+        case 'POST /api/admin/people':
+          await this.setPeople(request);
+          return json({ people: this.people() });
         case 'POST /api/admin/disconnect':
           await this.ctx.storage.delete(['chatgpt', 'signIn']);
           return json({ connected: false });
@@ -183,6 +215,7 @@ export class Chat extends DurableObject<Env> {
   private remove(id: number) {
     this.thread(id);
     if (this.replies.has(id)) throw new Error('Wait for the reply to finish, then delete the chat.');
+    this.sql.exec('DELETE FROM queue WHERE thread = ?', id);
     this.sql.exec('DELETE FROM messages WHERE thread = ?', id);
     this.sql.exec('DELETE FROM threads WHERE id = ?', id);
     this.changed(id);
@@ -215,12 +248,13 @@ export class Chat extends DurableObject<Env> {
     return text.trim();
   }
 
-  private addMessage(thread: number, text: string) {
+  private addMessage(thread: number, sender: string | null, text: string) {
     const now = Date.now();
     this.sql.exec(
-      'INSERT INTO messages (thread, role, text, at) VALUES (?, ?, ?, ?)',
+      'INSERT INTO messages (thread, role, sender, text, at) VALUES (?, ?, ?, ?, ?)',
       thread,
       'user',
+      sender,
       text,
       now,
     );
@@ -231,16 +265,48 @@ export class Chat extends DurableObject<Env> {
   private async start(request: Request) {
     const text = await this.text(request);
     const thread = this.newThread(text);
-    this.addMessage(thread, text);
-    return this.answer(thread);
+    this.addMessage(thread, emailOf(request), text);
+    return this.answer(thread).follow();
   }
 
+  /** Send a message: answered now or, while the thread is replying, after the messages before it. */
   private async send(thread: number, request: Request) {
     const text = await this.text(request);
     this.thread(thread);
-    if (this.replies.has(thread)) return json({ error: 'Wait for the current reply.' }, 409);
-    this.addMessage(thread, text);
-    return this.answer(thread);
+    if (!this.replies.has(thread) && !this.queued(thread).length) {
+      this.addMessage(thread, emailOf(request), text);
+      return this.answer(thread).follow();
+    }
+    const added = this.sql
+      .exec<Queued>(
+        'INSERT INTO queue (thread, sender, text, at) VALUES (?, ?, ?, ?) RETURNING *',
+        thread,
+        emailOf(request),
+        text,
+        Date.now(),
+      )
+      .one();
+    const queued = { ...added, author: this.letterOf(added.sender) };
+    // Pages following the reply show the message waiting after it.
+    this.replies.get(thread)?.send({ type: 'queued', queued });
+    // Messages left waiting by a reply that never finished go in now.
+    this.next(thread);
+    this.changed(thread);
+    return json({ queued }, 202);
+  }
+
+  /** The messages waiting for a thread's reply, oldest first. */
+  private queued(thread: number) {
+    return this.sql.exec<Queued>(withLetters('queue'), thread).toArray();
+  }
+
+  /** Let the oldest waiting message in and answer it, unless the thread is replying. */
+  private next(thread: number) {
+    const [waiting] = this.queued(thread);
+    if (!waiting || this.replies.has(thread)) return;
+    this.sql.exec('DELETE FROM queue WHERE id = ?', waiting.id);
+    this.addMessage(thread, waiting.sender, waiting.text);
+    this.answer(thread);
   }
 
   /** Answer a thread's last message again, replacing a failed reply. */
@@ -253,17 +319,16 @@ export class Chat extends DurableObject<Env> {
     if (last?.role === 'assistant' && last.error)
       this.sql.exec('DELETE FROM messages WHERE id = ?', last.id);
     else if (last?.role !== 'user') throw new Error('There is nothing to retry.');
-    return this.answer(thread);
+    return this.answer(thread).follow();
   }
 
-  /** Start a reply and follow it; it finishes and is saved even if the page goes away. */
+  /** Start a reply; it finishes and is saved even if no page follows it. */
   private answer(thread: number) {
     const reply = new Reply(thread);
     this.replies.set(thread, reply);
     this.changed(thread);
-    const response = reply.follow();
     this.ctx.waitUntil(this.run(reply));
-    return response;
+    return reply;
   }
 
   private async run(reply: Reply) {
@@ -305,8 +370,42 @@ export class Chat extends DurableObject<Env> {
     this.sql.exec('UPDATE threads SET updated = ? WHERE id = ?', now, reply.thread);
     this.replies.delete(reply.thread);
     this.changed(reply.thread);
+    this.next(reply.thread);
     reply.send({ type: 'done', message });
     reply.end();
+  }
+
+  /** The people who share the chat, in the order the admin page lists them. */
+  private people() {
+    return this.sql.exec<Person>('SELECT letter, email FROM people ORDER BY rowid').toArray();
+  }
+
+  /** The letter on this person's messages, if the admin page gave them one. */
+  private letterOf(email: string | null) {
+    const [person] = this.sql.exec<Person>('SELECT * FROM people WHERE email = ?', email).toArray();
+    return person?.letter ?? null;
+  }
+
+  private async setPeople(request: Request) {
+    const { people } = await request.json<{ people?: unknown }>();
+    if (!Array.isArray(people)) throw new Error('List the people.');
+    const rows = people.map(
+      (person): Person => ({
+        letter: String(person?.letter ?? '').trim(),
+        email: String(person?.email ?? '').trim().toLowerCase(),
+      }),
+    );
+    for (const { letter, email } of rows) {
+      if ([...letter].length !== 1) throw new Error('Give each person one letter.');
+      if (!email.includes('@')) throw new Error('Give each person the email they sign in with.');
+    }
+    if (new Set(rows.map((row) => row.email)).size < rows.length)
+      throw new Error('List each email once.');
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec('DELETE FROM people');
+      for (const { letter, email } of rows)
+        this.sql.exec('INSERT INTO people (email, letter) VALUES (?, ?)', email, letter);
+    });
   }
 
   /** A current ChatGPT token, refreshed when it has expired. */
