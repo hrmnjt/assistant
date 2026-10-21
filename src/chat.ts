@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
+  efforts,
   finishSignIn,
   listModels,
   refresh,
@@ -7,6 +8,7 @@ import {
   returnedCode,
   startSignIn,
   type Credential,
+  type Effort,
   type PendingSignIn,
   type Turn,
 } from './chatgpt';
@@ -159,7 +161,7 @@ export class Chat extends DurableObject<Env> {
         case 'GET /api/admin':
           return json({
             connected: Boolean(await this.ctx.storage.get('chatgpt')),
-            model: (await this.ctx.storage.get<string>('model')) ?? null,
+            ...(await this.settings()),
             email: emailOf(request),
             people: this.people(),
           });
@@ -334,7 +336,7 @@ export class Chat extends DurableObject<Env> {
   private async run(reply: Reply) {
     let error: string | null = null;
     try {
-      const model = await this.ctx.storage.get<string>('model');
+      const { model, reasoning } = await this.settings();
       if (!model) throw new Error('Choose a model on the admin page.');
       const turns = this.sql
         .exec<Message & { author: string | null }>(
@@ -349,7 +351,7 @@ export class Chat extends DurableObject<Env> {
         .reverse()
         .map((message): Turn => ({ role: message.role, author: message.author, text: message.text }));
       const people = this.people().map((person) => person.letter);
-      for await (const delta of respond(await this.token(), model, people, turns)) {
+      for await (const delta of respond(await this.token(), model, reasoning, people, turns)) {
         if ('reasoning' in delta) reply.reasoning += delta.reasoning;
         else reply.text += delta.text;
         reply.send({ type: 'delta', ...delta });
@@ -448,9 +450,18 @@ export class Chat extends DurableObject<Env> {
     await this.ctx.storage.put('chatgpt', await finishSignIn(returned, pending));
   }
 
+  /** The chosen model, and how hard it reasons: medium until chosen. */
+  private async settings() {
+    return {
+      model: (await this.ctx.storage.get<string>('model')) ?? null,
+      reasoning: (await this.ctx.storage.get<Effort>('reasoning')) ?? 'medium',
+    };
+  }
+
   private async choose(request: Request) {
-    const { model } = await request.json<{ model?: unknown }>();
+    const { model, reasoning } = await request.json<{ model?: unknown; reasoning?: unknown }>();
     if (typeof model !== 'string' || !model.trim()) throw new Error('Choose a model.');
-    await this.ctx.storage.put('model', model.trim());
+    if (!efforts.includes(reasoning as Effort)) throw new Error('Choose how hard the model reasons.');
+    await this.ctx.storage.put({ model: model.trim(), reasoning });
   }
 }

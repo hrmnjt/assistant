@@ -1,4 +1,5 @@
-// The admin page: connect ChatGPT, choose the model, and give each person their letter.
+// The admin page: connect ChatGPT, choose the model and how hard it reasons, and give each
+// person their letter.
 
 const $ = (selector) => document.querySelector(selector);
 const status = $('#status');
@@ -6,6 +7,7 @@ const problem = $('#problem');
 const modelList = $('#model-list');
 const modelName = $('#model-name');
 const modelNote = $('#model-note');
+const reasoningList = $('#reasoning');
 
 async function call(path, body) {
   const options = body && {
@@ -79,7 +81,7 @@ function showPeople(people) {
 }
 
 async function refresh() {
-  const { connected, model, email, people } = await call('/api/admin');
+  const { connected, model, reasoning, email, people } = await call('/api/admin');
   $('#you').textContent = email ? `You sign in as ${email}.` : '';
   showPeople(people);
   status.textContent = !connected
@@ -89,6 +91,7 @@ async function refresh() {
       : 'ChatGPT is connected. Choose a model.';
   $('#connect').hidden = connected;
   $('#connected').hidden = !connected;
+  reasoningList.value = reasoning;
   if (connected) await showModels(model);
 }
 
@@ -117,7 +120,7 @@ $('#model').addEventListener(
   'submit',
   action(async () => {
     const model = (modelList.disabled ? modelName : modelList).value;
-    await call('/api/admin/model', { model });
+    await call('/api/admin/model', { model, reasoning: reasoningList.value });
     await refresh();
   }),
 );

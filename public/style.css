@@ -290,8 +290,20 @@ body.threads-open #scrim {
   align-items: flex-end;
   gap: 8px;
   padding-top: 8px;
-  padding-bottom: calc(env(safe-area-inset-bottom) + 8px);
+  padding-bottom: 4px;
   border-top: 1px solid var(--line);
+}
+
+/* The model and its reasoning, under the message box; it leads to the admin page. */
+#settings {
+  display: block;
+  min-height: calc(env(safe-area-inset-bottom) + 26px);
+  padding: 0 16px calc(env(safe-area-inset-bottom) + 6px);
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 20px;
+  text-align: center;
+  text-decoration: none;
 }
 
 textarea,
