@@ -9,7 +9,8 @@ const threadList = document.querySelector('#thread-list');
 const form = document.querySelector('#composer');
 const input = form.elements.text;
 const sendButton = form.querySelector('button');
-const settings = document.querySelector('#settings');
+const modelLink = document.querySelector('#chat-model');
+const effort = document.querySelector('#chat-reasoning');
 /** The open thread, from the address (`/?t=12`); none for a new chat. */
 let thread = Number(new URLSearchParams(location.search).get('t')) || null;
 /** The letter on this person's messages. */
@@ -165,8 +166,9 @@ async function load() {
   }
   const response = await fetch(`/api/threads/${thread}`).catch(() => null);
   if (!response?.ok) return fail(response);
-  const { title: name, messages, queued, replying } = await response.json();
+  const { title: name, reasoning, messages, queued, replying } = await response.json();
   title.textContent = document.title = name;
+  effort.value = reasoning ?? '';
   // Showing it again keeps the reader's place, unless they were at the end.
   keepAtBottom(() => {
     list.replaceChildren();
@@ -215,17 +217,26 @@ async function showThreads() {
   );
 }
 
-/** Under the message box: the model that answers and how hard it reasons. */
+/** Under the message box: the model that answers, and the reasoning a chat follows by default. */
 async function showSettings() {
   const response = await fetch('/api/admin').catch(() => null);
   // A failure here shows up in the conversation too, so stay quiet.
   if (!response?.ok) return;
   const { connected, model, reasoning } = await response.json();
-  settings.textContent = !connected
-    ? 'Connect ChatGPT'
-    : model
-      ? `${model} · reasoning: ${reasoning}`
-      : 'Choose a model';
+  modelLink.textContent = !connected ? 'Connect ChatGPT' : (model ?? 'Choose a model');
+  effort.options[0].textContent = `default (${reasoning})`;
+}
+
+/** Choose how hard the model reasons in this chat, for everyone in it. A new chat starts with it. */
+async function chooseReasoning() {
+  if (!thread) return;
+  problem.hidden = true;
+  const reasoning = effort.value || null;
+  const response = await post(`/api/threads/${thread}/reasoning`, { reasoning });
+  // Every page, this one included, hears of the change and shows the chat again.
+  if (response?.ok) return;
+  await explain(response);
+  refresh();
 }
 
 async function removeThread(item) {
@@ -280,8 +291,9 @@ form.addEventListener('submit', async (event) => {
   if (!text || sending) return;
   sending = sendButton.disabled = true;
   problem.hidden = true;
-  const path = thread ? `/api/threads/${thread}/messages` : '/api/threads';
-  const response = await post(path, { text });
+  const response = thread
+    ? await post(`/api/threads/${thread}/messages`, { text })
+    : await post('/api/threads', { text, reasoning: effort.value || null });
   sending = sendButton.disabled = false;
   // On failure the message stays in the box to send again.
   if (!response?.ok) return explain(response);
@@ -307,6 +319,7 @@ form.addEventListener('submit', async (event) => {
 });
 
 input.addEventListener('input', resize);
+effort.addEventListener('change', chooseReasoning);
 // Enter sends on a keyboard; on a phone, Return adds a line and Send sends.
 input.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;

@@ -14,7 +14,14 @@ import {
 } from './chatgpt';
 import type { Env } from './worker';
 
-type Thread = { id: number; title: string; at: number; updated: number };
+type Thread = {
+  id: number;
+  title: string;
+  /** How hard the model reasons in this chat; none until chosen, so it follows the default. */
+  reasoning: Effort | null;
+  at: number;
+  updated: number;
+};
 type Message = {
   id: number;
   thread: number;
@@ -39,6 +46,12 @@ const json = (body: unknown, status = 200) => Response.json(body, { status });
 const titleOf = (text: string) => {
   const line = text.replace(/\s+/g, ' ').trim();
   return line.length > 60 ? `${line.slice(0, 59)}…` : line;
+};
+/** A chat's reasoning effort: one of the efforts, or none to follow the default. */
+const effortOf = (value: unknown) => {
+  if (value == null) return null;
+  if (!efforts.includes(value as Effort)) throw new Error('Choose how hard the model reasons.');
+  return value as Effort;
 };
 
 /** A reply in progress, streamed to every page following it as lines of JSON. */
@@ -90,6 +103,7 @@ export class Chat extends DurableObject<Env> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS threads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
+      reasoning TEXT,
       at INTEGER NOT NULL,
       updated INTEGER NOT NULL
     )`);
@@ -119,6 +133,11 @@ export class Chat extends DurableObject<Env> {
       .toArray()
       .map((column) => column.name);
     if (!columns.includes('sender')) this.sql.exec('ALTER TABLE messages ADD COLUMN sender TEXT');
+    const threadColumns = this.sql
+      .exec<{ name: string }>(`SELECT name FROM pragma_table_info('threads')`)
+      .toArray();
+    if (!threadColumns.some((column) => column.name === 'reasoning'))
+      this.sql.exec('ALTER TABLE threads ADD COLUMN reasoning TEXT');
     // The first version kept a single conversation; it becomes the first thread.
     if (!columns.includes('thread'))
       ctx.storage.transactionSync(() => {
@@ -154,6 +173,9 @@ export class Chat extends DurableObject<Env> {
           return await this.send(id, request);
         case 'POST /api/threads/:id/retry':
           return this.retry(id);
+        case 'POST /api/threads/:id/reasoning':
+          await this.setReasoning(id, request);
+          return json({ ok: true });
         case 'GET /api/threads/:id/stream':
           return this.replies.get(id)?.follow() ?? new Response(null, { status: 204 });
         case 'GET /api/events':
@@ -202,16 +224,25 @@ export class Chat extends DurableObject<Env> {
     return thread;
   }
 
-  private newThread(firstMessage: string) {
+  private newThread(firstMessage: string, reasoning: Effort | null = null) {
     const now = Date.now();
     return this.sql
       .exec<{ id: number }>(
-        'INSERT INTO threads (title, at, updated) VALUES (?, ?, ?) RETURNING id',
+        'INSERT INTO threads (title, reasoning, at, updated) VALUES (?, ?, ?, ?) RETURNING id',
         titleOf(firstMessage),
+        reasoning,
         now,
         now,
       )
       .one().id;
+  }
+
+  /** Set how hard the model reasons in a chat, for everyone in it; none follows the default. */
+  private async setReasoning(thread: number, request: Request) {
+    const { reasoning } = await request.json<{ reasoning?: unknown }>();
+    this.thread(thread);
+    this.sql.exec('UPDATE threads SET reasoning = ? WHERE id = ?', effortOf(reasoning), thread);
+    this.changed(thread);
   }
 
   private remove(id: number) {
@@ -244,10 +275,11 @@ export class Chat extends DurableObject<Env> {
       }
   }
 
-  private async text(request: Request) {
-    const { text } = await request.json<{ text?: unknown }>();
+  /** The message a request sends, and the reasoning a new chat starts with, if it chose one. */
+  private async message(request: Request) {
+    const { text, reasoning } = await request.json<{ text?: unknown; reasoning?: unknown }>();
     if (typeof text !== 'string' || !text.trim()) throw new Error('Write a message first.');
-    return text.trim();
+    return { text: text.trim(), reasoning: effortOf(reasoning) };
   }
 
   private addMessage(thread: number, sender: string | null, text: string) {
@@ -265,15 +297,15 @@ export class Chat extends DurableObject<Env> {
 
   /** Start a thread with its first message. */
   private async start(request: Request) {
-    const text = await this.text(request);
-    const thread = this.newThread(text);
+    const { text, reasoning } = await this.message(request);
+    const thread = this.newThread(text, reasoning);
     this.addMessage(thread, emailOf(request), text);
     return this.answer(thread).follow();
   }
 
   /** Send a message: answered now or, while the thread is replying, after the messages before it. */
   private async send(thread: number, request: Request) {
-    const text = await this.text(request);
+    const { text } = await this.message(request);
     this.thread(thread);
     if (!this.replies.has(thread) && !this.queued(thread).length) {
       this.addMessage(thread, emailOf(request), text);
@@ -338,6 +370,7 @@ export class Chat extends DurableObject<Env> {
     try {
       const { model, reasoning } = await this.settings();
       if (!model) throw new Error('Choose a model on the admin page.');
+      const effort = this.thread(reply.thread).reasoning ?? reasoning;
       const turns = this.sql
         .exec<Message & { author: string | null }>(
           `SELECT messages.*, people.letter AS author FROM messages
@@ -351,7 +384,7 @@ export class Chat extends DurableObject<Env> {
         .reverse()
         .map((message): Turn => ({ role: message.role, author: message.author, text: message.text }));
       const people = this.people().map((person) => person.letter);
-      for await (const delta of respond(await this.token(), model, reasoning, people, turns)) {
+      for await (const delta of respond(await this.token(), model, effort, people, turns)) {
         if ('reasoning' in delta) reply.reasoning += delta.reasoning;
         else reply.text += delta.text;
         reply.send({ type: 'delta', ...delta });
@@ -450,7 +483,7 @@ export class Chat extends DurableObject<Env> {
     await this.ctx.storage.put('chatgpt', await finishSignIn(returned, pending));
   }
 
-  /** The chosen model, and how hard it reasons: medium until chosen. */
+  /** The chosen model, and how hard it reasons in chats that don't choose: medium until chosen. */
   private async settings() {
     return {
       model: (await this.ctx.storage.get<string>('model')) ?? null,

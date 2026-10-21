@@ -6,14 +6,15 @@ connected with Sign in with ChatGPT.
 
 - `/` is the chat. Each thread keeps its own context; **Chats** lists them,
   newest first, and **New** starts one. Replies stream in, with the model's
-  reasoning summary above them. Under the message box are the model and its
-  reasoning effort. Every open page keeps up: a message sent on one device
+  reasoning summary above them. Under the message box are the model and the
+  chat's reasoning effort, which each chat can change from the default for
+  everyone in it. Every open page keeps up: a message sent on one device
   shows, with its reply streaming, on the others.
 - Everyone sees the same threads, and each message shows its sender's letter.
   A message sent while a thread is replying waits below the reply, then goes
   in and gets its own reply, in the order sent.
-- `/admin` connects ChatGPT, chooses the model and its reasoning effort
-  (medium until chosen), and gives each person their letter.
+- `/admin` connects ChatGPT, chooses the model and the default reasoning
+  effort (medium until chosen), and gives each person their letter.
 
 ## How it works
 
@@ -21,9 +22,10 @@ connected with Sign in with ChatGPT.
 Cloudflare serves them as static files; only `/api/*` reaches the Worker.
 `src/worker.ts` checks that each request came through Cloudflare Access and
 passes it, with the email Access signed the person in with, to the `Chat`
-Durable Object (`src/chat.ts`). It keeps the threads, their messages and the
-messages waiting for a reply, the people and their letters, the ChatGPT sign-in,
-and the chosen model and reasoning effort.
+Durable Object (`src/chat.ts`). It keeps the threads (each with its reasoning
+effort, if it chose one), their messages and the messages waiting for a reply,
+the people and their letters, the ChatGPT sign-in, and the chosen model and
+default reasoning effort.
 Each open chat page holds a WebSocket to it (`/api/events`), which says when a
 thread changes; the page then fetches that thread again. A page that comes back
 to the foreground, or reconnects, fetches again too, in case it missed a change.
