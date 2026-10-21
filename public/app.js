@@ -9,10 +9,13 @@ const threadList = document.querySelector('#thread-list');
 const form = document.querySelector('#composer');
 const input = form.elements.text;
 const sendButton = form.querySelector('button');
-const modelLink = document.querySelector('#chat-model');
+const modelChoice = document.querySelector('#chat-model');
 const effort = document.querySelector('#chat-reasoning');
 /** The open thread, from the address (`/?t=12`); none for a new chat. */
 let thread = Number(new URLSearchParams(location.search).get('t')) || null;
+/** The open chat's own model, if it chose one, and the models the account can use. */
+let chatModel = null;
+let models = [];
 /** The letter on this person's messages. */
 let you = null;
 /** Showing the open thread, or following its reply. */
@@ -167,8 +170,10 @@ async function load() {
   }
   const response = await fetch(`/api/threads/${thread}`).catch(() => null);
   if (!response?.ok) return fail(response);
-  const { title: name, reasoning, messages, queued, replying } = await response.json();
+  const { title: name, model, reasoning, messages, queued, replying } = await response.json();
   title.textContent = document.title = name;
+  chatModel = model;
+  showModels();
   effort.value = reasoning ?? '';
   // Showing it again keeps the reader's place, unless they were at the end.
   keepAtBottom(() => {
@@ -223,22 +228,36 @@ async function showThreads() {
   );
 }
 
-/** Under the message box: the model that answers, and the reasoning a chat follows by default. */
+/** Under the message box: the model and reasoning a chat follows by default. */
 async function showSettings() {
   const response = await fetch('/api/admin').catch(() => null);
   // A failure here shows up in the conversation too, so stay quiet.
   if (!response?.ok) return;
-  const { connected, model, reasoning } = await response.json();
-  modelLink.textContent = !connected ? 'Connect ChatGPT' : (model ?? 'Choose a model');
-  effort.options[0].textContent = `default (${reasoning})`;
+  const { model, reasoning } = await response.json();
+  modelChoice.options[0].textContent = `${model ?? 'no model'} (default)`;
+  effort.options[0].textContent = `${reasoning} (default)`;
 }
 
-/** Choose how hard the model reasons in this chat, for everyone in it. A new chat starts with it. */
-async function chooseReasoning() {
+/** The model menu: the default, the account's models, and the chat's own if it isn't listed. */
+function showModels() {
+  const ids = [...new Set([...models, ...(chatModel ? [chatModel] : [])])];
+  modelChoice.replaceChildren(modelChoice.options[0], ...ids.map((id) => new Option(id, id)));
+  modelChoice.value = chatModel ?? '';
+}
+
+async function listModels() {
+  const response = await fetch('/api/admin/models').catch(() => null);
+  // Without the list, the menu still offers the default and the chat's own model.
+  if (!response?.ok) return;
+  ({ models } = await response.json());
+  showModels();
+}
+
+/** Choose this chat's model or reasoning, for everyone in it. A new chat starts with them. */
+async function choose(change) {
   if (!thread) return;
   problem.hidden = true;
-  const reasoning = effort.value || null;
-  const response = await post(`/api/threads/${thread}/reasoning`, { reasoning });
+  const response = await post(`/api/threads/${thread}/settings`, change);
   // Every page, this one included, hears of the change and shows the chat again.
   if (response?.ok) return;
   await explain(response);
@@ -299,7 +318,7 @@ form.addEventListener('submit', async (event) => {
   problem.hidden = true;
   const response = thread
     ? await post(`/api/threads/${thread}/messages`, { text })
-    : await post('/api/threads', { text, reasoning: effort.value || null });
+    : await post('/api/threads', { text, model: chatModel, reasoning: effort.value || null });
   sending = sendButton.disabled = false;
   // On failure the message stays in the box to send again.
   if (!response?.ok) return explain(response);
@@ -325,7 +344,11 @@ form.addEventListener('submit', async (event) => {
 });
 
 input.addEventListener('input', resize);
-effort.addEventListener('change', chooseReasoning);
+modelChoice.addEventListener('change', () => {
+  chatModel = modelChoice.value || null;
+  choose({ model: chatModel });
+});
+effort.addEventListener('change', () => choose({ reasoning: effort.value || null }));
 // Enter sends on a keyboard; on a phone, Return adds a line and Send sends.
 input.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
@@ -343,4 +366,5 @@ setBusy(true);
 load();
 showThreads();
 showSettings();
+listModels();
 listen();

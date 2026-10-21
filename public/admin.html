@@ -43,10 +43,11 @@
       <section id="connected" hidden>
         <form id="model">
           <div class="field">
-            <label for="model-list">Model</label>
+            <label for="model-list">Default model</label>
             <select id="model-list" name="model"></select>
             <input id="model-name" name="model" placeholder="Model name" aria-label="Model name" hidden disabled />
             <p id="model-note" hidden></p>
+            <p>The model that answers in chats that don’t choose their own under the message box.</p>
           </div>
           <div class="field">
             <label for="reasoning">Default reasoning</label>
@@ -60,9 +61,9 @@
               <option>max</option>
             </select>
             <p>
-              How hard the model thinks before it answers, in chats that don’t choose their own
-              under the message box. Each model takes only some of these; if it refuses one, the
-              chat shows ChatGPT’s reason.
+              How hard the model thinks before it answers, in chats that don’t choose their own.
+              Each model takes only some of these; if it refuses one, the chat shows ChatGPT’s
+              reason.
             </p>
           </div>
           <button class="btn">Save</button>

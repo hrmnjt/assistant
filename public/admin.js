@@ -87,8 +87,8 @@ async function refresh() {
   status.textContent = !connected
     ? 'ChatGPT is not connected.'
     : model
-      ? `ChatGPT is connected, using ${model}.`
-      : 'ChatGPT is connected. Choose a model.';
+      ? `ChatGPT is connected. Chats use ${model} by default.`
+      : 'ChatGPT is connected. Choose a default model.';
   $('#connect').hidden = connected;
   $('#connected').hidden = !connected;
   reasoningList.value = reasoning;

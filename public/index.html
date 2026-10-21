@@ -47,7 +47,10 @@
         <button class="btn">Send</button>
       </form>
       <p id="settings">
-        <a id="chat-model" href="/admin"></a> · reasoning:
+        <select id="chat-model" aria-label="Model in this chat">
+          <option value="">default</option>
+        </select>
+        · reasoning:
         <select id="chat-reasoning" aria-label="Reasoning in this chat">
           <option value="">default</option>
           <option>none</option>
