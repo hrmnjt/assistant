@@ -57,7 +57,7 @@ async function showModels(current) {
 
 function input(name, value, label) {
   const field = document.createElement('input');
-  Object.assign(field, { name, value });
+  Object.assign(field, { name, value, className: 'input' });
   field.setAttribute('aria-label', label);
   return field;
 }

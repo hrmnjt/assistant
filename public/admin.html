@@ -4,16 +4,18 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>assistant · admin</title>
-    <meta name="theme-color" content="#f7f7f2" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#121411" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/vendor/basecoat-1.0.2/basecoat.min.css" />
     <link rel="stylesheet" href="/style.css" />
+    <script src="/theme.js"></script>
     <script type="module" src="/admin.js"></script>
   </head>
   <body>
-    <header>
+    <header class="bar">
       <h1>Admin</h1>
-      <a href="/">Chat</a>
+      <a class="btn" data-variant="ghost" href="/">Chat</a>
     </header>
     <main class="page">
       <p id="status">Checking ChatGPT…</p>
@@ -28,38 +30,44 @@
           </li>
           <li>Paste it here and tap <strong>Finish</strong> within ten minutes.</li>
         </ol>
-        <button id="start" type="button">Connect ChatGPT</button>
-        <p><a id="sign-in" target="_blank" rel="noopener" hidden>Open the ChatGPT sign-in</a></p>
+        <button id="start" class="btn" type="button">Connect ChatGPT</button>
+        <a id="sign-in" class="btn" data-variant="outline" target="_blank" rel="noopener" hidden>
+          Open the ChatGPT sign-in
+        </a>
         <form id="finish" hidden>
-          <input name="address" type="url" placeholder="http://127.0.0.1:1455/auth/callback?…" aria-label="Address" required />
-          <button>Finish</button>
+          <input class="input" name="address" type="url" placeholder="http://127.0.0.1:1455/auth/callback?…" aria-label="Address" required />
+          <button class="btn">Finish</button>
         </form>
       </section>
 
       <section id="connected" hidden>
         <form id="model">
-          <label for="model-list">Model</label>
-          <select id="model-list" name="model"></select>
-          <input id="model-name" name="model" placeholder="Model name" aria-label="Model name" hidden disabled />
-          <p id="model-note" class="note" hidden></p>
-          <label for="reasoning">Default reasoning</label>
-          <select id="reasoning" name="reasoning">
-            <option>none</option>
-            <option>minimal</option>
-            <option>low</option>
-            <option>medium</option>
-            <option>high</option>
-            <option>xhigh</option>
-            <option>max</option>
-          </select>
-          <p class="note">
-            How hard the model thinks before it answers, in chats that don’t choose their own under
-            the message box. Each model takes only some of these; if it refuses one, the chat shows
-            ChatGPT’s reason.
-          </p>
-          <button>Save</button>
+          <div class="field">
+            <label for="model-list">Model</label>
+            <select id="model-list" name="model"></select>
+            <input id="model-name" name="model" placeholder="Model name" aria-label="Model name" hidden disabled />
+            <p id="model-note" hidden></p>
+          </div>
+          <div class="field">
+            <label for="reasoning">Default reasoning</label>
+            <select id="reasoning" name="reasoning">
+              <option>none</option>
+              <option>minimal</option>
+              <option>low</option>
+              <option>medium</option>
+              <option>high</option>
+              <option>xhigh</option>
+              <option>max</option>
+            </select>
+            <p>
+              How hard the model thinks before it answers, in chats that don’t choose their own
+              under the message box. Each model takes only some of these; if it refuses one, the
+              chat shows ChatGPT’s reason.
+            </p>
+          </div>
+          <button class="btn">Save</button>
         </form>
-        <button id="disconnect" class="secondary" type="button">Disconnect ChatGPT</button>
+        <button id="disconnect" class="btn" data-variant="outline" type="button">Disconnect ChatGPT</button>
       </section>
 
       <section>
@@ -70,7 +78,7 @@
         </p>
         <form id="people">
           <div id="people-list"></div>
-          <button>Save</button>
+          <button class="btn">Save</button>
         </form>
       </section>
     </main>

@@ -76,8 +76,9 @@ function reasoningBlock(text, open) {
 }
 
 function retryButton() {
-  const button = element('button', 'secondary', 'Retry');
+  const button = element('button', 'btn', 'Retry');
   button.type = 'button';
+  button.dataset.variant = 'outline';
   button.addEventListener('click', async () => {
     if (busy) return;
     setBusy(true);
@@ -95,7 +96,7 @@ function show(message) {
   if (message.reasoning) node.append(reasoningBlock(message.reasoning, false));
   if (message.text) node.append(element('p', message.role === 'user' ? 'bubble' : '', message.text));
   // Each person's messages carry their letter.
-  if (message.author) node.append(element('span', 'avatar', message.author));
+  if (message.author) node.append(element('span', 'letter', message.author));
   if (message.error) node.append(element('p', 'error', message.error));
   list.append(node);
   return node;
@@ -203,12 +204,17 @@ async function showThreads() {
   you = body.you;
   threadList.replaceChildren(
     ...body.threads.map((item) => {
-      const row = element('li', item.id === thread ? 'current' : '');
+      const row = element('li');
       const link = element('a', '', item.title);
       link.href = `/?t=${item.id}`;
+      if (item.id === thread) link.setAttribute('aria-current', 'page');
       link.append(element('small', '', when(item.updated)));
-      const remove = element('button', 'plain', 'Delete');
+      const remove = element('button', 'btn', 'Delete');
       remove.type = 'button';
+      remove.dataset.variant = 'ghost';
+      remove.dataset.size = 'sm';
+      // On a phone the sidebar stays open while the deletion is confirmed.
+      remove.dataset.keepMobileSidebarOpen = '';
       remove.setAttribute('aria-label', `Delete “${item.title}”`);
       remove.addEventListener('click', () => removeThread(item));
       row.append(link, remove);
@@ -328,10 +334,10 @@ input.addEventListener('keydown', (event) => {
   form.requestSubmit();
 });
 
-const panel = (open) => document.body.classList.toggle('threads-open', open);
-document.querySelector('#open-threads').addEventListener('click', () => panel(true));
-document.querySelector('#close-threads').addEventListener('click', () => panel(false));
-document.querySelector('#scrim').addEventListener('click', () => panel(false));
+// Basecoat's sidebar: open beside the conversation on wide screens, over it on phones.
+const sidebar = document.querySelector('#threads');
+document.querySelector('#open-threads').addEventListener('click', () => sidebar.toggle?.());
+document.querySelector('#close-threads').addEventListener('click', () => sidebar.close?.());
 
 setBusy(true);
 load();
