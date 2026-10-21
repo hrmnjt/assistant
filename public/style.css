@@ -231,7 +231,7 @@ body.chat {
   resize: none;
 }
 
-/* Under the message box: the model, leading to the admin page, and this chat's reasoning. */
+/* Under the message box: this chat's model and reasoning, as menus that read as text. */
 #settings {
   padding: 0 16px calc(env(safe-area-inset-bottom) + 6px);
   color: var(--muted-foreground);
@@ -240,7 +240,7 @@ body.chat {
   text-align: center;
 }
 
-#chat-reasoning {
+#settings select {
   appearance: none;
   field-sizing: content;
   padding-right: 16px;
