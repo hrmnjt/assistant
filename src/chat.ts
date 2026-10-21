@@ -337,16 +337,19 @@ export class Chat extends DurableObject<Env> {
       const model = await this.ctx.storage.get<string>('model');
       if (!model) throw new Error('Choose a model on the admin page.');
       const turns = this.sql
-        .exec<Message>(
-          `SELECT * FROM messages WHERE thread = ? AND error IS NULL AND text != ''
+        .exec<Message & { author: string | null }>(
+          `SELECT messages.*, people.letter AS author FROM messages
+           LEFT JOIN people ON people.email = messages.sender
+           WHERE thread = ? AND error IS NULL AND text != ''
            ORDER BY id DESC LIMIT ?`,
           reply.thread,
           historyLimit,
         )
         .toArray()
         .reverse()
-        .map((message): Turn => ({ role: message.role, text: message.text }));
-      for await (const delta of respond(await this.token(), model, turns)) {
+        .map((message): Turn => ({ role: message.role, author: message.author, text: message.text }));
+      const people = this.people().map((person) => person.letter);
+      for await (const delta of respond(await this.token(), model, people, turns)) {
         if ('reasoning' in delta) reply.reasoning += delta.reasoning;
         else reply.text += delta.text;
         reply.send({ type: 'delta', ...delta });
