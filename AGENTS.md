@@ -17,3 +17,6 @@ Durable Object, and plain HTML/JS pages in `public/`. Keep it that small.
   identifiers, deployment addresses or secrets. Settings belong in the
   Worker's variables and secrets.
 - Keep README.md short and true to the code.
+- Build the pages from Basecoat's stock components (`public/vendor/`, docs at
+  basecoatui.com) and its theme colors. Add to `public/style.css` only what
+  Basecoat doesn't cover, such as the chat's layout.

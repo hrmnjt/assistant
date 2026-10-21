@@ -19,6 +19,9 @@ connected with Sign in with ChatGPT.
 ## How it works
 
 `public/` holds the pages: plain HTML, CSS and JavaScript, with no build step.
+They use [Basecoat](https://basecoatui.com) (shadcn/ui's components as plain
+HTML classes), kept in `public/vendor/`; `public/style.css` adds only the
+chat's own layout.
 Cloudflare serves them as static files; only `/api/*` reaches the Worker.
 `src/worker.ts` checks that each request came through Cloudflare Access and
 passes it, with the email Access signed the person in with, to the `Chat`
