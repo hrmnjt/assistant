@@ -267,6 +267,7 @@ input.addEventListener('keydown', (event) => {
 const panel = (open) => document.body.classList.toggle('threads-open', open);
 document.querySelector('#open-threads').addEventListener('click', () => panel(true));
 document.querySelector('#close-threads').addEventListener('click', () => panel(false));
+document.querySelector('#scrim').addEventListener('click', () => panel(false));
 
 setBusy(true);
 load();
