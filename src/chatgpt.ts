@@ -11,7 +11,8 @@ const directScope = 'chatgpt.tokens.use.direct';
 
 export type Credential = { access: string; refresh: string; expires: number; clientId: string };
 export type PendingSignIn = { verifier: string; state: string; startedAt: number };
-export type Turn = { role: 'user' | 'assistant'; text: string };
+/** A message of the conversation; a person's carries their letter, if they have one. */
+export type Turn = { role: 'user' | 'assistant'; author: string | null; text: string };
 export type Delta = { reasoning: string } | { text: string };
 
 const base64url = (data: Uint8Array) =>
@@ -125,13 +126,27 @@ export async function listModels(token: string) {
   return [...new Set(ids)].sort();
 }
 
-const instructions = () =>
+const instructions = (people: string[]) =>
   'You are a helpful assistant. This chat shows replies as plain text, so do not use Markdown ' +
   'such as **bold**, headings or tables; simple lists with hyphens are fine. ' +
+  (people.length
+    ? `People share this chat, each known by a letter: ${people.join(', ')}. Each of their ` +
+      `messages starts with its sender's letter in brackets, such as [${people[0]}]; do not ` +
+      'start your replies with one. Keep track of who said what. When they see something ' +
+      "differently, set out each person's view fairly, then help them find one they can share. "
+    : '') +
   `The current date and time is ${new Date().toISOString()} (UTC).`;
 
-/** Ask the model to answer the conversation, yielding its reasoning summary and reply as they stream in. */
-export async function* respond(token: string, model: string, turns: Turn[]): AsyncGenerator<Delta> {
+/**
+ * Ask the model to answer the conversation between these people (their letters), yielding its
+ * reasoning summary and reply as they stream in.
+ */
+export async function* respond(
+  token: string,
+  model: string,
+  people: string[],
+  turns: Turn[],
+): AsyncGenerator<Delta> {
   const response = await fetch(`${api}/responses`, {
     method: 'POST',
     headers: {
@@ -145,8 +160,11 @@ export async function* respond(token: string, model: string, turns: Turn[]): Asy
       store: false,
       reasoning: { effort: 'medium', summary: 'auto' },
       input: [
-        { role: 'developer', content: instructions() },
-        ...turns.map((turn) => ({ role: turn.role, content: turn.text })),
+        { role: 'developer', content: instructions(people) },
+        ...turns.map((turn) => ({
+          role: turn.role,
+          content: turn.author ? `[${turn.author}] ${turn.text}` : turn.text,
+        })),
       ],
     }),
   });

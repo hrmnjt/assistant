@@ -27,7 +27,9 @@ Each open chat page holds a WebSocket to it (`/api/events`), which says when a
 thread changes; the page then fetches that thread again. A page that comes back
 to the foreground, or reconnects, fetches again too, in case it missed a change.
 `src/chatgpt.ts` talks to OpenAI. The model sees the last 50 messages of the
-thread it is answering.
+thread it is answering, each person's starting with their letter. It is told
+who shares the chat, and asked to keep track of who said what and to help
+people who see something differently find a view they can share.
 
 ## Setup
 
@@ -63,6 +65,5 @@ email an `as` cookie names (`document.cookie = 'as=you@example.com'`), if any.
 
 ## Not yet
 
-Telling the model who wrote each message, Markdown in replies, and tools such
-as a calendar. The earlier, larger version of this app is on the `archive/v1`
-branch.
+Markdown in replies, and tools such as a calendar. The earlier, larger version
+of this app is on the `archive/v1` branch.
