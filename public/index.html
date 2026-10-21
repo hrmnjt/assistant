@@ -35,7 +35,19 @@
         <textarea name="text" rows="1" placeholder="Message" aria-label="Message" required></textarea>
         <button>Send</button>
       </form>
-      <a id="settings" href="/admin"></a>
+      <p id="settings">
+        <a id="chat-model" href="/admin"></a> · reasoning:
+        <select id="chat-reasoning" aria-label="Reasoning in this chat">
+          <option value="">default</option>
+          <option>none</option>
+          <option>minimal</option>
+          <option>low</option>
+          <option>medium</option>
+          <option>high</option>
+          <option>xhigh</option>
+          <option>max</option>
+        </select>
+      </p>
     </section>
   </body>
 </html>

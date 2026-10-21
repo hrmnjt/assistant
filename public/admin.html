@@ -42,7 +42,7 @@
           <select id="model-list" name="model"></select>
           <input id="model-name" name="model" placeholder="Model name" aria-label="Model name" hidden disabled />
           <p id="model-note" class="note" hidden></p>
-          <label for="reasoning">Reasoning</label>
+          <label for="reasoning">Default reasoning</label>
           <select id="reasoning" name="reasoning">
             <option>none</option>
             <option>minimal</option>
@@ -53,8 +53,9 @@
             <option>max</option>
           </select>
           <p class="note">
-            How hard the model thinks before it answers. Each model takes only some of these; if it
-            refuses one, the chat shows ChatGPT’s reason.
+            How hard the model thinks before it answers, in chats that don’t choose their own under
+            the message box. Each model takes only some of these; if it refuses one, the chat shows
+            ChatGPT’s reason.
           </p>
           <button>Save</button>
         </form>
