@@ -56,7 +56,7 @@ a {
   color: var(--accent);
 }
 
-/* The chat page: the chats list beside (or, on phones, over) the conversation. */
+/* The chat page: the chats list beside the conversation, or on phones a sidebar over it. */
 
 body.chat {
   display: flex;
@@ -78,17 +78,41 @@ body.chat {
   text-overflow: ellipsis;
 }
 
+/* Off screen until opened; hidden also keeps its links out of reach. */
 #threads {
-  display: none;
+  display: flex;
   flex-direction: column;
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 2;
+  width: min(320px, 85vw);
   background: var(--bg);
+  border-right: 1px solid var(--line);
+  visibility: hidden;
+  transform: translateX(-100%);
+  transition:
+    transform 0.2s,
+    visibility 0.2s;
 }
 
 body.threads-open #threads {
-  display: flex;
+  visibility: visible;
+  transform: none;
+}
+
+/* Dims the conversation beside the open sidebar; a tap on it closes the sidebar. */
+#scrim {
+  display: none;
+}
+
+body.threads-open #scrim {
+  display: block;
   position: fixed;
   inset: 0;
   z-index: 1;
+  background: rgb(0 0 0 / 0.4);
 }
 
 #threads > .button {
@@ -134,16 +158,16 @@ body.threads-open #threads {
 }
 
 @media (min-width: 900px) {
-  #threads,
-  body.threads-open #threads {
-    display: flex;
+  #threads {
     position: static;
     width: 300px;
-    border-right: 1px solid var(--line);
+    visibility: visible;
+    transform: none;
   }
 
   #open-threads,
-  #close-threads {
+  #close-threads,
+  body.threads-open #scrim {
     display: none;
   }
 }
