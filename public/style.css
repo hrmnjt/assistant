@@ -176,12 +176,44 @@ body.threads-open #threads {
   margin: 0;
 }
 
+/* A person's message: a bubble, with their letter beside it. */
 .user {
   align-self: flex-end;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 4px 8px;
+  justify-items: end;
+}
+
+.user .bubble {
   padding: 8px 14px;
   border-radius: 18px;
   background: var(--accent);
   color: var(--on-accent);
+}
+
+.avatar {
+  grid-area: 1 / 2;
+  align-self: end;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.user .note {
+  grid-column: 1;
+  font-size: 14px;
+}
+
+.queued .bubble {
+  opacity: 0.6;
 }
 
 .assistant {
@@ -324,6 +356,31 @@ button.plain {
 
 .page li {
   margin-bottom: 8px;
+}
+
+.page h2 {
+  margin-top: 32px;
+}
+
+#people-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.person {
+  display: flex;
+  gap: 8px;
+}
+
+.person [name='letter'] {
+  width: 56px;
+  text-align: center;
+}
+
+.person [name='email'] {
+  flex: 1;
+  min-width: 0;
 }
 
 code {

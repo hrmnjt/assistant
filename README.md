@@ -1,6 +1,6 @@
 # assistant
 
-A private chat with ChatGPT, for one person for now. It runs as one Cloudflare
+A private chat with ChatGPT, shared by a few people. It runs as one Cloudflare
 Worker behind Cloudflare Access and answers using the owner's ChatGPT plan,
 connected with Sign in with ChatGPT.
 
@@ -8,15 +8,21 @@ connected with Sign in with ChatGPT.
   newest first, and **New** starts one. Replies stream in, with the model's
   reasoning summary above them. Every open page keeps up: a message sent on
   one device shows, with its reply streaming, on the others.
-- `/admin` connects ChatGPT and chooses the model.
+- Everyone sees the same threads, and each message shows its sender's letter.
+  A message sent while a thread is replying waits below the reply, then goes
+  in and gets its own reply, in the order sent.
+- `/admin` connects ChatGPT, chooses the model, and gives each person their
+  letter.
 
 ## How it works
 
 `public/` holds the pages: plain HTML, CSS and JavaScript, with no build step.
 Cloudflare serves them as static files; only `/api/*` reaches the Worker.
 `src/worker.ts` checks that each request came through Cloudflare Access and
-passes it to the `Chat` Durable Object (`src/chat.ts`), which keeps the
-threads and their messages, the ChatGPT sign-in and the chosen model.
+passes it, with the email Access signed the person in with, to the `Chat`
+Durable Object (`src/chat.ts`). It keeps the threads, their messages and the
+messages waiting for a reply, the people and their letters, the ChatGPT sign-in
+and the chosen model.
 Each open chat page holds a WebSocket to it (`/api/events`), which says when a
 thread changes; the page then fetches that thread again. A page that comes back
 to the foreground, or reconnects, fetches again too, in case it missed a change.
@@ -27,7 +33,7 @@ thread it is answering.
 
 1. Protect the Worker with Cloudflare Access: in the Worker's Settings →
    Domains & Routes, enable Access for its workers.dev address, and let only
-   your email through in the Access policy.
+   your emails through in the Access policy.
 2. In the Worker's Settings → Variables and Secrets, add two text variables.
    Until both are set, the app refuses every request.
    - `ACCESS_TEAM_DOMAIN`: your team domain,
@@ -36,7 +42,7 @@ thread it is answering.
      application (Zero Trust → Access → Applications).
 3. Open `/admin` and connect ChatGPT. OpenAI's sign-in ends on an
    `http://127.0.0.1:1455` address that doesn't load: copy it into the page.
-   Then choose the model.
+   Then choose the model, and give each person a letter.
 
 ## Deploy
 
@@ -52,10 +58,11 @@ npm ci
 npm run dev
 ```
 
-Then open http://localhost:8787. There is no Access check locally.
+Then open http://localhost:8787. There is no Access check locally: you are the
+email an `as` cookie names (`document.cookie = 'as=you@example.com'`), if any.
 
 ## Not yet
 
-A second person sharing the threads, Markdown in replies, and tools such as a
-calendar. The earlier, larger version of this app is on the `archive/v1`
+Telling the model who wrote each message, Markdown in replies, and tools such
+as a calendar. The earlier, larger version of this app is on the `archive/v1`
 branch.
