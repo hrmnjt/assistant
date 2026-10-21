@@ -9,6 +9,7 @@ const threadList = document.querySelector('#thread-list');
 const form = document.querySelector('#composer');
 const input = form.elements.text;
 const sendButton = form.querySelector('button');
+const settings = document.querySelector('#settings');
 /** The open thread, from the address (`/?t=12`); none for a new chat. */
 let thread = Number(new URLSearchParams(location.search).get('t')) || null;
 /** The letter on this person's messages. */
@@ -214,6 +215,19 @@ async function showThreads() {
   );
 }
 
+/** Under the message box: the model that answers and how hard it reasons. */
+async function showSettings() {
+  const response = await fetch('/api/admin').catch(() => null);
+  // A failure here shows up in the conversation too, so stay quiet.
+  if (!response?.ok) return;
+  const { connected, model, reasoning } = await response.json();
+  settings.textContent = !connected
+    ? 'Connect ChatGPT'
+    : model
+      ? `${model} · reasoning: ${reasoning}`
+      : 'Choose a model';
+}
+
 async function removeThread(item) {
   if (!confirm(`Delete “${item.title}”? This can’t be undone.`)) return;
   // The open chat is going away: don't show it again meanwhile.
@@ -242,6 +256,7 @@ function listen() {
 
 function catchUp() {
   showThreads();
+  showSettings();
   refresh();
 }
 
@@ -308,4 +323,5 @@ document.querySelector('#scrim').addEventListener('click', () => panel(false));
 setBusy(true);
 load();
 showThreads();
+showSettings();
 listen();

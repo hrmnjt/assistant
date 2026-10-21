@@ -14,6 +14,9 @@ export type PendingSignIn = { verifier: string; state: string; startedAt: number
 /** A message of the conversation; a person's carries their letter, if they have one. */
 export type Turn = { role: 'user' | 'assistant'; author: string | null; text: string };
 export type Delta = { reasoning: string } | { text: string };
+/** How hard the model reasons. Each model takes only some of these. */
+export const efforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type Effort = (typeof efforts)[number];
 
 const base64url = (data: Uint8Array) =>
   btoa(String.fromCharCode(...data))
@@ -144,6 +147,7 @@ const instructions = (people: string[]) =>
 export async function* respond(
   token: string,
   model: string,
+  effort: Effort,
   people: string[],
   turns: Turn[],
 ): AsyncGenerator<Delta> {
@@ -158,7 +162,7 @@ export async function* respond(
       model,
       stream: true,
       store: false,
-      reasoning: { effort: 'medium', summary: 'auto' },
+      reasoning: { effort, summary: 'auto' },
       input: [
         { role: 'developer', content: instructions(people) },
         ...turns.map((turn) => ({
